@@ -1,0 +1,69 @@
+# Strategy Configuration
+# Define different trading strategies and their parameters
+
+strategies:
+  
+  # Simple Arbitrage Strategy
+  # Detects when YES + NO prices don't equal 1.0
+  simple_arbitrage:
+    enabled: true
+    min_spread: 0.02          # Minimum 2% spread to trigger
+    max_spread: 0.10          # Maximum 10% spread (beyond this might be data error)
+    position_size: 10.0       # Size in USDC per position
+    min_confidence: 0.6       # Minimum confidence to execute (0-1)
+    
+  # Price Inefficacy Strategy
+  # Detects significantly underpriced or overpriced tokens
+  price_inefficacy:
+    enabled: true
+    underpriced_threshold: 0.15   # Consider buying below 15%
+    overpriced_threshold: 0.85    # Consider selling above 85%
+    position_size: 20.0           # Size in USDC
+    min_confidence: 0.7
+    min_volume: 100.0             # Minimum volume required
+    
+  # Momentum Strategy (example - not implemented yet)
+  momentum:
+    enabled: false
+    lookback_period: 24       # Hours to look back
+    momentum_threshold: 0.05  # 5% price change
+    position_size: 15.0
+    min_confidence: 0.75
+    
+  # Mean Reversion Strategy (example - not implemented yet)
+  mean_reversion:
+    enabled: false
+    lookback_period: 48
+    std_dev_threshold: 2.0    # Standard deviations from mean
+    position_size: 25.0
+    min_confidence: 0.65
+
+# Risk Management Parameters
+risk:
+  max_position_size: 100.0       # Maximum size for single position
+  max_total_exposure: 500.0      # Maximum total exposure across all positions
+  stop_loss_pct: 0.05            # 5% stop loss
+  take_profit_pct: 0.15          # 15% take profit
+  max_positions: 10              # Maximum number of concurrent positions
+  
+# Market Scanning Parameters
+scanning:
+  interval_seconds: 60           # Scan every 60 seconds
+  markets_per_scan: 50           # Number of markets to scan each iteration
+  min_liquidity: 1000.0          # Minimum liquidity to consider (USDC)
+  excluded_markets: []           # Market IDs to exclude
+  
+# Monitoring and Alerts
+monitoring:
+  status_interval: 10            # Display status every N iterations
+  alert_on_position_close: true
+  alert_on_large_loss: true
+  large_loss_threshold: 50.0     # Alert if single trade loss > $50
+
+# Logging
+logging:
+  level: INFO                    # DEBUG, INFO, WARNING, ERROR
+  log_trades: true
+  log_signals: true
+  log_errors: true
+  file: "trading_bot.log"

@@ -1,0 +1,36 @@
+# Core dependencies
+py-clob-client  # Latest: 0.34.4 (Jan 2026)
+python-dotenv
+pyyaml
+
+# Data handling
+pandas  # Latest: 2.3.3 (Sep 2025)
+numpy
+
+# GUI and visualization
+streamlit
+plotly
+
+# LangChain ecosystem (requires Python 3.10+)
+# Using latest versions - LangChain 1.1+ recommended
+langchain
+langchain-community
+langchain-core
+langchain-openai
+langchain-anthropic
+langgraph
+langsmith
+
+# Async support
+aiohttp
+
+# Logging and monitoring
+structlog
+
+# Testing
+pytest
+pytest-asyncio
+pytest-cov
+
+# Type hints
+typing-extensions

@@ -1,0 +1,3 @@
+entry_time,exit_time,token_id,side,entry_price,exit_price,size,pnl,exit_reason
+2024-12-01 08:25:00,2024-12-02 08:00:00,sim_updown_down_5.0pct_yes,BUY,0.9800490000000001,0.01,100.0,-97.0049,backtest_end
+2024-12-01 09:00:00,2024-12-02 08:00:00,sim_updown_up_5.0pct_no,BUY,0.9800490000000001,0.98,100.0,-0.004900000000007676,backtest_end
