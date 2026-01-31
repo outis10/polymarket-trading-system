@@ -1114,7 +1114,7 @@ def render_order_book(
 ):
     """
     Render the order book component with tabs for UP/DOWN outcomes.
-    Uses Streamlit native components for reliable rendering.
+    Uses Streamlit's st.dataframe with column_config for professional styling.
 
     Args:
         event_id: Unique identifier for the event
@@ -1170,7 +1170,7 @@ def render_order_book(
             st.session_state[tab_key] = "down"
             st.rerun()
 
-    # Calculate max shares for depth bar scaling
+    # Calculate max shares for depth bar scaling (used for progress columns)
     max_shares = 1
     if order_book.asks:
         max_shares = max(max_shares, max(level.shares for level in order_book.asks))
@@ -1183,85 +1183,166 @@ def render_order_book(
     spread_cents = int((best_ask - best_bid) * 100)
     last_price_cents = int(order_book.last_price * 100)
 
-    # ASKS Section
+    # ASKS Section (Sell orders)
     st.markdown(
         """
         <span style="color: #f85149; font-size: 11px; font-weight: 600;
                      text-transform: uppercase; background: rgba(248,81,73,0.2);
-                     padding: 2px 8px; border-radius: 4px;">Asks</span>
+                     padding: 2px 8px; border-radius: 4px;">🔴 Asks (Sell Orders)</span>
     """,
         unsafe_allow_html=True,
     )
 
-    # Build asks dataframe
-    asks_data = []
+    # Build asks dataframe with numeric values for proper formatting
     asks_reversed = list(reversed(order_book.asks)) if order_book.asks else []
-    for level in asks_reversed:
-        asks_data.append(
-            {
-                "Price": f"{int(level.price * 100)}¢",
-                "Shares": f"{level.shares:,.2f}",
-                "Total": f"${level.total:,.2f}",
-            }
+    if asks_reversed:
+        asks_df = pd.DataFrame(
+            [
+                {
+                    "Price (¢)": int(level.price * 100),
+                    "Shares": level.shares,
+                    "Total ($)": level.total,
+                    "Depth": level.shares / max_shares,  # Normalized for progress bar
+                }
+                for level in asks_reversed
+            ]
         )
 
-    if asks_data:
-        asks_df = pd.DataFrame(asks_data)
         st.dataframe(
             asks_df,
             use_container_width=True,
             hide_index=True,
-            height=min(35 * len(asks_data) + 38, 180),
+            height=min(35 * len(asks_df) + 38, 200),
+            column_config={
+                "Price (¢)": st.column_config.NumberColumn(
+                    "Price (¢)",
+                    help="Price in cents",
+                    format="%d¢",
+                ),
+                "Shares": st.column_config.NumberColumn(
+                    "Shares",
+                    help="Number of shares available",
+                    format="%.2f",
+                ),
+                "Total ($)": st.column_config.NumberColumn(
+                    "Total ($)",
+                    help="Cumulative dollar value",
+                    format="$%.2f",
+                ),
+                "Depth": st.column_config.ProgressColumn(
+                    "Depth",
+                    help="Order depth visualization",
+                    format="%.0f%%",
+                    min_value=0,
+                    max_value=1,
+                ),
+            },
         )
+    else:
+        st.caption("No asks available")
 
-    # Midpoint divider
-    st.markdown(
-        f"""
-        <div style="display: flex; justify-content: space-around; align-items: center;
-                    padding: 10px 8px; margin: 8px 0; background: #21262d;
-                    border-radius: 6px; border-left: 3px solid #58a6ff;">
-            <span style="font-size: 12px;">
-                <span style="color: #8b949e;">Last: </span>
-                <span style="color: #e6edf3; font-weight: 600; font-family: monospace;">{last_price_cents}¢</span>
-            </span>
-            <span style="font-size: 12px;">
-                <span style="color: #8b949e;">Spread: </span>
-                <span style="color: #e6edf3; font-weight: 600; font-family: monospace;">{spread_cents}¢</span>
-            </span>
-        </div>
-    """,
-        unsafe_allow_html=True,
-    )
+    # Midpoint divider with spread info
+    col_last, col_spread, col_mid = st.columns(3)
+    with col_last:
+        st.metric("Last Price", f"{last_price_cents}¢")
+    with col_spread:
+        st.metric("Spread", f"{spread_cents}¢")
+    with col_mid:
+        mid_price = (best_ask + best_bid) / 2
+        st.metric("Mid", f"{int(mid_price * 100)}¢")
 
-    # BIDS Section
+    # BIDS Section (Buy orders)
     st.markdown(
         """
         <span style="color: #3fb950; font-size: 11px; font-weight: 600;
                      text-transform: uppercase; background: rgba(63,185,80,0.2);
-                     padding: 2px 8px; border-radius: 4px;">Bids</span>
+                     padding: 2px 8px; border-radius: 4px;">🟢 Bids (Buy Orders)</span>
     """,
         unsafe_allow_html=True,
     )
 
-    # Build bids dataframe
-    bids_data = []
-    for level in order_book.bids:
-        bids_data.append(
-            {
-                "Price": f"{int(level.price * 100)}¢",
-                "Shares": f"{level.shares:,.2f}",
-                "Total": f"${level.total:,.2f}",
-            }
+    # Build bids dataframe with numeric values
+    if order_book.bids:
+        bids_df = pd.DataFrame(
+            [
+                {
+                    "Price (¢)": int(level.price * 100),
+                    "Shares": level.shares,
+                    "Total ($)": level.total,
+                    "Depth": level.shares / max_shares,  # Normalized for progress bar
+                }
+                for level in order_book.bids
+            ]
         )
 
-    if bids_data:
-        bids_df = pd.DataFrame(bids_data)
         st.dataframe(
             bids_df,
             use_container_width=True,
             hide_index=True,
-            height=min(35 * len(bids_data) + 38, 180),
+            height=min(35 * len(bids_df) + 38, 200),
+            column_config={
+                "Price (¢)": st.column_config.NumberColumn(
+                    "Price (¢)",
+                    help="Price in cents",
+                    format="%d¢",
+                ),
+                "Shares": st.column_config.NumberColumn(
+                    "Shares",
+                    help="Number of shares available",
+                    format="%.2f",
+                ),
+                "Total ($)": st.column_config.NumberColumn(
+                    "Total ($)",
+                    help="Cumulative dollar value",
+                    format="$%.2f",
+                ),
+                "Depth": st.column_config.ProgressColumn(
+                    "Depth",
+                    help="Order depth visualization",
+                    format="%.0f%%",
+                    min_value=0,
+                    max_value=1,
+                ),
+            },
         )
+    else:
+        st.caption("No bids available")
+
+    # Order book summary stats
+    with st.expander("📊 Order Book Stats", expanded=False):
+        stats_col1, stats_col2, stats_col3 = st.columns(3)
+
+        total_ask_volume = (
+            sum(level.shares for level in order_book.asks) if order_book.asks else 0
+        )
+        total_bid_volume = (
+            sum(level.shares for level in order_book.bids) if order_book.bids else 0
+        )
+        imbalance = (
+            (total_bid_volume - total_ask_volume)
+            / max(total_bid_volume + total_ask_volume, 1)
+            * 100
+        )
+
+        with stats_col1:
+            st.metric("Ask Volume", f"{total_ask_volume:,.0f}")
+        with stats_col2:
+            st.metric("Bid Volume", f"{total_bid_volume:,.0f}")
+        with stats_col3:
+            st.metric(
+                "Imbalance",
+                f"{imbalance:+.1f}%",
+                delta="Bullish"
+                if imbalance > 0
+                else "Bearish"
+                if imbalance < 0
+                else "Neutral",
+                delta_color="normal"
+                if imbalance > 0
+                else "inverse"
+                if imbalance < 0
+                else "off",
+            )
 
 
 # =============================================================================
