@@ -1,0 +1,554 @@
+/* Polymarket Monitor - Dark Theme */
+
+body {
+    background-color: #0d1117;
+    color: #e6edf3;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    margin: 0;
+    padding: 0;
+}
+
+/* Event card container */
+.event-card {
+    background: linear-gradient(135deg, #161b22 0%, #1c2128 100%);
+    border-radius: 16px;
+    padding: 20px;
+    margin-bottom: 20px;
+    border: 1px solid #30363d;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+}
+
+/* Event header */
+.event-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 15px;
+}
+
+.event-icon {
+    width: 48px;
+    height: 48px;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 24px;
+    flex-shrink: 0;
+}
+
+.event-icon-btc { background: linear-gradient(135deg, #f7931a, #ffab40); }
+.event-icon-eth { background: linear-gradient(135deg, #627eea, #8c9eff); }
+.event-icon-sol { background: linear-gradient(135deg, #9945ff, #14f195); }
+.event-icon-generic { background: linear-gradient(135deg, #58a6ff, #1f6feb); }
+
+.event-title {
+    font-size: 18px;
+    font-weight: 600;
+    color: #e6edf3;
+    margin: 0;
+}
+
+.event-subtitle {
+    font-size: 13px;
+    color: #8b949e;
+    margin: 0;
+}
+
+/* Price display */
+.price-container {
+    display: flex;
+    gap: 40px;
+    margin: 15px 0;
+}
+
+.price-box {
+    display: flex;
+    flex-direction: column;
+}
+
+.price-label {
+    font-size: 12px;
+    color: #8b949e;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.price-value {
+    font-size: 28px;
+    font-weight: 700;
+    color: #e6edf3;
+}
+
+.price-value-green {
+    color: #3fb950;
+}
+
+.price-change {
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.price-change-positive { color: #3fb950; }
+.price-change-negative { color: #f85149; }
+
+/* Countdown timer */
+.countdown {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.countdown-unit {
+    text-align: center;
+}
+
+.countdown-value {
+    font-size: 32px;
+    font-weight: 700;
+    color: #f85149;
+}
+
+.countdown-label {
+    font-size: 10px;
+    color: #8b949e;
+    text-transform: uppercase;
+}
+
+/* Trading panel */
+.trading-panel {
+    background: #161b22;
+    border-radius: 12px;
+    padding: 16px;
+    border: 1px solid #30363d;
+}
+
+.trading-tabs {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+
+.tab-button {
+    flex: 1;
+    padding: 8px 16px;
+    border: none;
+    border-radius: 8px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.tab-buy { background: #238636; color: white; }
+.tab-sell { background: #30363d; color: #8b949e; }
+
+/* Outcome buttons */
+.outcome-buttons {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+
+.outcome-btn {
+    flex: 1;
+    padding: 12px;
+    border-radius: 8px;
+    font-weight: 600;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.outcome-up {
+    background: #238636;
+    color: white;
+}
+
+.outcome-down {
+    background: #30363d;
+    color: #8b949e;
+    border: 1px solid #484f58;
+}
+
+/* Input fields */
+.input-group {
+    margin-bottom: 12px;
+}
+
+.input-label {
+    font-size: 13px;
+    color: #8b949e;
+    margin-bottom: 6px;
+}
+
+.input-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+/* Quick amount buttons */
+.quick-amounts {
+    display: flex;
+    gap: 4px;
+}
+
+.quick-btn {
+    padding: 6px 12px;
+    background: #21262d;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    color: #8b949e;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+/* Trade button */
+.trade-btn {
+    width: 100%;
+    padding: 14px;
+    background: linear-gradient(135deg, #1f6feb, #58a6ff);
+    border: none;
+    border-radius: 10px;
+    color: white;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+    margin-top: 16px;
+}
+
+.trade-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(31, 111, 235, 0.4);
+}
+
+/* Summary row */
+.summary-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 8px 0;
+    border-top: 1px solid #21262d;
+    margin-top: 8px;
+}
+
+.summary-label {
+    color: #8b949e;
+    font-size: 14px;
+}
+
+.summary-value {
+    color: #e6edf3;
+    font-weight: 600;
+}
+
+.summary-value-green {
+    color: #3fb950;
+}
+
+/* Time filter buttons */
+.time-filters {
+    display: flex;
+    gap: 4px;
+    padding: 8px 0;
+}
+
+.time-btn {
+    padding: 6px 12px;
+    background: transparent;
+    border: none;
+    color: #8b949e;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+}
+
+.time-btn-active {
+    background: #f85149;
+    color: white;
+}
+
+/* ORDER BOOK STYLES */
+.order-book-card {
+    background: linear-gradient(135deg, #0d1117 0%, #161b22 100%);
+    border-radius: 12px;
+    border: 1px solid #30363d;
+    padding: 16px;
+    margin-top: 16px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+}
+
+.order-book-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #21262d;
+}
+
+.order-book-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: #e6edf3;
+    margin: 0;
+}
+
+.order-book-volume {
+    font-size: 12px;
+    color: #8b949e;
+}
+
+.order-book-tabs {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+
+.order-book-tab {
+    flex: 1;
+    padding: 8px 16px;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    font-weight: 500;
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.2s;
+    text-align: center;
+    background: #21262d;
+    color: #8b949e;
+}
+
+.order-book-tab-active {
+    background: linear-gradient(135deg, #1f6feb, #58a6ff);
+    border-color: #1f6feb;
+    color: white;
+}
+
+.order-book-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
+    font-size: 12px;
+}
+
+.order-book-table th {
+    text-align: right;
+    padding: 6px 8px;
+    color: #8b949e;
+    font-weight: 500;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-bottom: 1px solid #21262d;
+}
+
+.order-book-table th:first-child {
+    text-align: left;
+}
+
+.order-book-section-label {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    display: inline-block;
+    margin: 8px 0 4px 0;
+}
+
+.order-book-asks-label {
+    background: rgba(248, 81, 73, 0.2);
+    color: #f85149;
+}
+
+.order-book-bids-label {
+    background: rgba(63, 185, 80, 0.2);
+    color: #3fb950;
+}
+
+.order-book-row {
+    position: relative;
+    transition: background 0.15s;
+}
+
+.order-book-row:hover {
+    background: rgba(48, 54, 61, 0.5);
+    cursor: pointer;
+}
+
+.order-book-row td {
+    padding: 6px 8px;
+    text-align: right;
+    position: relative;
+    z-index: 1;
+}
+
+.order-book-row td:first-child {
+    text-align: left;
+}
+
+.order-book-ask-row td:first-child {
+    color: #f85149;
+    font-weight: 600;
+}
+
+.order-book-bid-row td:first-child {
+    color: #3fb950;
+    font-weight: 600;
+}
+
+.order-book-row td:not(:first-child) {
+    color: #e6edf3;
+}
+
+.order-book-depth-bar {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    opacity: 0.15;
+    z-index: 0;
+}
+
+.order-book-depth-ask {
+    right: 0;
+    background: linear-gradient(to left, #f85149, transparent);
+}
+
+.order-book-depth-bid {
+    left: 0;
+    background: linear-gradient(to right, #3fb950, transparent);
+}
+
+.order-book-midpoint {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 8px;
+    margin: 8px 0;
+    background: #21262d;
+    border-radius: 6px;
+    border-left: 3px solid #58a6ff;
+}
+
+.order-book-midpoint-item {
+    font-size: 12px;
+}
+
+.order-book-midpoint-label {
+    color: #8b949e;
+    margin-right: 4px;
+}
+
+.order-book-midpoint-value {
+    color: #e6edf3;
+    font-weight: 600;
+    font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
+}
+
+.order-book-best-ask {
+    box-shadow: inset 0 0 0 1px rgba(248, 81, 73, 0.5);
+}
+
+.order-book-best-bid {
+    box-shadow: inset 0 0 0 1px rgba(63, 185, 80, 0.5);
+}
+
+/* Dash-specific overrides */
+.dash-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 20px;
+    border-bottom: 1px solid #30363d;
+    margin-bottom: 20px;
+    background-color: #0d1117;
+}
+
+.dash-header-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.dash-header-title {
+    font-size: 24px;
+    font-weight: 700;
+    color: #e6edf3;
+}
+
+.dash-header-subtitle {
+    color: #8b949e;
+    font-size: 14px;
+}
+
+/* Demo banner */
+.demo-banner {
+    background: rgba(56, 132, 244, 0.15);
+    border: 1px solid rgba(56, 132, 244, 0.3);
+    border-radius: 8px;
+    padding: 10px 16px;
+    margin: 0 20px 20px 20px;
+    color: #58a6ff;
+    font-size: 14px;
+}
+
+/* Event grid */
+.event-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    padding: 0 20px;
+}
+
+/* Sidebar / Offcanvas */
+.sidebar-content {
+    padding: 20px;
+}
+
+.sidebar-section {
+    margin-bottom: 24px;
+}
+
+.sidebar-section-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: #e6edf3;
+    margin-bottom: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+/* Status indicator */
+.status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+    margin-right: 6px;
+}
+
+.status-demo { background-color: #d29922; }
+.status-live { background-color: #3fb950; }
+
+/* Toast notification */
+.trade-toast {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    z-index: 9999;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    .price-container {
+        flex-direction: column;
+        gap: 16px;
+    }
+    .event-grid {
+        padding: 0 10px;
+    }
+}

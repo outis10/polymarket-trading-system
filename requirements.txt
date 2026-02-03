@@ -10,6 +10,9 @@ numpy
 # GUI and visualization
 streamlit
 plotly
+dash>=2.18.0
+dash-bootstrap-components>=1.6.0
+cachetools
 
 # LangChain ecosystem (requires Python 3.10+)
 # Using latest versions - LangChain 1.1+ recommended

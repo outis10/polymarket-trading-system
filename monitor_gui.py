@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+import requests
 import streamlit as st
 import yaml
 from plotly.subplots import make_subplots
@@ -87,6 +88,7 @@ class EventData:
     no_token_id: str = ""
     order_book_yes: OrderBook = field(default_factory=OrderBook)
     order_book_no: OrderBook = field(default_factory=OrderBook)
+    event_end_utc: Optional[datetime] = None
 
 
 # =============================================================================
@@ -873,6 +875,7 @@ def create_price_chart(
     height: int = 350,
     show_probability: bool = True,
     show_price_change: bool = True,
+    chart_id: str = "",
 ) -> go.Figure:
     """
     Create a Polymarket-style price chart with dual series.
@@ -889,13 +892,14 @@ def create_price_chart(
         show_price_change: Whether to show the price change % series
     """
     if not price_history:
-        # Empty chart
+        # Empty chart — use chart_id in title to make the figure unique per event
         fig = go.Figure()
         fig.update_layout(
             template="plotly_dark",
             height=height,
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
+            title=dict(text=chart_id, font=dict(size=1, color="rgba(0,0,0,0)")),
         )
         return fig
 
@@ -1350,91 +1354,97 @@ def render_order_book(
 # =============================================================================
 
 
-def render_event_widget(event_id: str, event_data: EventData, config: Dict):
-    """Render a single event monitoring widget"""
+def render_event_dynamic(event_id: str, event_data: EventData, config: Dict):
+    """Render only the dynamic parts of an event: prices, countdown, chart.
+    This function is meant to be called inside a @st.fragment so only
+    these widgets re-render on each tick."""
 
-    # Main container with two columns: chart (left) and trading (right)
-    col_chart, col_trading = st.columns([2, 1])
+    # Price difference vs price_to_beat
+    price_diff = event_data.current_price - event_data.price_to_beat
+    price_up = price_diff >= 0
+    price_change_class = (
+        "price-change-positive" if price_up else "price-change-negative"
+    )
+    price_change_symbol = "▲" if price_up else "▼"
 
-    with col_chart:
-        # Event header
+    col_p1, col_p2, col_p3 = st.columns([1, 1, 1])
+
+    with col_p1:
         st.markdown(
             f"""
-        <div class="event-header">
-            {get_icon_html(event_data.icon)}
+        <div class="price-box">
+            <span class="price-label">PRICE TO BEAT</span>
+            <span class="price-value">${event_data.price_to_beat:,.2f}</span>
+        </div>
+        """,
+            unsafe_allow_html=True,
+        )
+
+    with col_p2:
+        st.markdown(
+            f"""
+        <div class="price-box">
+            <span class="price-label">CURRENT PRICE</span>
+            <span class="price-value price-value-green">${event_data.current_price:,.2f}</span>
+            <span class="price-change {price_change_class}">{price_change_symbol} ${abs(price_diff):,.2f}</span>
+        </div>
+        """,
+            unsafe_allow_html=True,
+        )
+
+    with col_p3:
+        # Countdown: real time remaining until candle close
+        if event_data.event_end_utc:
+            from datetime import timezone as tz
+
+            now_utc = datetime.now(tz=tz.utc)
+            remaining = event_data.event_end_utc - now_utc
+            total_secs = max(0, int(remaining.total_seconds()))
+            minutes = total_secs // 60
+            seconds = total_secs % 60
+        else:
+            minutes, seconds = 0, 0
+
+        st.markdown(
+            f"""
+        <div class="countdown">
             <div>
-                <p class="event-title">{event_data.name}</p>
-                <p class="event-subtitle">{event_data.description}</p>
+                <span class="countdown-value">{minutes:02d}</span>
+                <span class="countdown-label">MINS</span>
+            </div>
+            <div>
+                <span class="countdown-value">{seconds:02d}</span>
+                <span class="countdown-label">SECS</span>
             </div>
         </div>
         """,
             unsafe_allow_html=True,
         )
 
-        # Price info row
-        price_change_class = (
-            "price-change-positive"
-            if event_data.price_change >= 0
-            else "price-change-negative"
-        )
-        price_change_symbol = "▲" if event_data.price_change >= 0 else "▼"
+    # Price chart with dual series (price + percentage)
+    chart = create_price_chart(
+        event_data.price_history,
+        height=config.get("ui", {}).get("chart_height", 350),
+        show_probability=st.session_state.get("show_percentage", True),
+        show_price_change=st.session_state.get("show_price_change", True),
+        chart_id=event_id,
+    )
+    st.plotly_chart(
+        chart,
+        use_container_width=True,
+        config={"displayModeBar": False},
+        key=f"{event_id}_price_chart",
+    )
 
-        col_p1, col_p2, col_p3 = st.columns([1, 1, 1])
 
-        with col_p1:
-            st.markdown(
-                f"""
-            <div class="price-box">
-                <span class="price-label">PRICE TO BEAT</span>
-                <span class="price-value">${event_data.price_to_beat:,.2f}</span>
-            </div>
-            """,
-                unsafe_allow_html=True,
-            )
+def render_event_static(event_id: str, event_data: EventData, config: Dict):
+    """Render the static/interactive parts: header, time filters, order book, trading panel.
+    These are rendered once and don't need periodic refresh."""
 
-        with col_p2:
-            st.markdown(
-                f"""
-            <div class="price-box">
-                <span class="price-label">CURRENT PRICE</span>
-                <span class="price-value price-value-green">${event_data.current_price:,.2f}</span>
-                <span class="price-change {price_change_class}">{price_change_symbol} ${abs(event_data.current_price - event_data.price_to_beat):,.2f}</span>
-            </div>
-            """,
-                unsafe_allow_html=True,
-            )
+    # Main container with two columns: left (time filters + order book) and right (trading)
+    col_left, col_trading = st.columns([2, 1])
 
-        with col_p3:
-            # Countdown timer (simulated)
-            minutes = random.randint(0, 59)
-            seconds = random.randint(0, 59)
-            st.markdown(
-                f"""
-            <div class="countdown">
-                <div>
-                    <span class="countdown-value">{minutes:02d}</span>
-                    <span class="countdown-label">MINS</span>
-                </div>
-                <div>
-                    <span class="countdown-value">{seconds:02d}</span>
-                    <span class="countdown-label">SECS</span>
-                </div>
-            </div>
-            """,
-                unsafe_allow_html=True,
-            )
-
-        # Price chart with dual series (price + percentage)
-        chart = create_price_chart(
-            event_data.price_history,
-            height=config.get("ui", {}).get("chart_height", 350),
-            show_probability=st.session_state.get("show_percentage", True),
-            show_price_change=st.session_state.get("show_price_change", True),
-        )
-        st.plotly_chart(
-            chart, use_container_width=True, config={"displayModeBar": False}
-        )
-
+    with col_left:
         # Time filter buttons
         time_cols = st.columns(8)
         time_options = ["Past", "9 AM", "10 AM", "11 AM", "12 PM", "More"]
@@ -1588,6 +1598,112 @@ def render_event_widget(event_id: str, event_data: EventData, config: Dict):
 
 
 # =============================================================================
+# BINANCE PRICE HELPERS
+# =============================================================================
+
+BINANCE_API = "https://api.binance.com/api/v3"
+
+
+@st.cache_data(ttl=2)
+def fetch_binance_price(symbol: str) -> Optional[float]:
+    """Fetch the current price for a Binance symbol (e.g. BTCUSDT)."""
+    try:
+        resp = requests.get(
+            f"{BINANCE_API}/ticker/price",
+            params={"symbol": symbol},
+            timeout=5,
+        )
+        resp.raise_for_status()
+        return float(resp.json()["price"])
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=60)
+def fetch_binance_candle_open(symbol: str, start_time_ms: int) -> Optional[float]:
+    """Fetch the open price of the 1h candle at the given start time."""
+    try:
+        resp = requests.get(
+            f"{BINANCE_API}/klines",
+            params={
+                "symbol": symbol,
+                "interval": "1h",
+                "startTime": start_time_ms,
+                "limit": 1,
+            },
+            timeout=5,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if data:
+            return float(data[0][1])  # Open price
+        return None
+    except Exception:
+        return None
+
+
+def parse_event_start_ms(event_start_time: str) -> Optional[int]:
+    """Parse ISO event_start_time string to epoch milliseconds."""
+    if not event_start_time:
+        return None
+    try:
+        from datetime import timezone
+
+        dt = datetime.fromisoformat(event_start_time.replace("Z", "+00:00"))
+        return int(dt.timestamp() * 1000)
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=30)
+def fetch_binance_klines(symbol: str, start_time_ms: int) -> List[Dict]:
+    """Fetch 1-minute klines from Binance starting at the candle open.
+
+    Returns a list of dicts compatible with price_history:
+        timestamp, price, yes_price, no_price, percent_change, price_to_beat
+    """
+    try:
+        resp = requests.get(
+            f"{BINANCE_API}/klines",
+            params={
+                "symbol": symbol,
+                "interval": "1m",
+                "startTime": start_time_ms,
+                "endTime": start_time_ms + 3_600_000,  # 1 hour window only
+                "limit": 60,
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        raw = resp.json()
+        if not raw:
+            return []
+
+        open_price = float(raw[0][1])  # price_to_beat = first candle open
+        history = []
+        for k in raw:
+            ts = datetime.utcfromtimestamp(k[0] / 1000)  # naive UTC
+            close = float(k[4])
+            pct = ((close - open_price) / open_price * 100) if open_price else 0
+            # Estimate YES probability: price above open → higher YES
+            prob_swing = (close - open_price) / open_price * 20 if open_price else 0
+            yes_p = max(0.01, min(0.99, 0.50 + prob_swing))
+            history.append(
+                {
+                    "timestamp": ts,
+                    "price": close,
+                    "yes_price": yes_p,
+                    "no_price": 1 - yes_p,
+                    "percent_change": pct,
+                    "price_to_beat": open_price,
+                }
+            )
+        return history
+    except Exception:
+        return []
+
+
+# =============================================================================
 # MAIN APPLICATION
 # =============================================================================
 
@@ -1611,18 +1727,18 @@ def fetch_real_prices(client, event_config: Dict) -> Optional[Dict]:
         if not yes_token or not no_token:
             return None
 
-        # Fetch order books
+        # Fetch order books (returns OrderBookSummary dataclass)
         yes_ob = client.get_order_book(yes_token)
         no_ob = client.get_order_book(no_token)
 
         if not yes_ob or not no_ob:
             return None
 
-        # Extract prices
-        yes_bid = float(yes_ob["bids"][0]["price"]) if yes_ob.get("bids") else 0.50
-        yes_ask = float(yes_ob["asks"][0]["price"]) if yes_ob.get("asks") else 0.50
-        no_bid = float(no_ob["bids"][0]["price"]) if no_ob.get("bids") else 0.50
-        no_ask = float(no_ob["asks"][0]["price"]) if no_ob.get("asks") else 0.50
+        # Extract prices from OrderBookSummary/OrderSummary dataclasses
+        yes_bid = float(yes_ob.bids[0].price) if yes_ob.bids else 0.50
+        yes_ask = float(yes_ob.asks[0].price) if yes_ob.asks else 0.50
+        no_bid = float(no_ob.bids[0].price) if no_ob.bids else 0.50
+        no_ask = float(no_ob.asks[0].price) if no_ob.asks else 0.50
 
         return {
             "yes_price": (yes_bid + yes_ask) / 2,
@@ -1693,7 +1809,7 @@ def main():
             "Refresh Rate (seconds)",
             min_value=1,
             max_value=30,
-            value=5,
+            value=1,
             key="refresh_rate",
         )
 
@@ -1735,98 +1851,215 @@ def main():
         else:
             st.markdown("**Status:** 🟢 Connected to Polymarket")
 
-    # Main content area
+    # =================================================================
+    # One-time initialisation (runs once per full page load)
+    # =================================================================
     if demo_mode:
-        st.info(
-            "Running in **DEMO MODE** with simulated data. Switch to **Live** mode in the sidebar to connect to Polymarket."
-        )
-
-        # Load or update demo events
         if not st.session_state.events_data:
             st.session_state.events_data = load_demo_events(config)
-
-        # Update prices for demo
-        for event_id, event_data in st.session_state.events_data.items():
-            demo_config = next(
-                (
-                    e
-                    for e in config.get("demo_events", [])
-                    if e["name"].lower().replace(" ", "_") == event_id
-                ),
-                {},
-            )
-            st.session_state.events_data[event_id] = update_demo_prices(
-                event_data, demo_config
-            )
-
     else:
-        # Live mode - connect to Polymarket
+        # Live mode — connect to Polymarket client once
         if "polymarket_client" not in st.session_state:
             try:
-                settings = Settings()
+                settings_obj = Settings()
                 st.session_state.polymarket_client = PolymarketClient(
-                    settings.polymarket
+                    settings_obj.polymarket
                 )
-                st.success("Connected to Polymarket API")
             except Exception as e:
                 st.error(f"Failed to connect to Polymarket: {e}")
                 demo_mode = True
 
         if not demo_mode and "polymarket_client" in st.session_state:
-            # Load events from config and fetch real prices
             events_config = config.get("events", [])
 
+            # Clean up stale events no longer in config
+            config_ids = {e["name"].lower().replace(" ", "_") for e in events_config}
+            for eid in [k for k in st.session_state.events_data if k not in config_ids]:
+                del st.session_state.events_data[eid]
+
+            # Initialise new events and load Binance history
             for event_config in events_config:
                 event_id = event_config["name"].lower().replace(" ", "_")
+                bsym = event_config.get("binance_symbol", "")
+                est = event_config.get("event_start_time", "")
 
-                if event_id not in st.session_state.events_data:
-                    # Initialize event
-                    st.session_state.events_data[event_id] = EventData(
-                        name=event_config["name"],
-                        description=event_config.get("description", ""),
-                        icon=event_config.get("icon", "generic"),
-                        current_price=0,
-                        price_to_beat=0,
-                    )
+                existing = st.session_state.events_data.get(event_id)
+                if existing and existing.price_to_beat > 0:
+                    continue  # already fully initialised
 
-                # Fetch real prices
-                prices = fetch_real_prices(
-                    st.session_state.polymarket_client, event_config
+                # Candle end = start + 1 h
+                event_end = None
+                if est:
+                    start_ms = parse_event_start_ms(est)
+                    if start_ms:
+                        from datetime import timezone as tz
+
+                        event_end = datetime.fromtimestamp(
+                            start_ms / 1000, tz=tz.utc
+                        ) + timedelta(hours=1)
+
+                st.session_state.events_data[event_id] = EventData(
+                    name=event_config["name"],
+                    description=event_config.get("description", ""),
+                    icon=event_config.get("icon", "generic"),
+                    current_price=0,
+                    price_to_beat=0,
+                    condition_id=event_config.get("condition_id", ""),
+                    yes_token_id=event_config.get("tokens", {}).get("yes", ""),
+                    no_token_id=event_config.get("tokens", {}).get("no", ""),
+                    event_end_utc=event_end,
                 )
 
-                if prices:
-                    event = st.session_state.events_data[event_id]
-                    event.yes_price = prices["yes_price"]
-                    event.no_price = prices["no_price"]
-                    event.last_update = datetime.now()
+                # Pre-load 1-min klines for this candle window
+                if bsym and est:
+                    start_ms = parse_event_start_ms(est)
+                    if start_ms:
+                        kh = fetch_binance_klines(bsym, start_ms)
+                        if kh:
+                            ev = st.session_state.events_data[event_id]
+                            ev.price_history = kh
+                            ev.price_to_beat = kh[0]["price_to_beat"]
+                            ev.current_price = kh[-1]["price"]
+                        else:
+                            op = fetch_binance_candle_open(bsym, start_ms)
+                            if op:
+                                st.session_state.events_data[
+                                    event_id
+                                ].price_to_beat = op
 
-                    # Add to history
-                    event.price_history.append(
-                        {
-                            "timestamp": datetime.now(),
-                            "price": prices["yes_price"],
-                            "yes_price": prices["yes_price"],
-                            "no_price": prices["no_price"],
-                        }
-                    )
+    # =================================================================
+    # Helper: update data for all events (called inside each fragment)
+    # =================================================================
+    def _update_event(target_eid: str):
+        """Fetch fresh prices for a single event and append to history."""
+        if target_eid not in st.session_state.events_data:
+            return
 
-                    if len(event.price_history) > 500:
-                        event.price_history = event.price_history[-500:]
+        if demo_mode:
+            edata = st.session_state.events_data[target_eid]
+            dcfg = next(
+                (
+                    e
+                    for e in config.get("demo_events", [])
+                    if e["name"].lower().replace(" ", "_") == target_eid
+                ),
+                {},
+            )
+            st.session_state.events_data[target_eid] = update_demo_prices(edata, dcfg)
+        else:
+            from datetime import timezone as _tz
 
-    # Render event widgets
-    for event_id, event_data in st.session_state.events_data.items():
-        if st.session_state.get(f"show_{event_id}", True):
-            with st.container():
-                st.markdown('<div class="event-card">', unsafe_allow_html=True)
-                render_event_widget(event_id, event_data, config)
-                st.markdown("</div>", unsafe_allow_html=True)
-            st.markdown("<br>", unsafe_allow_html=True)
+            ecfg = next(
+                (
+                    e
+                    for e in config.get("events", [])
+                    if e["name"].lower().replace(" ", "_") == target_eid
+                ),
+                None,
+            )
+            if not ecfg:
+                return
 
-    # Auto-refresh using Streamlit's native mechanism
-    if auto_refresh:
-        refresh_rate_val = st.session_state.get("refresh_rate", 5)
-        time.sleep(refresh_rate_val)
-        st.rerun()
+            bsym = ecfg.get("binance_symbol", "")
+            ev = st.session_state.events_data[target_eid]
+
+            # Binance live price
+            if bsym:
+                lp = fetch_binance_price(bsym)
+                if lp:
+                    old = ev.current_price
+                    ev.current_price = lp
+                    ev.price_change = ((lp - old) / old * 100) if old > 0 else 0
+
+            # Polymarket probabilities
+            if "polymarket_client" in st.session_state:
+                pr = fetch_real_prices(st.session_state.polymarket_client, ecfg)
+                if pr:
+                    ev.yes_price = pr["yes_price"]
+                    ev.no_price = pr["no_price"]
+                    ev.last_update = datetime.utcnow()
+
+            # Append while candle is open
+            candle_open = (
+                ev.event_end_utc is None or datetime.now(tz=_tz.utc) < ev.event_end_utc
+            )
+            if ev.current_price > 0 and candle_open:
+                pct = (
+                    ((ev.current_price - ev.price_to_beat) / ev.price_to_beat * 100)
+                    if ev.price_to_beat > 0
+                    else 0
+                )
+                ev.price_history.append(
+                    {
+                        "timestamp": datetime.utcnow(),
+                        "price": ev.current_price,
+                        "yes_price": ev.yes_price,
+                        "no_price": ev.no_price,
+                        "percent_change": pct,
+                        "price_to_beat": ev.price_to_beat,
+                    }
+                )
+                if len(ev.price_history) > 500:
+                    ev.price_history = ev.price_history[-500:]
+
+        st.session_state.last_refresh = datetime.now()
+
+    # =================================================================
+    # Show demo banner (static, rendered once)
+    # =================================================================
+    if demo_mode:
+        st.info(
+            "Running in **DEMO MODE** with simulated data. "
+            "Switch to **Live** in the sidebar to connect to Polymarket."
+        )
+
+    # =================================================================
+    # Per-event rendering: static header + dynamic fragment per event
+    # =================================================================
+    refresh_secs = st.session_state.get("refresh_rate", 1)
+
+    for eid, edata in st.session_state.events_data.items():
+        if not st.session_state.get(f"show_{eid}", True):
+            continue
+
+        st.markdown('<div class="event-card">', unsafe_allow_html=True)
+
+        # --- Static: event header (rendered once, no flicker) ---
+        col_header, _col_spacer = st.columns([2, 1])
+        with col_header:
+            st.markdown(
+                f"""
+            <div class="event-header">
+                {get_icon_html(edata.icon)}
+                <div>
+                    <p class="event-title">{edata.name}</p>
+                    <p class="event-subtitle">{edata.description}</p>
+                </div>
+            </div>
+            """,
+                unsafe_allow_html=True,
+            )
+
+        # --- Dynamic fragment: prices, countdown, chart ---
+        # Each event gets its own fragment so only its dynamic area refreshes.
+        # We use a factory to capture eid/config per-event in the closure.
+        def _make_event_fragment(_eid, _config):
+            @st.fragment(run_every=timedelta(seconds=refresh_secs))
+            def _event_frag():
+                _update_event(_eid)
+                _edata = st.session_state.events_data.get(_eid)
+                if _edata:
+                    render_event_dynamic(_eid, _edata, _config)
+
+            return _event_frag
+
+        _make_event_fragment(eid, config)()
+
+        # --- Static: time filters, order book, trading panel ---
+        render_event_static(eid, edata, config)
+
+        st.markdown("</div>", unsafe_allow_html=True)
+        st.markdown("<br>", unsafe_allow_html=True)
 
 
 if __name__ == "__main__":

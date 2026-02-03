@@ -1,112 +1,55 @@
-# =============================================================================
-# POLYMARKET EVENTS CONFIGURATION
-# =============================================================================
-# Configure the events you want to monitor in the dashboard.
-# Each event requires a name and token_id(s) from Polymarket.
-#
-# How to find token_id:
-# 1. Go to the market on Polymarket
-# 2. Open browser dev tools (F12) -> Network tab
-# 3. Look for API calls to get order book
-# 4. The token_id is in the URL or response
-#
-# Or use the Polymarket API to search markets by condition_id
-# =============================================================================
-
 events:
-  # Example: Bitcoin Up/Down market
-  - name: "Bitcoin Up or Down"
-    description: "Will BTC price go up or down in the next hour?"
-    icon: "btc"  # btc, eth, sol, generic
-    condition_id: ""  # Fill with actual condition_id from Polymarket
-    tokens:
-      yes: ""  # Token ID for YES outcome
-      no: ""   # Token ID for NO outcome
-    # Optional: market-specific settings
-    settings:
-      refresh_interval: 5  # seconds
-      price_to_beat: null  # optional reference price
-
-  # Example: Ethereum market
-  - name: "ETH Price Target"
-    description: "Will ETH reach $4000 by end of month?"
-    icon: "eth"
-    condition_id: ""
-    tokens:
-      yes: ""
-      no: ""
-    settings:
-      refresh_interval: 10
-
-  # Example: SOL market
-  - name: "SOL Daily Move"
-    description: "Will SOL move 5% today?"
-    icon: "sol"
-    condition_id: ""
-    tokens:
-      yes: ""
-      no: ""
-    settings:
-      refresh_interval: 5
-
-# =============================================================================
-# DEMO MODE
-# =============================================================================
-# When demo_mode is true, the app will use simulated data instead of
-# connecting to Polymarket. Useful for testing the interface.
-# =============================================================================
-
-demo_mode: true
-
-# Demo events with simulated data
+- name: Bitcoin Up or Down - February 3, 5PM ET
+  description: This market will resolve to "Up" if the close price is greater than
+    or equal to the open price for the BTC/USDT 1 hour c
+  icon: btc
+  condition_id: '0xfefa2990013bdc6fa0a6fe8f1240a2b3013f230842a8941c28e304ba8cc5bea1'
+  tokens:
+    'yes': '37750386165320159752850489635272534653684424204036218424881723669911870612939'
+    'no': '107144644506466515303082569597548357498008984046253974415799618471406048070015'
+  resolution_source: https://www.binance.com/en/trade/BTC_USDT
+  event_start_time: '2026-02-03T22:00:00Z'
+  binance_symbol: BTCUSDT
+  settings:
+    refresh_interval: 5
+    price_to_beat: null
+demo_mode: false
 demo_events:
-  - name: "Bitcoin Up or Down"
-    description: "January 26, 9-10AM ET"
-    icon: "btc"
-    initial_price: 88222.57
-    price_to_beat: 87960.01
-    yes_price: 0.52
-    no_price: 0.48
-    volatility: 0.02  # For price simulation
-
-  - name: "ETH Above $3500"
-    description: "By January 31, 2026"
-    icon: "eth"
-    initial_price: 3420.50
-    price_to_beat: 3500.00
-    yes_price: 0.45
-    no_price: 0.55
-    volatility: 0.015
-
-  - name: "SOL Daily +5%"
-    description: "January 26, 2026"
-    icon: "sol"
-    initial_price: 245.30
-    price_to_beat: 257.57  # +5%
-    yes_price: 0.38
-    no_price: 0.62
-    volatility: 0.025
-
-# =============================================================================
-# TRADING DEFAULTS
-# =============================================================================
-
+- name: Bitcoin Up or Down
+  description: January 26, 9-10AM ET
+  icon: btc
+  initial_price: 88222.57
+  price_to_beat: 87960.01
+  yes_price: 0.52
+  no_price: 0.48
+  volatility: 0.02
+- name: ETH Above $3500
+  description: By January 31, 2026
+  icon: eth
+  initial_price: 3420.5
+  price_to_beat: 3500.0
+  yes_price: 0.45
+  no_price: 0.55
+  volatility: 0.015
+- name: SOL Daily +5%
+  description: January 26, 2026
+  icon: sol
+  initial_price: 245.3
+  price_to_beat: 257.57
+  yes_price: 0.38
+  no_price: 0.62
+  volatility: 0.025
 trading:
   default_shares: 10
   min_shares: 1
   max_shares: 10000
-  default_limit_price: 0.50
+  default_limit_price: 0.5
   enable_market_orders: true
   enable_limit_orders: true
-
-# =============================================================================
-# UI SETTINGS
-# =============================================================================
-
 ui:
-  theme: "dark"  # dark or light
+  theme: dark
   chart_height: 350
-  refresh_rate_ms: 1000  # UI refresh rate
-  max_price_history: 500  # Max data points to display
+  refresh_rate_ms: 1000
+  max_price_history: 500
   show_countdown: true
   show_volume: true
