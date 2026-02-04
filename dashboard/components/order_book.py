@@ -49,7 +49,7 @@ def create_order_book_content(order_book_dict):
                     html.Td(f"{lvl['shares']:,.2f}"),
                     html.Td(f"${lvl['total']:,.2f}"),
                     html.Td(
-                        style={"position": "relative", "width": "60px"},
+                        style={"position": "relative", "width": "50%"},
                         children=html.Div(
                             className="order-book-depth-bar order-book-depth-ask",
                             style={"width": f"{depth_pct}%"},
@@ -76,7 +76,7 @@ def create_order_book_content(order_book_dict):
                     html.Td(f"{lvl['shares']:,.2f}"),
                     html.Td(f"${lvl['total']:,.2f}"),
                     html.Td(
-                        style={"position": "relative", "width": "60px"},
+                        style={"position": "relative", "width": "50%"},
                         children=html.Div(
                             className="order-book-depth-bar order-book-depth-bid",
                             style={"width": f"{depth_pct}%"},
@@ -107,7 +107,7 @@ def create_order_book_content(order_book_dict):
                         html.Th("Price"),
                         html.Th("Shares"),
                         html.Th("Total"),
-                        html.Th("Depth"),
+                        html.Th("Depth", style={"width": "50%"}),
                     ])
                 ),
                 html.Tbody(ask_rows if ask_rows else [
@@ -147,7 +147,7 @@ def create_order_book_content(order_book_dict):
                         html.Th("Price"),
                         html.Th("Shares"),
                         html.Th("Total"),
-                        html.Th("Depth"),
+                        html.Th("Depth", style={"width": "50%"}),
                     ])
                 ),
                 html.Tbody(bid_rows if bid_rows else [

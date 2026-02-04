@@ -109,53 +109,110 @@ def create_event_card(event_id, event_data):
 
 
 def _create_trading_panel(event_id, event_data):
-    """Create the trading panel with stable inputs."""
+    """Create the trading panel with Polymarket-style UI."""
     yes_price = event_data.get("yes_price", 0.50)
+    no_price = event_data.get("no_price", 0.50)
+
+    input_style = {
+        "width": "100%",
+        "padding": "14px 12px",
+        "background": "#0d1117",
+        "border": "1px solid #30363d",
+        "borderRadius": "8px",
+        "color": "#e6edf3",
+        "fontSize": "16px",
+        "height": "48px",
+        "lineHeight": "1.2",
+    }
 
     return html.Div(
         className="trading-panel",
         children=[
-            # Buy/Sell radio
-            dcc.RadioItems(
-                id={"type": "trade-type-radio", "index": event_id},
-                options=[
-                    {"label": "Buy", "value": "Buy"},
-                    {"label": "Sell", "value": "Sell"},
-                ],
-                value="Buy",
-                inline=True,
-                style={"marginBottom": "12px"},
-                inputStyle={"marginRight": "4px"},
-                labelStyle={
-                    "background": "#21262d",
-                    "padding": "8px 16px",
-                    "borderRadius": "8px",
-                    "marginRight": "8px",
-                    "color": "#e6edf3",
-                    "cursor": "pointer",
-                },
+            # Local stores for trade side and selected outcome
+            dcc.Store(
+                id={"type": "trade-side-store", "index": event_id},
+                data="Buy",
             ),
-            # Outcome buttons
+            dcc.Store(
+                id={"type": "selected-outcome-store", "index": event_id},
+                data="up",
+            ),
+            # Header: Buy/Sell tabs + Order type dropdown
+            html.Div(
+                className="trading-panel-header",
+                children=[
+                    html.Div(
+                        className="buy-sell-tabs",
+                        children=[
+                            html.Button(
+                                "Buy",
+                                id={"type": "buy-tab", "index": event_id},
+                                className="buy-sell-tab buy-tab-active",
+                                n_clicks=0,
+                            ),
+                            html.Button(
+                                "Sell",
+                                id={"type": "sell-tab", "index": event_id},
+                                className="buy-sell-tab",
+                                n_clicks=0,
+                            ),
+                        ],
+                    ),
+                    dcc.Dropdown(
+                        id={"type": "order-type-dropdown", "index": event_id},
+                        options=[
+                            {"label": "Market", "value": "market"},
+                            {"label": "Limit", "value": "limit"},
+                        ],
+                        value="limit",
+                        clearable=False,
+                        searchable=False,
+                        className="order-type-dropdown",
+                        style={"width": "120px"},
+                    ),
+                ],
+            ),
+            # Outcome buttons: Up / Down
             html.Div(
                 className="outcome-buttons",
                 children=[
                     html.Button(
                         id={"type": "outcome-up-btn", "index": event_id},
-                        className="outcome-btn outcome-up",
-                        children=f"\u25b2 Up {yes_price * 100:.0f}c",
+                        className="outcome-btn outcome-up outcome-btn-active",
+                        children=[
+                            html.Span("Up ", style={"marginRight": "4px"}),
+                            html.Span(
+                                f"{yes_price * 100:.0f}\u00a2",
+                                style={"fontWeight": "700"},
+                            ),
+                        ],
+                        n_clicks=0,
                     ),
                     html.Button(
                         id={"type": "outcome-down-btn", "index": event_id},
                         className="outcome-btn outcome-down",
-                        children=f"\u25bc Down {(1 - yes_price) * 100:.0f}c",
+                        children=[
+                            html.Span("Down ", style={"marginRight": "4px"}),
+                            html.Span(
+                                f"{no_price * 100:.0f}\u00a2",
+                                style={"fontWeight": "700"},
+                            ),
+                        ],
+                        n_clicks=0,
                     ),
                 ],
             ),
-            # Limit price input
+            # Limit price input (hidden when order type = market)
             html.Div(
+                id={"type": "limit-price-section", "index": event_id},
                 className="input-group",
                 children=[
-                    html.Label("Limit Price", className="input-label"),
+                    html.Div(
+                        className="input-label-row",
+                        children=[
+                            html.Label("Limit Price", className="input-label"),
+                        ],
+                    ),
                     dcc.Input(
                         id={"type": "limit-price-input", "index": event_id},
                         type="number",
@@ -163,15 +220,7 @@ def _create_trading_panel(event_id, event_data):
                         max=0.99,
                         step=0.01,
                         value=round(yes_price, 2),
-                        style={
-                            "width": "100%",
-                            "padding": "8px",
-                            "background": "#0d1117",
-                            "border": "1px solid #30363d",
-                            "borderRadius": "8px",
-                            "color": "#e6edf3",
-                            "fontSize": "16px",
-                        },
+                        style=input_style,
                     ),
                 ],
             ),
@@ -179,7 +228,12 @@ def _create_trading_panel(event_id, event_data):
             html.Div(
                 className="input-group",
                 children=[
-                    html.Label("Shares", className="input-label"),
+                    html.Div(
+                        className="input-label-row",
+                        children=[
+                            html.Label("Shares", className="input-label"),
+                        ],
+                    ),
                     dcc.Input(
                         id={"type": "shares-input", "index": event_id},
                         type="number",
@@ -187,15 +241,7 @@ def _create_trading_panel(event_id, event_data):
                         max=10000,
                         step=1,
                         value=0,
-                        style={
-                            "width": "100%",
-                            "padding": "8px",
-                            "background": "#0d1117",
-                            "border": "1px solid #30363d",
-                            "borderRadius": "8px",
-                            "color": "#e6edf3",
-                            "fontSize": "16px",
-                        },
+                        style=input_style,
                     ),
                 ],
             ),

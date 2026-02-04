@@ -125,24 +125,61 @@ body {
     border: 1px solid #30363d;
 }
 
-.trading-tabs {
+/* Trading panel header: Buy/Sell tabs + order type dropdown */
+.trading-panel-header {
     display: flex;
-    gap: 8px;
+    justify-content: space-between;
+    align-items: center;
     margin-bottom: 16px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid #21262d;
 }
 
-.tab-button {
-    flex: 1;
-    padding: 8px 16px;
+.buy-sell-tabs {
+    display: flex;
+    gap: 4px;
+}
+
+.buy-sell-tab {
+    background: none;
     border: none;
-    border-radius: 8px;
-    font-weight: 600;
+    padding: 6px 16px;
+    font-size: 16px;
+    font-weight: 400;
+    color: #8b949e;
     cursor: pointer;
-    transition: all 0.2s;
+    border-bottom: 2px solid transparent;
+    transition: all 0.15s;
 }
 
-.tab-buy { background: #238636; color: white; }
-.tab-sell { background: #30363d; color: #8b949e; }
+.buy-tab-active {
+    color: #e6edf3;
+    font-weight: 600;
+    border-bottom-color: #e6edf3;
+}
+
+.sell-tab-active {
+    color: #e6edf3;
+    font-weight: 600;
+    border-bottom-color: #e6edf3;
+}
+
+/* Order type dropdown dark theme */
+.order-type-dropdown,
+.order-type-dropdown * {
+    background-color: #161b22 !important;
+    color: #fff !important;
+    border-color: #30363d !important;
+}
+
+.order-type-dropdown svg,
+.order-type-dropdown svg * {
+    fill: #8b949e !important;
+}
+
+.order-type-dropdown [class*="option"]:hover {
+    background-color: #21262d !important;
+}
 
 /* Outcome buttons */
 .outcome-buttons {
@@ -154,22 +191,53 @@ body {
 .outcome-btn {
     flex: 1;
     padding: 12px;
-    border-radius: 8px;
-    font-weight: 600;
+    border-radius: 10px;
+    font-size: 15px;
+    font-weight: 500;
     text-align: center;
     cursor: pointer;
     transition: all 0.2s;
+    border: 2px solid transparent;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 
 .outcome-up {
     background: #238636;
     color: white;
+    border-color: #238636;
+}
+
+.outcome-up.outcome-btn-active {
+    background: #2ea043;
+    color: white;
+    border-color: #2ea043;
+    box-shadow: 0 0 0 2px rgba(46, 160, 67, 0.3);
 }
 
 .outcome-down {
-    background: #30363d;
+    background: #21262d;
     color: #8b949e;
-    border: 1px solid #484f58;
+    border-color: #30363d;
+}
+
+.outcome-down.outcome-btn-active {
+    background: #da3633;
+    color: white;
+    border-color: #da3633;
+    box-shadow: 0 0 0 2px rgba(218, 54, 51, 0.3);
+}
+
+.outcome-btn:hover {
+    filter: brightness(1.1);
+}
+
+.input-label-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 6px;
 }
 
 /* Input fields */
