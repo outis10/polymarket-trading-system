@@ -1,14 +1,14 @@
 events:
-- name: Bitcoin Up or Down - February 5, 6PM ET
+- name: Bitcoin Up or Down - February 6, 1AM ET
   description: This market will resolve to "Up" if the close price is greater than
     or equal to the open price for the BTC/USDT 1 hour c
   icon: btc
-  condition_id: '0x18342d07dfdf25b1b805cb4c1350eda0e63c607ef134ea8e6e5dd10bdd4b0b68'
+  condition_id: '0xf1cc35570bc565769fe4e689fb48a6c7ccf739d1ebb07d9818a4cf68bb910ef7'
   tokens:
-    'yes': '82202306349417052517720627580816814354685199405306835506588489275624299051794'
-    'no': '17962952517862242524593966578372123507044205587829760295837955370726128640281'
+    'yes': '19930469007790619944088420801543736718273156885425105420503337864437619764905'
+    'no': '60918447899702501454064599723801791983411080241364901218725819480203785608634'
   resolution_source: https://www.binance.com/en/trade/BTC_USDT
-  event_start_time: '2026-02-05T23:00:00Z'
+  event_start_time: '2026-02-06T06:00:00Z'
   binance_symbol: BTCUSDT
   settings:
     refresh_interval: 5

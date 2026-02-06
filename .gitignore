@@ -26,6 +26,11 @@ wheels/
 # Environment
 .env
 .venv
+.env.local
+.env.*.local
+.env.development
+.env.test
+.env.production
 
 # IDE
 .vscode/
@@ -47,6 +52,15 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+# Node / Frontend (Vite/React)
+node_modules/
+.vite/
+frontend/dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
 
 # Project specific
 data/
