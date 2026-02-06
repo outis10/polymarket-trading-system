@@ -1,0 +1,164 @@
+"""Binance service: REST helpers + WebSocket stream for real-time trades/klines."""
+
+import asyncio
+import json
+import logging
+from datetime import datetime, timezone
+from typing import Optional
+
+import websockets
+from cachetools import TTLCache
+
+from ..models.schemas import PriceHistoryPoint
+
+logger = logging.getLogger(__name__)
+
+BINANCE_API = "https://api.binance.com/api/v3"
+BINANCE_WS = "wss://stream.binance.com:9443/ws"
+
+_price_cache: TTLCache = TTLCache(maxsize=64, ttl=2)
+_candle_open_cache: TTLCache = TTLCache(maxsize=64, ttl=60)
+_klines_cache: TTLCache = TTLCache(maxsize=64, ttl=30)
+
+
+# --- REST helpers (sync, called during init) ---
+
+def fetch_binance_price(symbol: str) -> Optional[float]:
+    """Fetch current price for a Binance symbol."""
+    import requests
+
+    cache_key = symbol
+    if cache_key in _price_cache:
+        return _price_cache[cache_key]
+    try:
+        resp = requests.get(f"{BINANCE_API}/ticker/price", params={"symbol": symbol}, timeout=5)
+        resp.raise_for_status()
+        price = float(resp.json()["price"])
+        _price_cache[cache_key] = price
+        return price
+    except Exception:
+        return None
+
+
+def fetch_binance_candle_open(symbol: str, start_time_ms: int) -> Optional[float]:
+    """Fetch the open price of the 1h candle at the given start time."""
+    import requests
+
+    cache_key = (symbol, start_time_ms)
+    if cache_key in _candle_open_cache:
+        return _candle_open_cache[cache_key]
+    try:
+        resp = requests.get(
+            f"{BINANCE_API}/klines",
+            params={"symbol": symbol, "interval": "1h", "startTime": start_time_ms, "limit": 1},
+            timeout=5,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if data:
+            price = float(data[0][1])
+            _candle_open_cache[cache_key] = price
+            return price
+        return None
+    except Exception:
+        return None
+
+
+def parse_event_start_ms(event_start_time: str) -> Optional[int]:
+    """Parse ISO event_start_time string to epoch milliseconds."""
+    if not event_start_time:
+        return None
+    try:
+        dt = datetime.fromisoformat(event_start_time.replace("Z", "+00:00"))
+        return int(dt.timestamp() * 1000)
+    except Exception:
+        return None
+
+
+def fetch_binance_klines(symbol: str, start_time_ms: int) -> list[dict]:
+    """Fetch 1-minute klines from Binance starting at the candle open."""
+    import requests
+
+    cache_key = (symbol, start_time_ms)
+    if cache_key in _klines_cache:
+        return _klines_cache[cache_key]
+    try:
+        resp = requests.get(
+            f"{BINANCE_API}/klines",
+            params={
+                "symbol": symbol,
+                "interval": "1m",
+                "startTime": start_time_ms,
+                "endTime": start_time_ms + 3_600_000,
+                "limit": 60,
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        raw = resp.json()
+        if not raw:
+            return []
+
+        open_price = float(raw[0][1])
+        history = []
+        for k in raw:
+            ts = datetime.fromtimestamp(k[0] / 1000, tz=timezone.utc)
+            close = float(k[4])
+            pct = ((close - open_price) / open_price * 100) if open_price else 0
+            prob_swing = (close - open_price) / open_price * 20 if open_price else 0
+            yes_p = max(0.01, min(0.99, 0.50 + prob_swing))
+            history.append({
+                "timestamp": ts.isoformat(),
+                "price": close,
+                "yes_price": yes_p,
+                "no_price": 1 - yes_p,
+                "percent_change": pct,
+                "price_to_beat": open_price,
+            })
+        _klines_cache[cache_key] = history
+        return history
+    except Exception:
+        return []
+
+
+# --- WebSocket stream ---
+
+class BinanceStreamer:
+    """Connects to Binance WebSocket for real-time trade prices."""
+
+    def __init__(self, symbol: str, on_price: asyncio.coroutines = None):
+        self.symbol = symbol.lower()
+        self.on_price = on_price
+        self._ws = None
+        self._running = False
+
+    async def start(self):
+        """Connect and stream trade events."""
+        url = f"{BINANCE_WS}/{self.symbol}@trade"
+        self._running = True
+        while self._running:
+            try:
+                async with websockets.connect(url) as ws:
+                    self._ws = ws
+                    logger.info("Binance WS connected: %s", url)
+                    async for raw in ws:
+                        if not self._running:
+                            break
+                        try:
+                            msg = json.loads(raw)
+                            price = float(msg.get("p", 0))
+                            if price > 0 and self.on_price:
+                                await self.on_price(self.symbol.upper(), price)
+                        except Exception:
+                            pass
+            except websockets.ConnectionClosed:
+                logger.warning("Binance WS disconnected, reconnecting...")
+                await asyncio.sleep(2)
+            except Exception as e:
+                logger.error("Binance WS error: %s", e)
+                await asyncio.sleep(5)
+
+    async def stop(self):
+        self._running = False
+        if self._ws:
+            await self._ws.close()

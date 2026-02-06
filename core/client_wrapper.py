@@ -1,6 +1,6 @@
 """Wrapper for py-clob-client with extended functionality"""
 from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import OrderArgs, OrderType
+from py_clob_client.clob_types import OrderArgs
 from typing import Optional, List, Dict, Any
 import logging
 from config.settings import PolymarketConfig
@@ -117,11 +117,11 @@ class PolymarketClient:
     def get_market_price(self, token_id: str, side: str = 'buy') -> Optional[float]:
         """
         Get current market price for a token
-        
+
         Args:
             token_id: The token ID
             side: 'buy' for best bid, 'sell' for best ask
-        
+
         Returns:
             Current price or None if unavailable
         """
@@ -129,12 +129,16 @@ class PolymarketClient:
             orderbook = self.get_order_book(token_id)
             if not orderbook:
                 return None
-            
-            if side == 'buy' and orderbook.get('bids'):
-                return float(orderbook['bids'][0]['price'])
-            elif side == 'sell' and orderbook.get('asks'):
-                return float(orderbook['asks'][0]['price'])
-            
+
+            # OrderBookSummary has .bids and .asks as attributes, not dict keys
+            bids = orderbook.bids or []
+            asks = orderbook.asks or []
+
+            if side == 'buy' and bids:
+                return float(bids[0].price)
+            elif side == 'sell' and asks:
+                return float(asks[0].price)
+
             return None
         except Exception as e:
             self.logger.error(f"Error getting market price: {e}")
@@ -143,10 +147,10 @@ class PolymarketClient:
     def get_mid_price(self, token_id: str) -> Optional[float]:
         """
         Get mid price (average of best bid and best ask)
-        
+
         Args:
             token_id: The token ID
-        
+
         Returns:
             Mid price or None if unavailable
         """
@@ -154,16 +158,17 @@ class PolymarketClient:
             orderbook = self.get_order_book(token_id)
             if not orderbook:
                 return None
-            
-            bids = orderbook.get('bids', [])
-            asks = orderbook.get('asks', [])
-            
+
+            # OrderBookSummary has .bids and .asks as attributes, not dict keys
+            bids = orderbook.bids or []
+            asks = orderbook.asks or []
+
             if not bids or not asks:
                 return None
-            
-            best_bid = float(bids[0]['price'])
-            best_ask = float(asks[0]['price'])
-            
+
+            best_bid = float(bids[0].price)
+            best_ask = float(asks[0].price)
+
             return (best_bid + best_ask) / 2
         except Exception as e:
             self.logger.error(f"Error calculating mid price: {e}")
@@ -193,19 +198,33 @@ class PolymarketClient:
             Order result dictionary or None if failed
         """
         try:
+            # Get tick size for proper price rounding
+            tick_size = 0.01  # default
+            try:
+                tick_size = float(self.client.get_tick_size(token_id))
+                self.logger.info(f"Tick size for token: {tick_size}")
+            except Exception as e:
+                self.logger.warning(f"Could not get tick size: {e}")
+
+            # Round price to tick size
+            rounded_price = round(price / tick_size) * tick_size
+            rounded_price = round(rounded_price, 2)
+
+            self.logger.info(f"Placing order: {side} {size} @ {rounded_price} (original: {price}) for token {token_id[:8]}...")
+
+            # Create order with all required parameters
             order_args = OrderArgs(
                 token_id=token_id,
-                price=price,
+                price=rounded_price,
                 size=size,
                 side=side.upper(),
-                order_type=OrderType[order_type.upper()]
             )
-            
-            result = self.client.create_order(order_args)
-            self.logger.info(
-                f"Order placed: {side} {size} @ {price} for token {token_id[:8]}..."
-            )
+
+            # Use create_and_post_order
+            result = self.client.create_and_post_order(order_args)
+            self.logger.info(f"Order result: {result}")
             return result
+
         except Exception as e:
             self.logger.error(f"Error placing order: {e}")
             return None
@@ -315,14 +334,26 @@ class PolymarketClient:
             Balance allowance or None if error
         """
         try:
-            # La nueva API usa get_balance_allowance
             allowance = self.client.get_balance_allowance()
-            if allowance:
+            self.logger.info(f"Balance allowance raw: {allowance} (type: {type(allowance)})")
+
+            if allowance is None:
+                return None
+
+            # Handle different return types
+            if isinstance(allowance, (int, float)):
                 return float(allowance)
-            return None
+            elif isinstance(allowance, str):
+                return float(allowance)
+            elif hasattr(allowance, 'allowance'):
+                return float(allowance.allowance)
+            elif hasattr(allowance, 'balance'):
+                return float(allowance.balance)
+            else:
+                # Try to convert directly
+                return float(allowance)
         except Exception as e:
             self.logger.error(f"Error getting balance: {e}")
-            # Si falla, retornar None en lugar de error
             return None
     
     def get_trades(self, **kwargs) -> List[Dict[str, Any]]:
