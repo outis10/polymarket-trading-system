@@ -52,6 +52,7 @@ class EventData(BaseModel):
 
 # --- WebSocket message envelopes ---
 
+
 class PriceUpdatePayload(BaseModel):
     current_price: float = 0.0
     price_change: float = 0.0
@@ -66,12 +67,15 @@ class OrderBookUpdatePayload(BaseModel):
 
 
 class WSMessage(BaseModel):
-    type: str  # "price_update" | "orderbook_update" | "full_snapshot" | "settings_update"
+    type: (
+        str  # "price_update" | "orderbook_update" | "full_snapshot" | "settings_update"
+    )
     event_id: str = ""
     data: dict = {}
 
 
 # --- REST request/response ---
+
 
 class OrderRequest(BaseModel):
     event_id: str
@@ -91,4 +95,8 @@ class OrderResponse(BaseModel):
 class SettingsData(BaseModel):
     mode: str = "demo"
     refresh_rate: int = 5
-    chart_options: list[str] = ["show_probability", "show_price_change", "show_order_book"]
+    chart_options: list[str] = [
+        "show_chart",
+        "show_probability",
+        "show_price_change",
+    ]

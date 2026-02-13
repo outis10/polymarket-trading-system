@@ -251,11 +251,82 @@ print(f"CTF Allowance: {allowances['ctf']}")
 
 ## 📖 Uso Básico
 
-### Ejecutar el bot
+### Opción A: Backend + Frontend (recomendado)
+
+Esta es la forma actual de usar la interfaz web en tiempo real.
+
+#### 1) Levantar backend (FastAPI)
+
+En una terminal, desde la raíz del proyecto:
 
 ```bash
+source venv/bin/activate
+pip install -r backend/requirements.txt
+python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+Backend disponible en:
+- API docs: `http://localhost:8000/docs`
+- WebSocket: `ws://localhost:8000/ws/events`
+
+#### 2) Levantar frontend (React + Vite)
+
+En otra terminal:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Frontend disponible en:
+- UI: `http://localhost:5173`
+
+Nota: `frontend/vite.config.ts` ya incluye proxy de `/api` y `/ws` hacia `localhost:8000`.
+
+#### 3) Modo demo vs live
+
+El modo se controla desde WebSocket (`switch_mode`) y por configuración de eventos:
+- Demo: usa datos simulados (`demo_events` en `config/events.yaml`)
+- Live: usa Binance + Polymarket (`events` en `config/events.yaml`)
+
+Para live trading, asegúrate de tener `.env` con credenciales válidas.
+
+### Opción B: Bot CLI (flujo clásico)
+
+```bash
+source venv/bin/activate
 python main.py
 ```
+
+### Exportar histórico de trades (CSV/JSON)
+
+Usa el script `export_trades.py` para guardar tus transacciones y analizarlas después.
+
+```bash
+source venv/bin/activate
+python export_trades.py --output trades_export.csv
+```
+
+Ejemplos útiles:
+
+```bash
+# Exportar a JSON
+python export_trades.py --format json --output trades_export.json --limit 500
+
+# Muestreo continuo cada 1 segundo por 10 minutos (append)
+python export_trades.py --poll-seconds 1 --duration-seconds 600 --append --output trades_stream.csv
+
+# Filtrar por side/token/mercado
+python export_trades.py --side BUY --asset-id <TOKEN_ID> --market "<MARKET_ID_O_TEXTO>" --output buy_trades.csv
+```
+
+Parámetros principales:
+- `--poll-seconds`: intervalo de captura en segundos (ej: `1`)
+- `--duration-seconds`: duración total del muestreo (`0` = infinito)
+- `--append`: agrega nuevos registros al archivo en vez de sobrescribir
+- `--limit`: máximo de trades por consulta
+- `--before` / `--after`: cursores/filtros temporales si el API los soporta
 
 ### Ejemplo de uso programático
 

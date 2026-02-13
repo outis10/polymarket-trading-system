@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from ..config import load_events_config
+from ..ws.manager import manager
 from .binance import (
     BinanceStreamer,
     fetch_binance_candle_open,
@@ -15,7 +16,6 @@ from .binance import (
 )
 from .demo import load_demo_events, update_demo_prices
 from .polymarket import PolymarketStreamer, fetch_real_prices, get_client
-from ..ws.manager import manager
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ class EventManager:
         self.settings: dict = {
             "mode": "demo",
             "refresh_rate": 5,
-            "chart_options": ["show_probability", "show_price_change", "show_order_book"],
+            "chart_options": ["show_chart", "show_probability", "show_price_change"],
         }
         self._config: dict = {}
         self._task: Optional[asyncio.Task] = None
@@ -93,7 +93,9 @@ class EventManager:
             self.events = self._init_live_events()
 
         await self._broadcast_full_snapshot()
-        await manager.broadcast({"type": "settings_update", "event_id": "", "data": self.settings})
+        await manager.broadcast(
+            {"type": "settings_update", "event_id": "", "data": self.settings}
+        )
 
     async def _update_loop(self):
         """Periodic update loop."""
@@ -119,7 +121,11 @@ class EventManager:
         demo_configs = self._config.get("demo_events", [])
         for event_id, event_dict in self.events.items():
             dcfg = next(
-                (e for e in demo_configs if e["name"].lower().replace(" ", "_") == event_id),
+                (
+                    e
+                    for e in demo_configs
+                    if e["name"].lower().replace(" ", "_") == event_id
+                ),
                 {},
             )
             update_demo_prices(event_dict, dcfg)
@@ -137,7 +143,9 @@ class EventManager:
             if est:
                 start_ms = parse_event_start_ms(est)
                 if start_ms:
-                    event_end_dt = datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc) + timedelta(hours=1)
+                    event_end_dt = datetime.fromtimestamp(
+                        start_ms / 1000, tz=timezone.utc
+                    ) + timedelta(hours=1)
                     event_end = event_end_dt.isoformat()
 
             event_dict = {
@@ -183,7 +191,11 @@ class EventManager:
 
         for event_id, event_dict in self.events.items():
             ecfg = next(
-                (e for e in events_config if e["name"].lower().replace(" ", "_") == event_id),
+                (
+                    e
+                    for e in events_config
+                    if e["name"].lower().replace(" ", "_") == event_id
+                ),
                 None,
             )
             if not ecfg:
@@ -195,7 +207,9 @@ class EventManager:
                 if lp:
                     old = event_dict.get("current_price", 0)
                     event_dict["current_price"] = lp
-                    event_dict["price_change"] = ((lp - old) / old * 100) if old > 0 else 0
+                    event_dict["price_change"] = (
+                        ((lp - old) / old * 100) if old > 0 else 0
+                    )
 
             polymarket_updated = False
             if client:
@@ -232,16 +246,22 @@ class EventManager:
             current_price = event_dict.get("current_price", 0)
             price_to_beat = event_dict.get("price_to_beat", 0)
             if current_price > 0 and candle_open:
-                pct = ((current_price - price_to_beat) / price_to_beat * 100) if price_to_beat > 0 else 0
+                pct = (
+                    ((current_price - price_to_beat) / price_to_beat * 100)
+                    if price_to_beat > 0
+                    else 0
+                )
                 history = event_dict.get("price_history", [])
-                history.append({
-                    "timestamp": datetime.now(tz=timezone.utc).isoformat(),
-                    "price": current_price,
-                    "yes_price": event_dict.get("yes_price", 0.50),
-                    "no_price": event_dict.get("no_price", 0.50),
-                    "percent_change": pct,
-                    "price_to_beat": price_to_beat,
-                })
+                history.append(
+                    {
+                        "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+                        "price": current_price,
+                        "yes_price": event_dict.get("yes_price", 0.50),
+                        "no_price": event_dict.get("no_price", 0.50),
+                        "percent_change": pct,
+                        "price_to_beat": price_to_beat,
+                    }
+                )
                 if len(history) > 500:
                     history = history[-500:]
                 event_dict["price_history"] = history
