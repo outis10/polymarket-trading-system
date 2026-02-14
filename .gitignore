@@ -66,8 +66,15 @@ pnpm-debug.log*
 data/
 *.db
 *.sqlite
+backtest_output/
+*.xlsx
+sum_range_up_down_probabilities*.csv
 
 # Credential generation scripts (keep the template, ignore customized versions)
 generate_credentials_manual.py
 *_credentials*.py
 !generate_credentials.py  # Keep the official template
+
+# Guardrails for accidental frontend artifacts
+frontend/node_modules/.package-lock.json
+frontend/node_modules/.vite/
