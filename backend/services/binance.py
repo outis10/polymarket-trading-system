@@ -16,12 +16,13 @@ logger = logging.getLogger(__name__)
 BINANCE_API = "https://api.binance.com/api/v3"
 BINANCE_WS = "wss://stream.binance.com:9443/ws"
 
-_price_cache: TTLCache = TTLCache(maxsize=64, ttl=2)
+_price_cache: TTLCache = TTLCache(maxsize=64, ttl=0.5)
 _candle_open_cache: TTLCache = TTLCache(maxsize=64, ttl=60)
 _klines_cache: TTLCache = TTLCache(maxsize=64, ttl=30)
 
 
 # --- REST helpers (sync, called during init) ---
+
 
 def fetch_binance_price(symbol: str) -> Optional[float]:
     """Fetch current price for a Binance symbol."""
@@ -31,13 +32,64 @@ def fetch_binance_price(symbol: str) -> Optional[float]:
     if cache_key in _price_cache:
         return _price_cache[cache_key]
     try:
-        resp = requests.get(f"{BINANCE_API}/ticker/price", params={"symbol": symbol}, timeout=5)
+        resp = requests.get(
+            f"{BINANCE_API}/ticker/price", params={"symbol": symbol}, timeout=5
+        )
         resp.raise_for_status()
         price = float(resp.json()["price"])
         _price_cache[cache_key] = price
         return price
     except Exception:
         return None
+
+
+def fetch_binance_prices(symbols: list[str]) -> dict[str, float]:
+    """Fetch prices for multiple Binance symbols with a single REST call."""
+    import requests
+
+    unique_symbols = sorted({s for s in symbols if s})
+    if not unique_symbols:
+        return {}
+
+    # If all requested symbols are still fresh in cache, return immediately.
+    if all(sym in _price_cache for sym in unique_symbols):
+        return {sym: _price_cache[sym] for sym in unique_symbols}
+
+    try:
+        resp = requests.get(f"{BINANCE_API}/ticker/price", timeout=5)
+        resp.raise_for_status()
+        rows = resp.json()
+        if not isinstance(rows, list):
+            return {}
+
+        all_prices: dict[str, float] = {}
+        for row in rows:
+            sym = row.get("symbol")
+            if not sym:
+                continue
+            try:
+                price = float(row["price"])
+            except (KeyError, ValueError, TypeError):
+                continue
+            all_prices[sym] = price
+
+        result: dict[str, float] = {}
+        for sym in unique_symbols:
+            price = all_prices.get(sym)
+            if price is not None:
+                _price_cache[sym] = price
+                result[sym] = price
+            elif sym in _price_cache:
+                result[sym] = _price_cache[sym]
+        return result
+    except Exception:
+        # Fallback to individual cached/single requests.
+        out: dict[str, float] = {}
+        for sym in unique_symbols:
+            price = fetch_binance_price(sym)
+            if price is not None:
+                out[sym] = price
+        return out
 
 
 def fetch_binance_candle_open(symbol: str, start_time_ms: int) -> Optional[float]:
@@ -50,7 +102,12 @@ def fetch_binance_candle_open(symbol: str, start_time_ms: int) -> Optional[float
     try:
         resp = requests.get(
             f"{BINANCE_API}/klines",
-            params={"symbol": symbol, "interval": "1h", "startTime": start_time_ms, "limit": 1},
+            params={
+                "symbol": symbol,
+                "interval": "1h",
+                "startTime": start_time_ms,
+                "limit": 1,
+            },
             timeout=5,
         )
         resp.raise_for_status()
@@ -107,14 +164,16 @@ def fetch_binance_klines(symbol: str, start_time_ms: int) -> list[dict]:
             pct = ((close - open_price) / open_price * 100) if open_price else 0
             prob_swing = (close - open_price) / open_price * 20 if open_price else 0
             yes_p = max(0.01, min(0.99, 0.50 + prob_swing))
-            history.append({
-                "timestamp": ts.isoformat(),
-                "price": close,
-                "yes_price": yes_p,
-                "no_price": 1 - yes_p,
-                "percent_change": pct,
-                "price_to_beat": open_price,
-            })
+            history.append(
+                {
+                    "timestamp": ts.isoformat(),
+                    "price": close,
+                    "yes_price": yes_p,
+                    "no_price": 1 - yes_p,
+                    "percent_change": pct,
+                    "price_to_beat": open_price,
+                }
+            )
         _klines_cache[cache_key] = history
         return history
     except Exception:
@@ -122,6 +181,7 @@ def fetch_binance_klines(symbol: str, start_time_ms: int) -> list[dict]:
 
 
 # --- WebSocket stream ---
+
 
 class BinanceStreamer:
     """Connects to Binance WebSocket for real-time trade prices."""

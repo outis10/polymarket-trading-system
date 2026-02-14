@@ -1,4 +1,6 @@
-/* Polymarket Monitor - Dark Theme (ported from Dash) */
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap");
+
+/* Polymarket Monitor - Compact Cards */
 
 * {
     margin: 0;
@@ -9,9 +11,7 @@
 body {
     background-color: #0d1117;
     color: #e6edf3;
-    font-family:
-        -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial,
-        sans-serif;
+    font-family: "Space Grotesk", "Segoe UI", sans-serif;
 }
 
 /* Header */
@@ -814,6 +814,20 @@ body {
     background: #388bfd;
 }
 
+.refresh-live-btn {
+    margin-top: 8px;
+    background: #0f8e66;
+}
+
+.refresh-live-btn:hover:not(:disabled) {
+    background: #23a27b;
+}
+
+.refresh-live-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
 .last-update {
     margin-top: 8px;
     font-size: 12px;
@@ -1016,5 +1030,332 @@ body {
     }
     .countdown-value {
         font-size: 24px;
+    }
+}
+
+/* Compact 15m market cards */
+.event-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+    gap: 16px;
+    padding: 0 16px 24px;
+}
+
+.compact-card {
+    background: linear-gradient(155deg, #101820 0%, #162631 45%, #1d2f3a 100%);
+    border: 1px solid #2b3b44;
+    border-radius: 18px;
+    padding: 16px;
+    box-shadow: 0 18px 30px rgba(0, 0, 0, 0.25);
+}
+
+.compact-metrics {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+    margin-bottom: 10px;
+}
+
+.metric-card {
+    background: rgba(5, 17, 24, 0.65);
+    border: 1px solid #314450;
+    border-radius: 12px;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.metric-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.7px;
+    color: #8fa7b8;
+}
+
+.metric-value {
+    font-size: 20px;
+    font-weight: 700;
+    color: #e8f6ff;
+}
+
+.metric-change {
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.metric-change-up {
+    color: #2fc687;
+}
+
+.metric-change-down {
+    color: #f26a5c;
+}
+
+.metric-card-countdown .countdown {
+    justify-content: flex-start;
+}
+
+.metric-card-countdown .countdown-value {
+    font-size: 20px;
+    color: #f7b267;
+}
+
+.probability-strip {
+    background: rgba(7, 18, 25, 0.68);
+    border: 1px solid #314450;
+    border-radius: 12px;
+    padding: 10px;
+    margin-bottom: 12px;
+}
+
+.probability-title-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 12px;
+    font-weight: 600;
+    color: #b4c9d6;
+    margin-bottom: 8px;
+}
+
+.probability-inline-values {
+    color: #d5e9f7;
+}
+
+.probability-bar {
+    height: 10px;
+    border-radius: 999px;
+    overflow: hidden;
+    display: flex;
+    background: #22303a;
+}
+
+.probability-fill-up {
+    background: linear-gradient(90deg, #127b59, #2fc687);
+}
+
+.probability-fill-down {
+    background: linear-gradient(90deg, #a0372c, #f26a5c);
+}
+
+.probability-values {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 8px;
+    font-size: 12px;
+}
+
+.prob-up {
+    color: #2fc687;
+    font-weight: 600;
+}
+
+.prob-down {
+    color: #f26a5c;
+    font-weight: 600;
+}
+
+.compact-panels-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 12px;
+}
+
+.compact-panel {
+    background: rgba(5, 14, 20, 0.72);
+    border: 1px solid #2b3f4b;
+    border-radius: 12px;
+    padding: 12px;
+}
+
+.compact-panel-title {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: #8fa7b8;
+    margin-bottom: 10px;
+}
+
+.trading-panel-compact {
+    background: transparent;
+    border: none;
+    padding: 0;
+}
+
+.trading-panel-header-compact {
+    border-bottom: 1px solid #263844;
+    margin-bottom: 10px;
+    padding-bottom: 10px;
+}
+
+.buy-sell-tab {
+    font-family: "Space Grotesk", "Segoe UI", sans-serif;
+}
+
+.trading-input {
+    background: #0f1f29;
+    border-color: #304652;
+    height: 42px;
+}
+
+.quick-btn {
+    background: #0f1f29;
+    border-color: #304652;
+    color: #b4c9d6;
+}
+
+.quick-btn:hover {
+    background: #1b2e3a;
+}
+
+.trading-panel-footer-compact {
+    margin-top: 12px;
+}
+
+.compact-cta-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.trade-btn {
+    margin-top: 0;
+    padding: 12px;
+}
+
+.trade-btn-up {
+    background: linear-gradient(135deg, #0f8e66, #2fc687);
+}
+
+.trade-btn-down {
+    background: linear-gradient(135deg, #b2463b, #f26a5c);
+}
+
+.order-book-card-compact {
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    padding: 0;
+}
+
+.order-book-stats-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    color: #aac0ce;
+    margin-bottom: 10px;
+}
+
+.book-levels-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 10px;
+}
+
+.book-levels-title {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.7px;
+    color: #8fa7b8;
+    margin-bottom: 6px;
+}
+
+.book-levels-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.book-level-item {
+    position: relative;
+    display: grid;
+    grid-template-columns: 60px 1fr auto;
+    gap: 8px;
+    align-items: center;
+    background: #0f1f29;
+    border: 1px solid #2d4350;
+    border-radius: 8px;
+    padding: 7px 9px;
+    overflow: hidden;
+    font-family: "JetBrains Mono", "Consolas", monospace;
+    font-size: 11px;
+}
+
+.book-level-depth {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    opacity: 0.18;
+}
+
+.book-level-depth-up {
+    background: linear-gradient(90deg, #0f8e66, transparent);
+}
+
+.book-level-depth-down {
+    background: linear-gradient(90deg, #f26a5c, transparent);
+}
+
+.book-level-price,
+.book-level-shares,
+.book-level-total {
+    position: relative;
+    z-index: 1;
+}
+
+.book-level-price {
+    color: #e8f6ff;
+    font-weight: 700;
+}
+
+.book-level-shares {
+    color: #c6dce8;
+}
+
+.book-level-total {
+    color: #95afc0;
+}
+
+.order-book-empty-inline {
+    font-size: 12px;
+    color: #8fa7b8;
+}
+
+.compact-chart-wrap {
+    margin-top: 10px;
+    border: 1px solid #2b3f4b;
+    border-radius: 12px;
+    overflow: hidden;
+    background: rgba(5, 14, 20, 0.65);
+}
+
+@media (max-width: 1100px) {
+    .event-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .compact-panels-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (max-width: 680px) {
+    .compact-metrics {
+        grid-template-columns: 1fr;
+    }
+
+    .compact-cta-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .app-header-title {
+        font-size: 20px;
+    }
+
+    .app-header-subtitle {
+        display: none;
     }
 }

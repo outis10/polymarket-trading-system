@@ -47,7 +47,10 @@ class EventData(BaseModel):
     no_token_id: str = ""
     order_book_yes: Optional[OrderBookData] = None
     order_book_no: Optional[OrderBookData] = None
+    event_start_utc: Optional[str] = None
     event_end_utc: Optional[str] = None
+    timeframe_minutes: int = 15
+    timeframe_label: str = "15m"
 
 
 # --- WebSocket message envelopes ---
@@ -94,7 +97,8 @@ class OrderResponse(BaseModel):
 
 class SettingsData(BaseModel):
     mode: str = "demo"
-    refresh_rate: int = 5
+    refresh_rate: int = 1
+    timeframe_filter: str = "15m"
     chart_options: list[str] = [
         "show_chart",
         "show_probability",

@@ -1,5 +1,6 @@
 import { useSettingsStore } from "../../stores/useSettingsStore";
 import { useEventsStore } from "../../stores/useEventsStore";
+import { useState } from "react";
 
 interface SidebarProps {
     send: (msg: Record<string, unknown>) => void;
@@ -9,6 +10,8 @@ export default function Sidebar({ send }: SidebarProps) {
     const sidebarOpen = useSettingsStore((s) => s.sidebarOpen);
     const setSidebarOpen = useSettingsStore((s) => s.setSidebarOpen);
     const settings = useEventsStore((s) => s.settings);
+    const [refreshingLiveEvents, setRefreshingLiveEvents] = useState(false);
+    const [refreshLiveMessage, setRefreshLiveMessage] = useState("");
 
     const handleModeChange = (mode: string) => {
         send({ type: "switch_mode", mode });
@@ -24,6 +27,43 @@ export default function Sidebar({ send }: SidebarProps) {
 
     const handleRefreshRateChange = (rate: number) => {
         send({ type: "update_settings", settings: { refresh_rate: rate } });
+    };
+
+    const handleTimeframeChange = (timeframe: "5m" | "15m" | "1h") => {
+        send({
+            type: "update_settings",
+            settings: { timeframe_filter: timeframe },
+        });
+    };
+
+    const handleRefreshLiveEvents = async () => {
+        setRefreshingLiveEvents(true);
+        setRefreshLiveMessage("");
+        try {
+            const res = await fetch("/api/events/refresh-live", {
+                method: "POST",
+            });
+            let data: Record<string, unknown> = {};
+            try {
+                data = await res.json();
+            } catch {
+                data = {};
+            }
+            if (!res.ok) {
+                const detail =
+                    (typeof data.detail === "string" && data.detail) ||
+                    `Live refresh failed (${res.status})`;
+                setRefreshLiveMessage(detail);
+                return;
+            }
+            setRefreshLiveMessage(
+                `Live refreshed: ${String(data.events_count ?? 0)} events (${String(data.added ?? 0)} added, ${String(data.removed ?? 0)} removed)`,
+            );
+        } catch (e) {
+            setRefreshLiveMessage("Network error during live refresh");
+        } finally {
+            setRefreshingLiveEvents(false);
+        }
     };
 
     return (
@@ -99,6 +139,45 @@ export default function Sidebar({ send }: SidebarProps) {
                 <hr className="sidebar-divider" />
 
                 <div className="sidebar-section">
+                    <div className="sidebar-section-title">Timeframe</div>
+                    <label className="mode-option">
+                        <input
+                            type="radio"
+                            name="timeframe"
+                            checked={
+                                (settings.timeframe_filter || "15m") === "5m"
+                            }
+                            onChange={() => handleTimeframeChange("5m")}
+                        />
+                        5m
+                    </label>
+                    <label className="mode-option">
+                        <input
+                            type="radio"
+                            name="timeframe"
+                            checked={
+                                (settings.timeframe_filter || "15m") === "15m"
+                            }
+                            onChange={() => handleTimeframeChange("15m")}
+                        />
+                        15m
+                    </label>
+                    <label className="mode-option">
+                        <input
+                            type="radio"
+                            name="timeframe"
+                            checked={
+                                (settings.timeframe_filter || "15m") === "1h"
+                            }
+                            onChange={() => handleTimeframeChange("1h")}
+                        />
+                        1h
+                    </label>
+                </div>
+
+                <hr className="sidebar-divider" />
+
+                <div className="sidebar-section">
                     <div className="sidebar-section-title">Chart Options</div>
                     <label className="chart-option">
                         <input
@@ -152,6 +231,18 @@ export default function Sidebar({ send }: SidebarProps) {
                 >
                     Refresh Now
                 </button>
+                <button
+                    className="refresh-btn refresh-live-btn"
+                    onClick={handleRefreshLiveEvents}
+                    disabled={settings.mode !== "live" || refreshingLiveEvents}
+                >
+                    {refreshingLiveEvents
+                        ? "Refreshing Live..."
+                        : "Refresh Live Events"}
+                </button>
+                {refreshLiveMessage && (
+                    <div className="last-update">{refreshLiveMessage}</div>
+                )}
                 <div className="last-update">
                     Last update: {new Date().toLocaleTimeString()}
                 </div>

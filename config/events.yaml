@@ -1,55 +1,79 @@
 events:
-- name: Bitcoin Up or Down - February 6, 1AM ET
-  description: This market will resolve to "Up" if the close price is greater than
-    or equal to the open price for the BTC/USDT 1 hour c
-  icon: btc
-  condition_id: '0xf1cc35570bc565769fe4e689fb48a6c7ccf739d1ebb07d9818a4cf68bb910ef7'
-  tokens:
-    'yes': '19930469007790619944088420801543736718273156885425105420503337864437619764905'
-    'no': '60918447899702501454064599723801791983411080241364901218725819480203785608634'
-  resolution_source: https://www.binance.com/en/trade/BTC_USDT
-  event_start_time: '2026-02-06T06:00:00Z'
-  binance_symbol: BTCUSDT
-  settings:
-    refresh_interval: 5
-    price_to_beat: null
+    - name: Bitcoin Up or Down - February 6, 1AM ET
+      description:
+          This market will resolve to "Up" if the close price is greater than
+          or equal to the open price for the BTC/USDT 1 hour c
+      icon: btc
+      condition_id: "0xf1cc35570bc565769fe4e689fb48a6c7ccf739d1ebb07d9818a4cf68bb910ef7"
+      tokens:
+          "yes": "19930469007790619944088420801543736718273156885425105420503337864437619764905"
+          "no": "60918447899702501454064599723801791983411080241364901218725819480203785608634"
+      resolution_source: https://www.binance.com/en/trade/BTC_USDT
+      event_start_time: "2026-02-06T06:00:00Z"
+      binance_symbol: BTCUSDT
+      settings:
+          refresh_interval: 5
+          price_to_beat: null
 demo_mode: false
+live_discovery:
+    enabled: true
+    symbols:
+        - BTC
+        - ETH
+        - SOL
+        - XRP
+    lookahead_days: 7
+    refresh_seconds: 60
+    max_events: 120
+    require_15m: false
+    allowed_timeframes:
+        - 5
+        - 15
+        - 60
+    only_live_now: true
+    min_minutes: 10
+    max_minutes: 20
+live_pricing:
+    source: chainlink
+    chainlink_stream_url: ""
+    chainlink_subscribe: {}
+    chainlink_ping_interval: 20
 demo_events:
-- name: Bitcoin Up or Down
-  description: January 26, 9-10AM ET
-  icon: btc
-  initial_price: 88222.57
-  price_to_beat: 87960.01
-  yes_price: 0.52
-  no_price: 0.48
-  volatility: 0.02
-- name: ETH Above $3500
-  description: By January 31, 2026
-  icon: eth
-  initial_price: 3420.5
-  price_to_beat: 3500.0
-  yes_price: 0.45
-  no_price: 0.55
-  volatility: 0.015
-- name: SOL Daily +5%
-  description: January 26, 2026
-  icon: sol
-  initial_price: 245.3
-  price_to_beat: 257.57
-  yes_price: 0.38
-  no_price: 0.62
-  volatility: 0.025
+    - name: Bitcoin Up or Down
+      description: January 26, 9-10AM ET
+      icon: btc
+      initial_price: 88222.57
+      price_to_beat: 87960.01
+      yes_price: 0.52
+      no_price: 0.48
+      volatility: 0.02
+    - name: ETH Above $3500
+      description: By January 31, 2026
+      icon: eth
+      initial_price: 3420.5
+      price_to_beat: 3500.0
+      yes_price: 0.45
+      no_price: 0.55
+      volatility: 0.015
+    - name: SOL Daily +5%
+      description: January 26, 2026
+      icon: sol
+      initial_price: 245.3
+      price_to_beat: 257.57
+      yes_price: 0.38
+      no_price: 0.62
+      volatility: 0.025
 trading:
-  default_shares: 10
-  min_shares: 1
-  max_shares: 10000
-  default_limit_price: 0.5
-  enable_market_orders: true
-  enable_limit_orders: true
+    default_shares: 10
+    min_shares: 1
+    max_shares: 10000
+    default_limit_price: 0.5
+    enable_market_orders: true
+    enable_limit_orders: true
 ui:
-  theme: dark
-  chart_height: 350
-  refresh_rate_ms: 1000
-  max_price_history: 500
-  show_countdown: true
-  show_volume: true
+    theme: dark
+    chart_height: 350
+    refresh_rate_ms: 1000
+    max_price_history: 500
+    show_countdown: true
+    show_volume: true

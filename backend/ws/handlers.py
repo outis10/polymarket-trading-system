@@ -47,14 +47,24 @@ async def websocket_events(websocket: WebSocket):
                 elif msg_type == "update_settings":
                     settings = msg.get("settings", {})
                     if "refresh_rate" in settings:
-                        event_manager.settings["refresh_rate"] = settings["refresh_rate"]
+                        event_manager.settings["refresh_rate"] = settings[
+                            "refresh_rate"
+                        ]
+                    if "timeframe_filter" in settings:
+                        event_manager.settings["timeframe_filter"] = settings[
+                            "timeframe_filter"
+                        ]
                     if "chart_options" in settings:
-                        event_manager.settings["chart_options"] = settings["chart_options"]
-                    await manager.broadcast({
-                        "type": "settings_update",
-                        "event_id": "",
-                        "data": event_manager.settings,
-                    })
+                        event_manager.settings["chart_options"] = settings[
+                            "chart_options"
+                        ]
+                    await manager.broadcast(
+                        {
+                            "type": "settings_update",
+                            "event_id": "",
+                            "data": event_manager.settings,
+                        }
+                    )
 
             except json.JSONDecodeError:
                 pass
