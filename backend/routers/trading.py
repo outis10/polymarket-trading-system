@@ -1,6 +1,7 @@
 """REST endpoints for trading operations."""
 
 import logging
+import os
 
 from fastapi import APIRouter, HTTPException
 
@@ -18,7 +19,9 @@ async def place_order(order: OrderRequest):
     """Place a trade order."""
     event = event_manager.events.get(order.event_id)
     if not event:
-        raise HTTPException(status_code=404, detail=f"Event '{order.event_id}' not found")
+        raise HTTPException(
+            status_code=404, detail=f"Event '{order.event_id}' not found"
+        )
 
     # Demo mode: simulate
     if event_manager.mode == "demo":
@@ -28,16 +31,22 @@ async def place_order(order: OrderRequest):
             msg = f"{order.side} {order.shares} shares of {outcome_label} ({order_label} order)"
         else:
             msg = f"{order.side} {order.shares} shares of {outcome_label} @ ${order.price:.2f} ({order_label} order)"
-        return OrderResponse(order_id="demo-" + order.event_id[:8], status="FILLED", message=msg)
+        return OrderResponse(
+            order_id="demo-" + order.event_id[:8], status="FILLED", message=msg
+        )
 
     # Live mode: execute via Polymarket
     client = get_client()
     if not client:
         raise HTTPException(status_code=503, detail="Polymarket client unavailable")
 
-    token_id = event.get("yes_token_id") if order.outcome == "up" else event.get("no_token_id")
+    token_id = (
+        event.get("yes_token_id") if order.outcome == "up" else event.get("no_token_id")
+    )
     if not token_id:
-        raise HTTPException(status_code=400, detail="Token ID not found for this outcome")
+        raise HTTPException(
+            status_code=400, detail="Token ID not found for this outcome"
+        )
 
     try:
         side = order.side.upper()
@@ -48,14 +57,20 @@ async def place_order(order: OrderRequest):
 
         if result:
             # SignedOrder object - access attributes directly
-            order_id = getattr(result, 'id', None) or getattr(result, 'orderID', None) or str(result)[:16]
-            status = getattr(result, 'status', 'OPEN')
+            order_id = (
+                getattr(result, "id", None)
+                or getattr(result, "orderID", None)
+                or str(result)[:16]
+            )
+            status = getattr(result, "status", "OPEN")
             return OrderResponse(
                 order_id=str(order_id),
                 status=str(status) if status else "OPEN",
                 message="Order placed successfully",
             )
-        raise HTTPException(status_code=500, detail="Order placement returned no result")
+        raise HTTPException(
+            status_code=500, detail="Order placement returned no result"
+        )
 
     except HTTPException:
         raise
@@ -115,7 +130,7 @@ async def get_balance():
         if balance is None:
             return {
                 "balance": None,
-                "message": "Balance not available - L2 API credentials may be required. Check your .env file for POLYMARKET_API_KEY, POLYMARKET_SECRET, and POLYMARKET_PASSPHRASE"
+                "message": "Balance not available - L2 API credentials may be required. Check your .env file for POLYMARKET_API_KEY, POLYMARKET_SECRET, and POLYMARKET_PASSPHRASE",
             }
         return {"balance": balance}
     except Exception as e:
@@ -123,7 +138,7 @@ async def get_balance():
         return {
             "balance": None,
             "error": str(e),
-            "message": "Balance check failed - this usually means L2 API credentials are not configured"
+            "message": "Balance check failed - this usually means L2 API credentials are not configured",
         }
 
 
@@ -134,11 +149,76 @@ async def debug_client():
     if not client:
         return {"error": "No client"}
 
-    methods = [m for m in dir(client.client) if not m.startswith('_')]
+    methods = [m for m in dir(client.client) if not m.startswith("_")]
     return {
         "client_methods": methods,
-        "has_create_and_post": hasattr(client.client, 'create_and_post_order'),
+        "has_create_and_post": hasattr(client.client, "create_and_post_order"),
     }
+
+
+@router.get("/diagnostics/auth")
+async def diagnostics_auth():
+    """
+    Diagnose Polymarket auth/config state without exposing secret values.
+    """
+    required_env = [
+        "POLYMARKET_PRIVATE_KEY",
+        "POLYMARKET_FUNDER",
+        "POLYMARKET_SIGNATURE_TYPE",
+        "CHAIN_ID",
+        "USE_TESTNET",
+    ]
+    l2_env = [
+        "POLYMARKET_API_KEY",
+        "POLYMARKET_SECRET",
+        "POLYMARKET_PASSPHRASE",
+    ]
+
+    env_presence = {k: bool(os.getenv(k)) for k in required_env + l2_env}
+
+    diagnostics = {
+        "mode": event_manager.mode,
+        "environment": env_presence,
+        "checks": {
+            "l1_minimum_present": all(
+                env_presence.get(k, False)
+                for k in ("POLYMARKET_PRIVATE_KEY", "POLYMARKET_FUNDER")
+            ),
+            "l2_triplet_present": all(env_presence.get(k, False) for k in l2_env),
+        },
+    }
+
+    # Load typed settings to confirm parsed runtime config.
+    try:
+        from config.settings import Settings
+
+        settings_obj = Settings()
+        diagnostics["runtime"] = {
+            "use_testnet": settings_obj.polymarket.use_testnet,
+            "chain_id": settings_obj.polymarket.chain_id,
+            "signature_type": settings_obj.polymarket.signature_type,
+            "host": settings_obj.polymarket.host,
+        }
+    except Exception as e:
+        diagnostics["runtime_error"] = str(e)
+
+    # Validate current singleton client state.
+    client = get_client()
+    diagnostics["client_initialized"] = bool(client)
+    if client:
+        diagnostics["client_checks"] = {
+            "has_clob_client": hasattr(client, "client"),
+            "has_balance_allowance_method": hasattr(
+                client.client, "get_balance_allowance"
+            ),
+        }
+    else:
+        diagnostics["client_hint"] = (
+            "Client failed to initialize. Verify L1 vars and chain/network settings. "
+            "If credentials changed, call POST /api/reset-client."
+        )
+
+    return diagnostics
 
 
 @router.delete("/orders/{order_id}")
@@ -187,10 +267,13 @@ async def get_positions(event_id: str):
                     "cost": 4.50,
                     "value": 10 * event.get("yes_price", 0.5),
                     "return_value": 10 * event.get("yes_price", 0.5) - 4.50,
-                    "return_pct": ((10 * event.get("yes_price", 0.5) - 4.50) / 4.50) * 100 if event.get("yes_price") else 0,
+                    "return_pct": ((10 * event.get("yes_price", 0.5) - 4.50) / 4.50)
+                    * 100
+                    if event.get("yes_price")
+                    else 0,
                 },
             ],
-            "message": "Demo mode - simulated positions"
+            "message": "Demo mode - simulated positions",
         }
 
     client = get_client()
@@ -202,7 +285,10 @@ async def get_positions(event_id: str):
         no_token = event.get("no_token_id")
 
         if not yes_token or not no_token:
-            return {"positions": [], "message": "Token IDs not configured for this event"}
+            return {
+                "positions": [],
+                "message": "Token IDs not configured for this event",
+            }
 
         # Get all trades
         trades = client.get_trades()
@@ -235,21 +321,27 @@ async def get_positions(event_id: str):
 
             if total_qty > 0:
                 avg_price = total_cost / total_qty if total_qty > 0 else 0
-                current_price = event.get("yes_price", 0.5) if outcome == "Up" else event.get("no_price", 0.5)
+                current_price = (
+                    event.get("yes_price", 0.5)
+                    if outcome == "Up"
+                    else event.get("no_price", 0.5)
+                )
                 value = total_qty * current_price
                 return_value = value - total_cost
                 return_pct = (return_value / total_cost * 100) if total_cost > 0 else 0
 
-                positions.append({
-                    "outcome": outcome,
-                    "qty": round(total_qty, 2),
-                    "avg_price": round(avg_price, 4),
-                    "current_price": round(current_price, 4),
-                    "cost": round(total_cost, 2),
-                    "value": round(value, 2),
-                    "return_value": round(return_value, 2),
-                    "return_pct": round(return_pct, 2),
-                })
+                positions.append(
+                    {
+                        "outcome": outcome,
+                        "qty": round(total_qty, 2),
+                        "avg_price": round(avg_price, 4),
+                        "current_price": round(current_price, 4),
+                        "cost": round(total_cost, 2),
+                        "value": round(value, 2),
+                        "return_value": round(return_value, 2),
+                        "return_pct": round(return_pct, 2),
+                    }
+                )
 
         return {"positions": positions}
 

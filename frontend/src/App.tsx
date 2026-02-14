@@ -9,11 +9,17 @@ export default function App() {
     const events = useEventsStore((s) => s.events);
     const settings = useEventsStore((s) => s.settings);
     const nowMs = Date.now();
-    const selectedTimeframe = settings.timeframe_filter || "15m";
+    const rawTimeframe =
+        typeof settings.timeframe_filter === "string"
+            ? settings.timeframe_filter
+            : "15m";
+    const selectedTimeframe = ["5m", "15m", "1h"].includes(rawTimeframe)
+        ? (rawTimeframe as "5m" | "15m" | "1h")
+        : "15m";
     const selectedMinutes =
         selectedTimeframe === "1h"
             ? 60
-            : Number(selectedTimeframe.replace("m", ""));
+            : Number.parseInt(selectedTimeframe.replace("m", ""), 10);
 
     const visibleLiveEvents = Object.entries(events).filter(([, eventData]) => {
         if (settings.mode !== "live") return false;
@@ -29,6 +35,39 @@ export default function App() {
         return endMs > nowMs;
     });
 
+    const getTickerPriority = (
+        eventId: string,
+        eventData: (typeof visibleLiveEvents)[number][1],
+    ) => {
+        const haystack = [
+            eventId,
+            eventData.icon,
+            eventData.name,
+            eventData.description,
+        ]
+            .filter(Boolean)
+            .join(" ")
+            .toLowerCase();
+
+        if (haystack.includes("btc") || haystack.includes("bitcoin")) return 0;
+        if (haystack.includes("eth") || haystack.includes("ethereum")) return 1;
+        if (haystack.includes("sol") || haystack.includes("solana")) return 2;
+        if (haystack.includes("xrp") || haystack.includes("ripple")) return 3;
+        return 99;
+    };
+
+    const orderedVisibleLiveEvents = visibleLiveEvents
+        .map((entry, index) => ({ entry, index }))
+        .sort((a, b) => {
+            const [aId, aData] = a.entry;
+            const [bId, bData] = b.entry;
+            const aPriority = getTickerPriority(aId, aData);
+            const bPriority = getTickerPriority(bId, bData);
+            if (aPriority !== bPriority) return aPriority - bPriority;
+            return a.index - b.index;
+        })
+        .map(({ entry }) => entry);
+
     return (
         <>
             <Header />
@@ -42,13 +81,19 @@ export default function App() {
             )}
 
             <div className="event-grid">
-                {visibleLiveEvents.map(([eventId, eventData]) => (
-                    <EventCard
-                        key={eventId}
-                        eventId={eventId}
-                        event={eventData}
-                    />
-                ))}
+                {visibleLiveEvents.length === 0 ? (
+                    <div className="events-empty-state">
+                        No live {selectedTimeframe} events at this moment.
+                    </div>
+                ) : (
+                    orderedVisibleLiveEvents.map(([eventId, eventData]) => (
+                        <EventCard
+                            key={eventId}
+                            eventId={eventId}
+                            event={eventData}
+                        />
+                    ))
+                )}
             </div>
         </>
     );

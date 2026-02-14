@@ -37,7 +37,8 @@ class EventManager:
             "mode": "demo",
             "refresh_rate": 1,
             "timeframe_filter": "15m",
-            "chart_options": ["show_chart", "show_probability", "show_price_change"],
+            "trading_mode": "manual",
+            "chart_options": ["show_chart"],
         }
         self._config: dict = {}
         self._task: Optional[asyncio.Task] = None

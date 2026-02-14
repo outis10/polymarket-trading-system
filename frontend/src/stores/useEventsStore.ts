@@ -15,8 +15,9 @@ export const useEventsStore = create<EventsState>((set) => ({
     settings: {
         mode: "demo",
         refresh_rate: 1,
-        chart_options: ["show_chart", "show_probability", "show_price_change"],
+        chart_options: ["show_chart"],
         timeframe_filter: "15m",
+        trading_mode: "manual",
     },
 
     setEvents: (events) => set({ events }),

@@ -99,8 +99,5 @@ class SettingsData(BaseModel):
     mode: str = "demo"
     refresh_rate: int = 1
     timeframe_filter: str = "15m"
-    chart_options: list[str] = [
-        "show_chart",
-        "show_probability",
-        "show_price_change",
-    ]
+    trading_mode: str = "manual"
+    chart_options: list[str] = ["show_chart"]

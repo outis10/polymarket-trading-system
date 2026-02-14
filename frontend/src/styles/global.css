@@ -34,6 +34,12 @@ body {
     gap: 12px;
 }
 
+.app-header-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
 .app-header-title {
     font-size: 24px;
     font-weight: 700;
@@ -43,6 +49,17 @@ body {
 .app-header-subtitle {
     color: #8b949e;
     font-size: 14px;
+}
+
+.bankroll-chip {
+    background: rgba(15, 142, 102, 0.14);
+    border: 1px solid rgba(35, 162, 123, 0.45);
+    color: #79e2bf;
+    border-radius: 999px;
+    padding: 7px 12px;
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: 0.2px;
 }
 
 .settings-btn {
@@ -834,6 +851,29 @@ body {
     color: #8b949e;
 }
 
+.trading-mode-slider {
+    display: grid;
+    grid-template-columns: 50px 1fr 30px;
+    align-items: center;
+    gap: 8px;
+}
+
+.trading-mode-label {
+    font-size: 12px;
+    color: #8b949e;
+    font-weight: 500;
+}
+
+.trading-mode-label-active {
+    color: #e6edf3;
+    font-weight: 700;
+}
+
+.trading-mode-range {
+    width: 100%;
+    accent-color: #58a6ff;
+}
+
 /* Status indicator */
 .status-dot {
     width: 8px;
@@ -1041,6 +1081,17 @@ body {
     padding: 0 16px 24px;
 }
 
+.events-empty-state {
+    grid-column: 1 / -1;
+    border: 1px dashed #314450;
+    border-radius: 12px;
+    padding: 18px;
+    text-align: center;
+    color: #b6cad7;
+    background: rgba(7, 18, 25, 0.55);
+    font-size: 14px;
+}
+
 .compact-card {
     background: linear-gradient(155deg, #101820 0%, #162631 45%, #1d2f3a 100%);
     border: 1px solid #2b3b44;
@@ -1175,6 +1226,144 @@ body {
     letter-spacing: 0.8px;
     color: #8fa7b8;
     margin-bottom: 10px;
+}
+
+.compact-panel-title-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+}
+
+.compact-panel-title-row .compact-panel-title {
+    margin-bottom: 0;
+}
+
+.compact-toggle-btn {
+    border: 1px solid #2f4451;
+    border-radius: 8px;
+    background: #0f1f29;
+    color: #d3e6f2;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 4px 9px;
+    cursor: pointer;
+}
+
+.compact-toggle-btn:hover {
+    background: #1a303d;
+}
+
+.manual-trade-empty {
+    border: 1px dashed #37505f;
+    border-radius: 10px;
+    padding: 20px 12px;
+    text-align: center;
+    color: #9bb2bf;
+    font-size: 13px;
+    background: rgba(15, 31, 41, 0.35);
+}
+
+.bot-trade-subcards {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+
+.bot-trade-subcard {
+    border: 1px solid #304652;
+    border-radius: 10px;
+    padding: 10px;
+    background: rgba(15, 31, 41, 0.35);
+    min-height: 96px;
+}
+
+.bot-trade-subcard-up {
+    box-shadow: inset 0 0 0 1px rgba(47, 198, 135, 0.2);
+}
+
+.bot-trade-subcard-down {
+    box-shadow: inset 0 0 0 1px rgba(242, 106, 92, 0.2);
+}
+
+.bot-trade-subcard-title {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    line-height: 1.1;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.6px;
+}
+
+.bot-trade-side-label {
+    display: block;
+}
+
+.bot-trade-side-pct {
+    display: block;
+}
+
+.bot-trade-subcard-up .bot-trade-subcard-title {
+    color: #2fc687;
+}
+
+.bot-trade-subcard-down .bot-trade-subcard-title {
+    color: #f26a5c;
+}
+
+.bot-trade-subcard-empty {
+    border: 1px dashed #37505f;
+    border-radius: 8px;
+    padding: 16px 8px;
+    text-align: center;
+    color: #9bb2bf;
+    font-size: 12px;
+}
+
+.bot-trade-subcard-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 10px;
+}
+
+.bot-trade-ks-inline {
+    font-size: 12px;
+    font-weight: 600;
+    color: #d5e9f7;
+    letter-spacing: 0.2px;
+    white-space: nowrap;
+}
+
+.bot-trade-ks-inline span {
+    cursor: help;
+}
+
+.bot-trade-buy-btn {
+    width: 100%;
+    border: 1px solid #2f4451;
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.2px;
+    cursor: pointer;
+    color: #eaf4fa;
+    background: #162833;
+}
+
+.bot-trade-buy-btn-up {
+    border-color: #1a7f5b;
+    background: linear-gradient(135deg, #0f8e66, #2fc687);
+}
+
+.bot-trade-buy-btn-down {
+    border-color: #9f3e34;
+    background: linear-gradient(135deg, #b2463b, #f26a5c);
 }
 
 .trading-panel-compact {
@@ -1332,6 +1521,12 @@ body {
     background: rgba(5, 14, 20, 0.65);
 }
 
+@media (max-width: 1600px) {
+    .event-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
 @media (max-width: 1100px) {
     .event-grid {
         grid-template-columns: 1fr;
@@ -1357,5 +1552,10 @@ body {
 
     .app-header-subtitle {
         display: none;
+    }
+
+    .bankroll-chip {
+        font-size: 11px;
+        padding: 5px 9px;
     }
 }

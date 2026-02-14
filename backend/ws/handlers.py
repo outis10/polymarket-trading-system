@@ -54,6 +54,10 @@ async def websocket_events(websocket: WebSocket):
                         event_manager.settings["timeframe_filter"] = settings[
                             "timeframe_filter"
                         ]
+                    if "trading_mode" in settings:
+                        event_manager.settings["trading_mode"] = settings[
+                            "trading_mode"
+                        ]
                     if "chart_options" in settings:
                         event_manager.settings["chart_options"] = settings[
                             "chart_options"

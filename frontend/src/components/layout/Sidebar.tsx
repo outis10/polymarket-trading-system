@@ -10,6 +10,7 @@ export default function Sidebar({ send }: SidebarProps) {
     const sidebarOpen = useSettingsStore((s) => s.sidebarOpen);
     const setSidebarOpen = useSettingsStore((s) => s.setSidebarOpen);
     const settings = useEventsStore((s) => s.settings);
+    const updateSettings = useEventsStore((s) => s.updateSettings);
     const [refreshingLiveEvents, setRefreshingLiveEvents] = useState(false);
     const [refreshLiveMessage, setRefreshLiveMessage] = useState("");
 
@@ -22,6 +23,17 @@ export default function Sidebar({ send }: SidebarProps) {
         const updated = current.includes(option)
             ? current.filter((o) => o !== option)
             : [...current, option];
+        updateSettings({ chart_options: updated });
+        send({ type: "update_settings", settings: { chart_options: updated } });
+    };
+
+    const handleProbabilitiesCardToggle = () => {
+        const current = settings.chart_options || [];
+        const hideKey = "hide_probabilities_card";
+        const updated = current.includes(hideKey)
+            ? current.filter((o) => o !== hideKey)
+            : [...current, hideKey];
+        updateSettings({ chart_options: updated });
         send({ type: "update_settings", settings: { chart_options: updated } });
     };
 
@@ -33,6 +45,13 @@ export default function Sidebar({ send }: SidebarProps) {
         send({
             type: "update_settings",
             settings: { timeframe_filter: timeframe },
+        });
+    };
+
+    const handleTradingModeChange = (modeValue: "manual" | "bot") => {
+        send({
+            type: "update_settings",
+            settings: { trading_mode: modeValue },
         });
     };
 
@@ -178,6 +197,43 @@ export default function Sidebar({ send }: SidebarProps) {
                 <hr className="sidebar-divider" />
 
                 <div className="sidebar-section">
+                    <div className="sidebar-section-title">Trading Mode</div>
+                    <div className="trading-mode-slider">
+                        <span
+                            className={`trading-mode-label ${(settings.trading_mode || "manual") === "manual" ? "trading-mode-label-active" : ""}`}
+                        >
+                            Manual
+                        </span>
+                        <input
+                            type="range"
+                            min={0}
+                            max={1}
+                            step={1}
+                            value={
+                                (settings.trading_mode || "manual") === "bot"
+                                    ? 1
+                                    : 0
+                            }
+                            onChange={(e) =>
+                                handleTradingModeChange(
+                                    Number(e.target.value) === 1
+                                        ? "bot"
+                                        : "manual",
+                                )
+                            }
+                            className="trading-mode-range"
+                        />
+                        <span
+                            className={`trading-mode-label ${(settings.trading_mode || "manual") === "bot" ? "trading-mode-label-active" : ""}`}
+                        >
+                            Bot
+                        </span>
+                    </div>
+                </div>
+
+                <hr className="sidebar-divider" />
+
+                <div className="sidebar-section">
                     <div className="sidebar-section-title">Chart Options</div>
                     <label className="chart-option">
                         <input
@@ -197,29 +253,15 @@ export default function Sidebar({ send }: SidebarProps) {
                         <input
                             type="checkbox"
                             checked={
-                                settings.chart_options?.includes(
-                                    "show_probability",
-                                ) ?? true
+                                !(
+                                    settings.chart_options?.includes(
+                                        "hide_probabilities_card",
+                                    ) ?? false
+                                )
                             }
-                            onChange={() =>
-                                handleChartOptionToggle("show_probability")
-                            }
+                            onChange={handleProbabilitiesCardToggle}
                         />
-                        Show Probability %
-                    </label>
-                    <label className="chart-option">
-                        <input
-                            type="checkbox"
-                            checked={
-                                settings.chart_options?.includes(
-                                    "show_price_change",
-                                ) ?? true
-                            }
-                            onChange={() =>
-                                handleChartOptionToggle("show_price_change")
-                            }
-                        />
-                        Show Price Change %
+                        Show Probabilities Card
                     </label>
                 </div>
 

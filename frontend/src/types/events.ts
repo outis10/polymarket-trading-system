@@ -50,6 +50,7 @@ export interface SettingsData {
     refresh_rate: number;
     chart_options: string[];
     timeframe_filter?: "5m" | "15m" | "1h";
+    trading_mode?: "manual" | "bot";
 }
 
 export interface WSMessage {
