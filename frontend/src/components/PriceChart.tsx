@@ -9,7 +9,7 @@ import {
 import type { PriceHistoryPoint } from "../types/events";
 
 interface PriceChartProps {
-    priceHistory: PriceHistoryPoint[];
+    priceHistory?: PriceHistoryPoint[] | null;
 }
 
 function normalizeHistory(points: PriceHistoryPoint[]): PriceHistoryPoint[] {
@@ -124,8 +124,10 @@ export default function PriceChart({ priceHistory }: PriceChartProps) {
 
     // Update data
     useEffect(() => {
-        if (!chartRef.current || !priceHistory.length) return;
-        const cleanHistory = normalizeHistory(priceHistory);
+        if (!chartRef.current) return;
+        const safeHistory = Array.isArray(priceHistory) ? priceHistory : [];
+        if (!safeHistory.length) return;
+        const cleanHistory = normalizeHistory(safeHistory);
         if (!cleanHistory.length) return;
 
         const priceData: LineData[] = cleanHistory.map((p) => ({

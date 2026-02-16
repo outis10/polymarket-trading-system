@@ -398,7 +398,7 @@ function EventCard({ eventId, event }: EventCardProps) {
 
             {showChart && (
                 <div className="compact-chart-wrap">
-                    <PriceChart priceHistory={event.price_history} />
+                    <PriceChart priceHistory={event.price_history || []} />
                 </div>
             )}
         </article>
