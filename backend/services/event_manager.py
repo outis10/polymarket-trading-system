@@ -1,7 +1,10 @@
 """EventManager: orchestrates data updates and broadcasts via WebSocket."""
 
 import asyncio
+import bisect
+import csv
 import logging
+import os
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -22,6 +25,7 @@ from .chainlink import (
 )
 from .demo import load_demo_events, update_demo_prices
 from .event_discovery import discover_live_events
+from .opportunity_tracker import OpportunityTracker
 from .polymarket import PolymarketStreamer, fetch_real_prices, get_client
 
 logger = logging.getLogger(__name__)
@@ -32,13 +36,28 @@ class EventManager:
 
     def __init__(self):
         self.events: dict[str, dict] = {}
-        self.mode: str = "demo"
+        self.mode: str = "live"
         self.settings: dict = {
-            "mode": "demo",
+            "mode": "live",
             "refresh_rate": 1,
             "timeframe_filter": "15m",
-            "trading_mode": "manual",
+            "trading_mode": "bot",
             "chart_options": ["show_chart"],
+            "kelly_enabled": True,
+            "kelly_fraction": 0.25,
+            "kelly_bankroll": 100.0,
+            "kelly_min_edge_pct": 0.5,
+            "kelly_max_bet_pct": 25.0,
+            "kelly_max_event_exposure_pct": 25.0,
+            "quant_gate_enabled": True,
+            "quant_gate_min_sample": 120,
+            "quant_gate_min_edge_pct": 4.0,
+            "quant_gate_use_percentile": True,
+            "quant_gate_percentile_low": 15.0,
+            "quant_gate_percentile_high": 85.0,
+            "quant_gate_min_price_c": 10.0,
+            "quant_gate_max_price_c": 90.0,
+            "monitored_tickers": ["BTC", "ETH", "SOL", "XRP"],
         }
         self._config: dict = {}
         self._task: Optional[asyncio.Task] = None
@@ -52,6 +71,10 @@ class EventManager:
         self._snapshot_every_n_ticks: int = 5
         self._tick_counter: int = 0
         self._live_event_configs: dict[str, dict] = {}
+        # Quantitative PM probability table: {ticker: {minute: [(inf, sup, prob_up, prob_down, count)]}}
+        self._pm_ranges: dict[
+            str, dict[int, list[tuple[float, float, float, float, int]]]
+        ] = {}
         self._live_discovery: dict = {
             "enabled": False,
             "symbols": ["BTC", "ETH", "SOL", "XRP"],
@@ -70,6 +93,10 @@ class EventManager:
         }
         self._last_discovery_refresh: datetime | None = None
         self._running = False
+        tracker_dir = os.path.normpath(
+            os.path.join(os.path.dirname(__file__), "..", "..", "backtest_output")
+        )
+        self._opportunity_tracker = OpportunityTracker(base_dir=tracker_dir)
 
     def load_config(self):
         self._config = load_events_config()
@@ -84,9 +111,287 @@ class EventManager:
             merged.update(live_pricing)
             self._live_pricing = merged
 
+    def _load_pm_ranges(
+        self,
+    ) -> dict[str, dict[int, list[tuple[float, float, float, float, int]]]]:
+        """Load and index PM quantitative probability table from CSV."""
+        csv_path = os.path.normpath(
+            os.path.join(
+                os.path.dirname(__file__),
+                "..",
+                "..",
+                "backtest_output",
+                "merged_pm_ranges_4cryptos.csv",
+            )
+        )
+        table: dict[str, dict[int, list[tuple[float, float, float, float, int]]]] = {}
+        if not os.path.exists(csv_path):
+            logger.warning("PM ranges CSV not found at %s", csv_path)
+            return table
+        with open(csv_path, newline="") as f:
+            for row in csv.DictReader(f):
+                ticker = row["ticker"].strip().upper()
+                minute = int(row["minute"])
+                entry = (
+                    float(row["inf_range"]),
+                    float(row["sup_range"]),
+                    float(row["prob_up"]),
+                    float(row["prob_down"]),
+                    int(row["count_of_klines_inside_range"]),
+                )
+                table.setdefault(ticker, {}).setdefault(minute, []).append(entry)
+        for ticker_data in table.values():
+            for minute_list in ticker_data.values():
+                minute_list.sort(key=lambda x: x[0])
+        loaded = sum(len(r) for td in table.values() for r in td.values())
+        logger.info(
+            "PM ranges loaded: %d rows for tickers %s", loaded, list(table.keys())
+        )
+        return table
+
+    def _lookup_quant_probs(
+        self, ticker: str, minute: int, price_diff: float
+    ) -> tuple[float, float, int] | None:
+        """Lookup quantitative probabilities. Returns (prob_up, prob_down, sample_size) or None."""
+        ticker_data = self._pm_ranges.get(ticker)
+        if not ticker_data:
+            return None
+        ranges = ticker_data.get(max(1, min(14, minute)))
+        if not ranges:
+            return None
+        idx = bisect.bisect_right([r[0] for r in ranges], price_diff) - 1
+        if idx < 0:
+            return None
+        inf_r, sup_r, prob_up, prob_down, count = ranges[idx]
+        if inf_r <= price_diff < sup_r:
+            return (prob_up, prob_down, count)
+        return None
+
+    def _build_quant_histogram(
+        self, ticker: str, minute: int, price_diff: float
+    ) -> dict | None:
+        """Build histogram payload for current ticker/minute context."""
+        ticker_data = self._pm_ranges.get(ticker)
+        if not ticker_data:
+            return None
+        minute_key = max(1, min(14, minute))
+        ranges = ticker_data.get(minute_key)
+        if not ranges:
+            return None
+
+        bins: list[dict] = []
+        total_count = 0
+        current_bin_index: int | None = None
+        cumulative_before = 0
+        current_count = 0
+
+        for idx, (inf_r, sup_r, prob_up, prob_down, count) in enumerate(ranges):
+            safe_count = max(0, int(count))
+            bins.append(
+                {
+                    "inf_range": inf_r,
+                    "sup_range": sup_r,
+                    "prob_up": prob_up,
+                    "prob_down": prob_down,
+                    "count": safe_count,
+                }
+            )
+            if current_bin_index is None and inf_r <= price_diff < sup_r:
+                current_bin_index = idx
+                cumulative_before = total_count
+                current_count = safe_count
+            total_count += safe_count
+
+        current_percentile: float | None = None
+        if total_count > 0:
+            if current_bin_index is not None:
+                midpoint = cumulative_before + (current_count * 0.5)
+                current_percentile = (midpoint / total_count) * 100.0
+            elif price_diff < ranges[0][0]:
+                current_percentile = 0.0
+            else:
+                current_percentile = 100.0
+
+        return {
+            "ticker": ticker,
+            "minute": minute_key,
+            "current_diff": price_diff,
+            "total_count": total_count,
+            "current_bin_index": current_bin_index,
+            "current_percentile": current_percentile,
+            "bins": bins,
+        }
+
+    def _apply_quant_metrics(
+        self, event_dict: dict, event_config: dict, now_utc: datetime
+    ) -> None:
+        """Update event quant probabilities + range histogram in-place."""
+        event_start_str = event_dict.get("event_start_utc")
+        ptb = event_dict.get("price_to_beat", 0)
+        cp = event_dict.get("current_price", 0)
+        if not event_start_str or ptb <= 0 or cp <= 0 or not self._pm_ranges:
+            event_dict["quant_prob_up"] = None
+            event_dict["quant_prob_down"] = None
+            event_dict["quant_sample_size"] = None
+            event_dict["quant_range_histogram"] = None
+            return
+
+        try:
+            event_start_dt = datetime.fromisoformat(event_start_str)
+            current_minute = max(
+                1, int((now_utc - event_start_dt).total_seconds() // 60) + 1
+            )
+            ticker = normalize_symbol(
+                str(
+                    event_config.get("chainlink_symbol")
+                    or event_config.get("binance_symbol", "")
+                )
+            )
+            if not ticker:
+                event_dict["quant_prob_up"] = None
+                event_dict["quant_prob_down"] = None
+                event_dict["quant_sample_size"] = None
+                event_dict["quant_range_histogram"] = None
+                return
+
+            price_diff = cp - ptb
+            quant = self._lookup_quant_probs(ticker, current_minute, price_diff)
+            histogram = self._build_quant_histogram(ticker, current_minute, price_diff)
+
+            if quant:
+                event_dict["quant_prob_up"] = quant[0]
+                event_dict["quant_prob_down"] = quant[1]
+                event_dict["quant_sample_size"] = quant[2]
+            else:
+                event_dict["quant_prob_up"] = None
+                event_dict["quant_prob_down"] = None
+                event_dict["quant_sample_size"] = None
+
+            event_dict["quant_range_histogram"] = histogram
+        except Exception:
+            event_dict["quant_prob_up"] = None
+            event_dict["quant_prob_down"] = None
+            event_dict["quant_sample_size"] = None
+            event_dict["quant_range_histogram"] = None
+
+    def _compute_quant_buy_gate_side(
+        self,
+        *,
+        side: str,
+        quant_prob: float | None,
+        market_prob: float,
+        sample_size: int | None,
+        percentile: float | None,
+    ) -> dict:
+        settings = self.settings
+        gate_enabled = bool(settings.get("quant_gate_enabled", True))
+        min_sample = int(settings.get("quant_gate_min_sample", 120))
+        min_edge_pct = float(settings.get("quant_gate_min_edge_pct", 4.0))
+        use_percentile = bool(settings.get("quant_gate_use_percentile", True))
+        percentile_low = float(settings.get("quant_gate_percentile_low", 15.0))
+        percentile_high = float(settings.get("quant_gate_percentile_high", 85.0))
+        min_price_c = float(settings.get("quant_gate_min_price_c", 10.0))
+        max_price_c = float(settings.get("quant_gate_max_price_c", 90.0))
+
+        reasons: list[str] = []
+        edge_pct: float | None = None
+
+        if not gate_enabled:
+            return {
+                "enabled": True,
+                "reasons": [],
+                "edge_pct": None,
+                "sample_size": sample_size,
+                "percentile": percentile,
+            }
+
+        if quant_prob is None:
+            reasons.append("no_quant_data")
+        if sample_size is None or sample_size < min_sample:
+            reasons.append(f"sample<{min_sample}")
+
+        if quant_prob is not None:
+            edge_pct = (quant_prob - market_prob) * 100.0
+            if edge_pct < min_edge_pct:
+                reasons.append(f"edge<{min_edge_pct:.2f}%")
+
+        price_c = market_prob * 100.0
+        if price_c < min_price_c or price_c > max_price_c:
+            reasons.append(f"price_outside_{min_price_c:.0f}-{max_price_c:.0f}c")
+
+        if use_percentile:
+            if percentile is None:
+                reasons.append("no_percentile")
+            elif percentile_low < percentile < percentile_high:
+                reasons.append(
+                    f"percentile_inside_{percentile_low:.0f}-{percentile_high:.0f}"
+                )
+
+        return {
+            "enabled": len(reasons) == 0,
+            "reasons": reasons,
+            "edge_pct": edge_pct,
+            "sample_size": sample_size,
+            "percentile": percentile,
+            "side": side,
+        }
+
+    def _apply_quant_buy_gates(self, event_dict: dict) -> None:
+        histogram = event_dict.get("quant_range_histogram")
+        percentile: float | None = None
+        if isinstance(histogram, dict):
+            raw = histogram.get("current_percentile")
+            percentile = float(raw) if isinstance(raw, (float, int)) else None
+
+        quant_prob_up = event_dict.get("quant_prob_up")
+        quant_prob_down = event_dict.get("quant_prob_down")
+        sample_size = event_dict.get("quant_sample_size")
+        yes_price = float(event_dict.get("yes_price", 0.5) or 0.5)
+        no_price = float(event_dict.get("no_price", 0.5) or 0.5)
+
+        event_dict["quant_buy_gate"] = {
+            "up": self._compute_quant_buy_gate_side(
+                side="up",
+                quant_prob=quant_prob_up
+                if isinstance(quant_prob_up, (float, int))
+                else None,
+                market_prob=yes_price,
+                sample_size=int(sample_size) if isinstance(sample_size, int) else None,
+                percentile=percentile,
+            ),
+            "down": self._compute_quant_buy_gate_side(
+                side="down",
+                quant_prob=quant_prob_down
+                if isinstance(quant_prob_down, (float, int))
+                else None,
+                market_prob=no_price,
+                sample_size=int(sample_size) if isinstance(sample_size, int) else None,
+                percentile=percentile,
+            ),
+        }
+
+    def _track_opportunities_for_event(
+        self, event_id: str, event_dict: dict, now_utc: datetime
+    ) -> None:
+        quant_gate = event_dict.get("quant_buy_gate")
+        if not isinstance(quant_gate, dict):
+            return
+        for side in ("up", "down"):
+            gate_side = quant_gate.get(side)
+            self._opportunity_tracker.track_gate_transition(
+                event_id=event_id,
+                event_dict=event_dict,
+                side=side,
+                gate_side=gate_side if isinstance(gate_side, dict) else None,
+                settings=self.settings,
+                mode=self.mode,
+                now_utc=now_utc,
+            )
+
     async def start(self):
         """Start the event manager background loop."""
         self.load_config()
+        self._pm_ranges = self._load_pm_ranges()
         self._running = True
 
         # Initialize with current mode
@@ -199,7 +504,7 @@ class EventManager:
                     await self._broadcast_full_snapshot()
                 else:
                     self._maybe_refresh_live_events()
-                    self._update_live()
+                    await self._update_live()
                     self._tick_counter += 1
                     # Live mode uses incremental WS updates; send full snapshots less often.
                     if self._tick_counter % self._snapshot_every_n_ticks == 0:
@@ -291,7 +596,37 @@ class EventManager:
                 "timeframe_minutes": timeframe_minutes,
                 "timeframe_label": timeframe_label,
                 "is_15m": timeframe_minutes == 15,
+                "quant_prob_up": None,
+                "quant_prob_down": None,
+                "quant_sample_size": None,
+                "quant_range_histogram": None,
+                "quant_buy_gate": {
+                    "up": {
+                        "enabled": True,
+                        "reasons": [],
+                        "edge_pct": None,
+                        "sample_size": None,
+                        "percentile": None,
+                        "side": "up",
+                    },
+                    "down": {
+                        "enabled": True,
+                        "reasons": [],
+                        "edge_pct": None,
+                        "sample_size": None,
+                        "percentile": None,
+                        "side": "down",
+                    },
+                },
             }
+
+            configured_ptb = (
+                event_config.get("settings", {}).get("price_to_beat")
+                if isinstance(event_config.get("settings", {}), dict)
+                else None
+            )
+            if isinstance(configured_ptb, (int, float)) and float(configured_ptb) > 0:
+                event_dict["price_to_beat"] = float(configured_ptb)
 
             if bsym and est:
                 start_ms = parse_event_start_ms(est)
@@ -299,11 +634,14 @@ class EventManager:
                     kh = fetch_binance_klines(bsym, start_ms)
                     if kh:
                         event_dict["price_history"] = kh
-                        event_dict["price_to_beat"] = kh[0]["price_to_beat"]
+                        if event_dict.get("price_to_beat", 0) <= 0:
+                            event_dict["price_to_beat"] = kh[0]["price_to_beat"]
                         event_dict["current_price"] = kh[-1]["price"]
                     else:
-                        op = fetch_binance_candle_open(bsym, start_ms)
-                        if op:
+                        op = fetch_binance_candle_open(
+                            bsym, start_ms, timeframe_minutes
+                        )
+                        if op and event_dict.get("price_to_beat", 0) <= 0:
                             event_dict["price_to_beat"] = op
 
             events[event_id] = event_dict
@@ -538,6 +876,13 @@ class EventManager:
                 event_dict["no_price"] = 1 - yes_p
 
             event_dict["last_update"] = now_iso
+
+            self._apply_quant_metrics(event_dict, ecfg, datetime.now(tz=timezone.utc))
+            self._apply_quant_buy_gates(event_dict)
+            self._track_opportunities_for_event(
+                event_id, event_dict, datetime.now(tz=timezone.utc)
+            )
+
             await manager.broadcast(
                 {
                     "type": "price_update",
@@ -548,6 +893,13 @@ class EventManager:
                         "yes_price": event_dict["yes_price"],
                         "no_price": event_dict["no_price"],
                         "last_update": event_dict["last_update"],
+                        "quant_prob_up": event_dict.get("quant_prob_up"),
+                        "quant_prob_down": event_dict.get("quant_prob_down"),
+                        "quant_sample_size": event_dict.get("quant_sample_size"),
+                        "quant_range_histogram": event_dict.get(
+                            "quant_range_histogram"
+                        ),
+                        "quant_buy_gate": event_dict.get("quant_buy_gate"),
                     },
                 }
             )
@@ -587,7 +939,7 @@ class EventManager:
             merged[event_id] = new_event
         return merged
 
-    def _update_live(self):
+    async def _update_live(self):
         """Update all live events (REST-based periodic update)."""
         client = get_client()
         now_iso = datetime.now(tz=timezone.utc).isoformat()
@@ -644,6 +996,26 @@ class EventManager:
                 event_dict["no_price"] = 1 - yes_p
 
             event_dict["last_update"] = now_iso
+            self._apply_quant_metrics(event_dict, ecfg, datetime.now(tz=timezone.utc))
+            self._apply_quant_buy_gates(event_dict)
+            self._track_opportunities_for_event(
+                event_id, event_dict, datetime.now(tz=timezone.utc)
+            )
+            await manager.broadcast(
+                {
+                    "type": "quant_metrics_update",
+                    "event_id": event_id,
+                    "data": {
+                        "quant_prob_up": event_dict.get("quant_prob_up"),
+                        "quant_prob_down": event_dict.get("quant_prob_down"),
+                        "quant_sample_size": event_dict.get("quant_sample_size"),
+                        "quant_range_histogram": event_dict.get(
+                            "quant_range_histogram"
+                        ),
+                        "quant_buy_gate": event_dict.get("quant_buy_gate"),
+                    },
+                }
+            )
 
             event_end_str = event_dict.get("event_end_utc")
             candle_open = True
@@ -670,6 +1042,10 @@ class EventManager:
                 if len(history) > 500:
                     history = history[-500:]
                 event_dict["price_history"] = history
+
+        self._opportunity_tracker.resolve_closed_events(
+            self.events, datetime.now(tz=timezone.utc)
+        )
 
         # 2) Slow path in round-robin: refresh Polymarket books/prices for a subset.
         if not client or not event_ids:

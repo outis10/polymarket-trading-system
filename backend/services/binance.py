@@ -92,11 +92,16 @@ def fetch_binance_prices(symbols: list[str]) -> dict[str, float]:
         return out
 
 
-def fetch_binance_candle_open(symbol: str, start_time_ms: int) -> Optional[float]:
-    """Fetch the open price of the 1h candle at the given start time."""
+def fetch_binance_candle_open(
+    symbol: str, start_time_ms: int, timeframe_minutes: int = 15
+) -> Optional[float]:
+    """Fetch the open price of the candle at the given start time and timeframe."""
     import requests
 
-    cache_key = (symbol, start_time_ms)
+    interval_map = {1: "1m", 5: "5m", 15: "15m", 60: "1h"}
+    interval = interval_map.get(int(timeframe_minutes), "15m")
+
+    cache_key = (symbol, start_time_ms, interval)
     if cache_key in _candle_open_cache:
         return _candle_open_cache[cache_key]
     try:
@@ -104,7 +109,7 @@ def fetch_binance_candle_open(symbol: str, start_time_ms: int) -> Optional[float
             f"{BINANCE_API}/klines",
             params={
                 "symbol": symbol,
-                "interval": "1h",
+                "interval": interval,
                 "startTime": start_time_ms,
                 "limit": 1,
             },

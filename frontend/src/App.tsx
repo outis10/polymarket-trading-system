@@ -3,6 +3,7 @@ import { useEventsStore } from "./stores/useEventsStore";
 import Header from "./components/layout/Header";
 import Sidebar from "./components/layout/Sidebar";
 import EventCard from "./components/EventCard";
+import { inferTicker } from "./utils/ticker";
 
 export default function App() {
     const { send } = useWebSocket();
@@ -20,39 +21,40 @@ export default function App() {
         selectedTimeframe === "1h"
             ? 60
             : Number.parseInt(selectedTimeframe.replace("m", ""), 10);
+    const monitoredTickers = (
+        settings.monitored_tickers || ["BTC", "ETH", "SOL", "XRP"]
+    ).map((t) => t.toUpperCase());
+    const monitoredTickerSet = new Set(monitoredTickers);
 
-    const visibleLiveEvents = Object.entries(events).filter(([, eventData]) => {
-        if (settings.mode !== "live") return false;
-        if ((eventData.timeframe_minutes || 15) !== selectedMinutes)
-            return false;
-        if (eventData.event_start_utc) {
-            const startMs = Date.parse(eventData.event_start_utc);
-            if (!Number.isNaN(startMs) && nowMs < startMs) return false;
-        }
-        if (!eventData.event_end_utc) return true;
-        const endMs = Date.parse(eventData.event_end_utc);
-        if (Number.isNaN(endMs)) return true;
-        return endMs > nowMs;
-    });
+    const visibleLiveEvents = Object.entries(events).filter(
+        ([eventId, eventData]) => {
+            if (settings.mode !== "live") return false;
+            if ((eventData.timeframe_minutes || 15) !== selectedMinutes)
+                return false;
+            const ticker = inferTicker(eventId, eventData);
+            if (!monitoredTickerSet.has(ticker)) {
+                return false;
+            }
+            if (eventData.event_start_utc) {
+                const startMs = Date.parse(eventData.event_start_utc);
+                if (!Number.isNaN(startMs) && nowMs < startMs) return false;
+            }
+            if (!eventData.event_end_utc) return true;
+            const endMs = Date.parse(eventData.event_end_utc);
+            if (Number.isNaN(endMs)) return true;
+            return endMs > nowMs;
+        },
+    );
 
     const getTickerPriority = (
         eventId: string,
         eventData: (typeof visibleLiveEvents)[number][1],
     ) => {
-        const haystack = [
-            eventId,
-            eventData.icon,
-            eventData.name,
-            eventData.description,
-        ]
-            .filter(Boolean)
-            .join(" ")
-            .toLowerCase();
-
-        if (haystack.includes("btc") || haystack.includes("bitcoin")) return 0;
-        if (haystack.includes("eth") || haystack.includes("ethereum")) return 1;
-        if (haystack.includes("sol") || haystack.includes("solana")) return 2;
-        if (haystack.includes("xrp") || haystack.includes("ripple")) return 3;
+        const ticker = inferTicker(eventId, eventData);
+        if (ticker === "BTC") return 0;
+        if (ticker === "ETH") return 1;
+        if (ticker === "SOL") return 2;
+        if (ticker === "XRP") return 3;
         return 99;
     };
 

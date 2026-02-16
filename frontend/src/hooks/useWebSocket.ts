@@ -56,6 +56,15 @@ export function useWebSocket() {
                         }
                         break;
                     }
+                    case "quant_metrics_update": {
+                        if (msg.event_id) {
+                            updateEvent(
+                                msg.event_id,
+                                msg.data as Partial<EventData>,
+                            );
+                        }
+                        break;
+                    }
                     case "settings_update": {
                         setSettings(msg.data as unknown as SettingsData);
                         break;

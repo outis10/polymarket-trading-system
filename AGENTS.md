@@ -108,3 +108,45 @@ Implementar modulo Kelly configurable desde Settings:
 4. `Max Bet %`.
 5. `Bankroll source` (API/manual) + `Manual bankroll`.
 6. Reemplazar `KS` hardcodeado por calculo real `KS % ($)` por cada lado.
+
+## Estado actualizado (2026-02-15)
+
+- MVP de `Range Histogram Card` agregado por evento (basado en `merged_pm_ranges_4cryptos.csv` via `EventManager`).
+- Nuevo payload runtime por evento: `quant_range_histogram` (bins por rango, `total_count`, `current_bin_index`, `current_percentile`, `current_diff`).
+- Actualizacion de `quant_range_histogram` enviada en `price_update` WS.
+- Nuevo toggle en Settings: `Show Range Histogram Card` (usa `hide_range_histogram_card` en `chart_options`).
+- `Quant Buy Gate` implementado para botones `Buy At XXc` en `Bot Trade`:
+  - backend calcula `quant_buy_gate.up/down` por evento,
+  - frontend deshabilita botones cuando `enabled=false` y muestra motivo via tooltip.
+- Parametros configurables en Settings:
+  - `Enable Quant Gate`,
+  - `Min Sample (n)`,
+  - `Min Edge %`,
+  - `Min/Max Price (c)`,
+  - `Use Percentile Filter`,
+  - `Percentile Low/High`.
+- Filtro por ticker en Settings agregado:
+  - `Monitored Tickers` con checkboxes por ticker detectado,
+  - la grilla live muestra solo eventos de tickers marcados.
+- Fix en discovery de eventos live:
+  - para slugs tipo `*-updown-15m-<epoch>`, `<epoch>` se interpreta como `event_end_time` (cierre),
+  - `event_start_time` ahora se calcula como `end - timeframe` para alinear `price_to_beat` con Polymarket.
+- Quant Gate actualizado con presets de riesgo en Settings:
+  - radio `Conservative / Balanced / Aggressive` que autocompleta parametros,
+  - perfil por default: `Conservative` (`n=120`, `edge=4%`, `price=10c-90c`, `percentile=15/85`, gate ON),
+  - si se editan parametros manualmente, UI muestra estado `Custom`.
+- Tracking v1 de oportunidades quant habilitado (solo `live` + `bot`):
+  - detecta señal cuando gate pasa `disabled -> enabled` por `event_id + side`,
+  - persiste señales en `backtest_output/opportunities_log.csv`,
+  - resuelve outcomes al cierre de evento y guarda en `backtest_output/opportunity_outcomes.csv`,
+  - stake fijo para proxy PnL: `$100` por señal.
+- Endpoints nuevos de estadisticas:
+  - `GET /api/stats/opportunities?days=7&ticker=BTC` (resumen por ticker),
+  - `GET /api/stats/opportunities/raw?limit=200&ticker=BTC` (filas crudas).
+- Criterio actual de resultado (`win/loss`) para tracking v1:
+  - se evalua al cierre con `actual_up = close_price >= price_to_beat`,
+  - `UP` gana si `actual_up`, `DOWN` gana si `not actual_up`,
+  - `close_price` usa `current_price` como proxy de cierre (no settlement oficial de Polymarket).
+- Pendiente cuando se cambie de proveedor:
+  - reemplazar `close_price` proxy por fuente oficial de resolucion/final price del proveedor activo,
+  - mantener compatibilidad historica de metricas (versionar campo `outcome_source`).

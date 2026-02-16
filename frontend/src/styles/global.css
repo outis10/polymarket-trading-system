@@ -814,6 +814,30 @@ body {
     accent-color: #58a6ff;
 }
 
+.field-label {
+    display: block;
+    margin-top: 10px;
+    margin-bottom: 4px;
+    font-size: 12px;
+    color: #8b949e;
+}
+
+.sidebar-number-input {
+    width: 100%;
+    background: #0d1117;
+    border: 1px solid #30363d;
+    color: #e6edf3;
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 13px;
+}
+
+.field-hint {
+    margin-top: 4px;
+    font-size: 12px;
+    color: #8b949e;
+}
+
 .refresh-btn {
     width: 100%;
     padding: 10px;
@@ -1160,6 +1184,102 @@ body {
     margin-bottom: 12px;
 }
 
+.quant-edge-strip {
+    background: rgba(7, 18, 25, 0.68);
+    border: 1px solid #1e3a2f;
+    border-radius: 12px;
+    padding: 10px 14px;
+    margin-bottom: 12px;
+}
+
+.range-histogram-strip {
+    background: rgba(7, 18, 25, 0.68);
+    border: 1px solid #314450;
+    border-radius: 12px;
+    padding: 10px 14px;
+    margin-bottom: 12px;
+}
+
+.range-histogram-headline {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    color: #b4c9d6;
+    font-size: 12px;
+    margin-bottom: 8px;
+}
+
+.range-histogram-track {
+    position: relative;
+    height: 76px;
+    border: 1px solid #2d4250;
+    border-radius: 10px;
+    background: #0f1f29;
+    overflow: hidden;
+    padding: 8px;
+}
+
+.range-histogram-bars {
+    height: 100%;
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(4px, 1fr);
+    align-items: end;
+    gap: 2px;
+}
+
+.range-histogram-bar {
+    background: linear-gradient(180deg, #5ea3d0, #2f5972);
+    border-radius: 2px 2px 0 0;
+    opacity: 0.8;
+}
+
+.range-histogram-bar-current {
+    background: linear-gradient(180deg, #2fc687, #127b59);
+    opacity: 1;
+}
+
+.range-histogram-bar-current-up {
+    background: linear-gradient(180deg, #2fc687, #127b59);
+    opacity: 1;
+}
+
+.range-histogram-bar-current-down {
+    background: linear-gradient(180deg, #f26a5c, #a0372c);
+    opacity: 1;
+}
+
+.range-histogram-marker {
+    position: absolute;
+    top: 4px;
+    bottom: 4px;
+    width: 2px;
+    background: #f7b267;
+    transform: translateX(-1px);
+    box-shadow: 0 0 0 1px rgba(247, 178, 103, 0.2);
+}
+
+.quant-edge-sample {
+    color: #7da8c0;
+    font-size: 11px;
+}
+
+.range-direction-up {
+    color: #2fc687;
+}
+
+.range-direction-down {
+    color: #f26a5c;
+}
+
+.range-delta-up {
+    color: #2fc687;
+}
+
+.range-delta-down {
+    color: #f26a5c;
+}
+
 .probability-title-row {
     display: flex;
     justify-content: space-between;
@@ -1364,6 +1484,12 @@ body {
 .bot-trade-buy-btn-down {
     border-color: #9f3e34;
     background: linear-gradient(135deg, #b2463b, #f26a5c);
+}
+
+.bot-trade-buy-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+    filter: grayscale(0.35);
 }
 
 .trading-panel-compact {

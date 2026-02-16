@@ -86,6 +86,22 @@ def _parse_json_list(raw: Any) -> list[Any]:
     return []
 
 
+def _parse_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        txt = value.strip().replace(",", "")
+        if not txt:
+            return None
+        try:
+            return float(txt)
+        except ValueError:
+            return None
+    return None
+
+
 def _detect_icon(name: str) -> str:
     lowered = name.lower()
     if "bitcoin" in lowered or "btc" in lowered:
@@ -152,7 +168,11 @@ def _detect_timeframe_from_slug(slug: str, allowed_timeframes: set[int]) -> int 
     return None
 
 
-def _extract_window_from_slug(slug: str) -> tuple[int, datetime, datetime] | None:
+def _extract_window_from_slug(
+    slug: str,
+    start_hint: datetime | None = None,
+    end_hint: datetime | None = None,
+) -> tuple[int, datetime, datetime] | None:
     if not slug:
         return None
     match = SLUG_TIMEFRAME_RE.search(slug.lower())
@@ -163,9 +183,34 @@ def _extract_window_from_slug(slug: str) -> tuple[int, datetime, datetime] | Non
     epoch = int(match.group("epoch"))
     timeframe_minutes = {"5m": 5, "15m": 15, "1h": 60}[tf_raw]
 
-    start_dt = datetime.fromtimestamp(epoch, tz=timezone.utc)
-    end_dt = start_dt + timedelta(minutes=timeframe_minutes)
-    return timeframe_minutes, start_dt, end_dt
+    epoch_dt = datetime.fromtimestamp(epoch, tz=timezone.utc)
+
+    # Candidate A: epoch is window start.
+    start_as_start = epoch_dt
+    end_as_start = start_as_start + timedelta(minutes=timeframe_minutes)
+
+    # Candidate B: epoch is window end.
+    end_as_end = epoch_dt
+    start_as_end = end_as_end - timedelta(minutes=timeframe_minutes)
+
+    def _score(start_dt: datetime, end_dt: datetime) -> float:
+        score = 0.0
+        if start_hint:
+            score += abs((start_dt - start_hint).total_seconds())
+        if end_hint:
+            score += abs((end_dt - end_hint).total_seconds())
+        return score
+
+    # If Gamma provides hints, pick the interpretation that best matches them.
+    if start_hint or end_hint:
+        score_start = _score(start_as_start, end_as_start)
+        score_end = _score(start_as_end, end_as_end)
+        if score_start <= score_end:
+            return timeframe_minutes, start_as_start, end_as_start
+        return timeframe_minutes, start_as_end, end_as_end
+
+    # Fallback when hints are missing: default to epoch as end.
+    return timeframe_minutes, start_as_end, end_as_end
 
 
 def discover_live_events(config: dict[str, Any]) -> list[dict[str, Any]]:
@@ -256,7 +301,11 @@ def discover_live_events(config: dict[str, Any]) -> list[dict[str, Any]]:
                 end_dt = _parse_iso_utc(
                     market.get("endDateIso") or event.get("endDate")
                 )
-                slug_window = _extract_window_from_slug(market_slug)
+                slug_window = _extract_window_from_slug(
+                    market_slug,
+                    start_hint=start_dt,
+                    end_hint=end_dt,
+                )
                 if slug_window:
                     _, start_dt, end_dt = slug_window
 
@@ -302,6 +351,7 @@ def discover_live_events(config: dict[str, Any]) -> list[dict[str, Any]]:
 
                 desc_short = description.split(".")[0].strip() or question
                 desc_short = re.sub(r"\s+", " ", desc_short)[:140]
+                axis_price = _parse_float(market.get("xAxisValue"))
 
                 discovered.append(
                     {
@@ -309,6 +359,7 @@ def discover_live_events(config: dict[str, Any]) -> list[dict[str, Any]]:
                         "description": desc_short,
                         "icon": _detect_icon(question),
                         "condition_id": condition_id,
+                        "slug": market_slug,
                         "tokens": {
                             "yes": str(token_ids[0]),
                             "no": str(token_ids[1]),
@@ -331,7 +382,7 @@ def discover_live_events(config: dict[str, Any]) -> list[dict[str, Any]]:
                         "binance_symbol": BINANCE_SYMBOLS.get(market_symbol, ""),
                         "settings": {
                             "refresh_interval": 5,
-                            "price_to_beat": None,
+                            "price_to_beat": axis_price,
                         },
                     }
                 )

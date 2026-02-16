@@ -34,6 +34,7 @@ export interface EventData {
     price_change: number;
     volume_24h: number;
     condition_id: string;
+    chainlink_symbol?: string;
     yes_token_id: string;
     no_token_id: string;
     order_book_yes: OrderBookData | null;
@@ -43,6 +44,43 @@ export interface EventData {
     timeframe_minutes?: number;
     timeframe_label?: "5m" | "15m" | "1h";
     is_15m?: boolean;
+    quant_prob_up?: number | null;
+    quant_prob_down?: number | null;
+    quant_sample_size?: number | null;
+    quant_range_histogram?: QuantRangeHistogram | null;
+    quant_buy_gate?: QuantBuyGate | null;
+}
+
+export interface QuantRangeHistogramBin {
+    inf_range: number;
+    sup_range: number;
+    prob_up: number;
+    prob_down: number;
+    count: number;
+}
+
+export interface QuantRangeHistogram {
+    ticker: string;
+    minute: number;
+    current_diff: number;
+    total_count: number;
+    current_bin_index: number | null;
+    current_percentile: number | null;
+    bins: QuantRangeHistogramBin[];
+}
+
+export interface QuantBuyGateSide {
+    enabled: boolean;
+    reasons: string[];
+    edge_pct: number | null;
+    sample_size: number | null;
+    percentile: number | null;
+    side: "up" | "down";
+}
+
+export interface QuantBuyGate {
+    up: QuantBuyGateSide;
+    down: QuantBuyGateSide;
 }
 
 export interface SettingsData {
@@ -51,6 +89,21 @@ export interface SettingsData {
     chart_options: string[];
     timeframe_filter?: "5m" | "15m" | "1h";
     trading_mode?: "manual" | "bot";
+    kelly_enabled?: boolean;
+    kelly_fraction?: number;
+    kelly_bankroll?: number;
+    kelly_min_edge_pct?: number;
+    kelly_max_bet_pct?: number;
+    kelly_max_event_exposure_pct?: number;
+    quant_gate_enabled?: boolean;
+    quant_gate_min_sample?: number;
+    quant_gate_min_edge_pct?: number;
+    quant_gate_use_percentile?: boolean;
+    quant_gate_percentile_low?: number;
+    quant_gate_percentile_high?: number;
+    quant_gate_min_price_c?: number;
+    quant_gate_max_price_c?: number;
+    monitored_tickers?: string[];
 }
 
 export interface WSMessage {
@@ -58,6 +111,7 @@ export interface WSMessage {
         | "full_snapshot"
         | "price_update"
         | "orderbook_update"
+        | "quant_metrics_update"
         | "settings_update";
     event_id: string;
     data: Record<string, unknown>;

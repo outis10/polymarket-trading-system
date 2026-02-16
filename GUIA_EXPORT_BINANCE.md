@@ -98,6 +98,43 @@ Esto genera un Excel con hojas:
 - `5min`
 - `15min`
 
+## Pipeline completo para 4 criptos (extract -> frames -> aggregate -> merge)
+
+Script: `run_pm_pipeline_4cryptos.py`
+
+Este pipeline corre para `BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT` y guarda todo en `backtest_output/` con prefijo por ticker:
+
+1. Exporta velas 1m de Binance.
+2. Genera Excel multiframe con hoja `1min`.
+3. Ejecuta `aggregate_pm_15m_ranges.py`.
+4. Genera merge final con columna `ticker`.
+
+### Comando rápido
+
+```bash
+source venv/bin/activate
+python run_pm_pipeline_4cryptos.py --months 3 --output-dir backtest_output
+```
+
+### Parámetros útiles
+
+- `--symbols`: lista separada por coma (default: `BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT`)
+- `--months`: meses de histórico para export Binance (default: `3`)
+- `--range-step`: paso de rango para aggregate (default: `10`)
+- `--min-count`: mínimo de ocurrencias para archivo filtrado (default: `20`)
+- `--output-dir`: carpeta de salida (default: `backtest_output`)
+
+### Archivos de salida (por ticker)
+
+Para cada ticker (`btc`, `eth`, `sol`, `xrp`):
+- `{ticker}_1m_3m.csv`
+- `{ticker}_multiframe.xlsx`
+- `{ticker}_pm_ranges.csv`
+- `{ticker}_pm_ranges_mincount_20.csv`
+
+Salida consolidada:
+- `merged_pm_ranges_4cryptos.csv` (incluye columna `ticker`)
+
 ## Tutorial del XLSX generado
 
 El archivo `.xlsx` incluye una hoja por intervalo y una hoja `features_summary`.
