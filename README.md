@@ -474,3 +474,42 @@ Para preguntas o issues, abrir un issue en GitHub o contactar directamente.
 ---
 
 ⚡ **Desarrollado con** Python, Polymarket API, LangChain
+
+## 🧮 Agregación de rangos PM (15m)
+
+El script `aggregate_pm_15m_ranges.py` agrega datos de `1min` desde un `.xlsx` a buckets por minuto dentro del bloque de 15 minutos y por rango de movimiento de precio.
+
+### Ejecución básica
+
+```bash
+python3 aggregate_pm_15m_ranges.py \
+  --input btcusdt_multiframe.xlsx \
+  --sheet 1min \
+  --output backtest_output/pm_ranges.csv
+```
+
+### Ejecución recomendada (con filtro y smoothing)
+
+```bash
+python3 aggregate_pm_15m_ranges.py \
+  --input btcusdt_multiframe.xlsx \
+  --sheet 1min \
+  --output backtest_output/pm_ranges.csv \
+  --range-step 10 \
+  --min-count 20 \
+  --prob-source event_outcome \
+  --bayes-smoothing \
+  --prior-alpha 1 \
+  --prior-beta 1 \
+  --exclude-minute-15
+```
+
+Parámetros clave:
+- `--range-step`: tamaño del bucket de rango (unidades absolutas de precio).
+- `--min-count`: mínimo de velas por rango para conservar en el CSV filtrado.
+- `--prob-source`: `event_outcome` (recomendado) o `rolling_columns`.
+- `--exclude-minute-15`: excluye el minuto 15 para señales pre-cierre.
+
+Salidas:
+- CSV principal en `--output`.
+- CSV filtrado por `min-count`: por defecto `*_mincount_<N>.csv` (o ruta de `--output-filtered`).

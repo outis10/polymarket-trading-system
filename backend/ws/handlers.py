@@ -47,14 +47,92 @@ async def websocket_events(websocket: WebSocket):
                 elif msg_type == "update_settings":
                     settings = msg.get("settings", {})
                     if "refresh_rate" in settings:
-                        event_manager.settings["refresh_rate"] = settings["refresh_rate"]
+                        event_manager.settings["refresh_rate"] = settings[
+                            "refresh_rate"
+                        ]
+                    if "timeframe_filter" in settings:
+                        event_manager.settings["timeframe_filter"] = settings[
+                            "timeframe_filter"
+                        ]
+                    if "trading_mode" in settings:
+                        event_manager.settings["trading_mode"] = settings[
+                            "trading_mode"
+                        ]
                     if "chart_options" in settings:
-                        event_manager.settings["chart_options"] = settings["chart_options"]
-                    await manager.broadcast({
-                        "type": "settings_update",
-                        "event_id": "",
-                        "data": event_manager.settings,
-                    })
+                        event_manager.settings["chart_options"] = settings[
+                            "chart_options"
+                        ]
+                    if "kelly_enabled" in settings:
+                        event_manager.settings["kelly_enabled"] = bool(
+                            settings["kelly_enabled"]
+                        )
+                    if "kelly_fraction" in settings:
+                        event_manager.settings["kelly_fraction"] = float(
+                            settings["kelly_fraction"]
+                        )
+                    if "kelly_bankroll" in settings:
+                        event_manager.settings["kelly_bankroll"] = float(
+                            settings["kelly_bankroll"]
+                        )
+                    if "kelly_min_edge_pct" in settings:
+                        event_manager.settings["kelly_min_edge_pct"] = float(
+                            settings["kelly_min_edge_pct"]
+                        )
+                    if "kelly_max_bet_pct" in settings:
+                        event_manager.settings["kelly_max_bet_pct"] = float(
+                            settings["kelly_max_bet_pct"]
+                        )
+                    if "kelly_max_event_exposure_pct" in settings:
+                        event_manager.settings["kelly_max_event_exposure_pct"] = float(
+                            settings["kelly_max_event_exposure_pct"]
+                        )
+                    if "quant_gate_enabled" in settings:
+                        event_manager.settings["quant_gate_enabled"] = bool(
+                            settings["quant_gate_enabled"]
+                        )
+                    if "quant_gate_min_sample" in settings:
+                        event_manager.settings["quant_gate_min_sample"] = int(
+                            settings["quant_gate_min_sample"]
+                        )
+                    if "quant_gate_min_edge_pct" in settings:
+                        event_manager.settings["quant_gate_min_edge_pct"] = float(
+                            settings["quant_gate_min_edge_pct"]
+                        )
+                    if "quant_gate_use_percentile" in settings:
+                        event_manager.settings["quant_gate_use_percentile"] = bool(
+                            settings["quant_gate_use_percentile"]
+                        )
+                    if "quant_gate_percentile_low" in settings:
+                        event_manager.settings["quant_gate_percentile_low"] = float(
+                            settings["quant_gate_percentile_low"]
+                        )
+                    if "quant_gate_percentile_high" in settings:
+                        event_manager.settings["quant_gate_percentile_high"] = float(
+                            settings["quant_gate_percentile_high"]
+                        )
+                    if "quant_gate_min_price_c" in settings:
+                        event_manager.settings["quant_gate_min_price_c"] = float(
+                            settings["quant_gate_min_price_c"]
+                        )
+                    if "quant_gate_max_price_c" in settings:
+                        event_manager.settings["quant_gate_max_price_c"] = float(
+                            settings["quant_gate_max_price_c"]
+                        )
+                    if "monitored_tickers" in settings:
+                        raw_tickers = settings["monitored_tickers"]
+                        if isinstance(raw_tickers, list):
+                            event_manager.settings["monitored_tickers"] = [
+                                str(t).upper().strip()
+                                for t in raw_tickers
+                                if str(t).strip()
+                            ]
+                    await manager.broadcast(
+                        {
+                            "type": "settings_update",
+                            "event_id": "",
+                            "data": event_manager.settings,
+                        }
+                    )
 
             except json.JSONDecodeError:
                 pass

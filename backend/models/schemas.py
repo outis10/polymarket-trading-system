@@ -47,7 +47,15 @@ class EventData(BaseModel):
     no_token_id: str = ""
     order_book_yes: Optional[OrderBookData] = None
     order_book_no: Optional[OrderBookData] = None
+    event_start_utc: Optional[str] = None
     event_end_utc: Optional[str] = None
+    timeframe_minutes: int = 15
+    timeframe_label: str = "15m"
+    quant_prob_up: Optional[float] = None
+    quant_prob_down: Optional[float] = None
+    quant_sample_size: Optional[int] = None
+    quant_range_histogram: Optional[dict] = None
+    quant_buy_gate: Optional[dict] = None
 
 
 # --- WebSocket message envelopes ---
@@ -59,6 +67,11 @@ class PriceUpdatePayload(BaseModel):
     yes_price: float = 0.50
     no_price: float = 0.50
     price_history_point: Optional[PriceHistoryPoint] = None
+    quant_prob_up: Optional[float] = None
+    quant_prob_down: Optional[float] = None
+    quant_sample_size: Optional[int] = None
+    quant_range_histogram: Optional[dict] = None
+    quant_buy_gate: Optional[dict] = None
 
 
 class OrderBookUpdatePayload(BaseModel):
@@ -67,9 +80,7 @@ class OrderBookUpdatePayload(BaseModel):
 
 
 class WSMessage(BaseModel):
-    type: (
-        str  # "price_update" | "orderbook_update" | "full_snapshot" | "settings_update"
-    )
+    type: str  # "price_update" | "orderbook_update" | "quant_metrics_update" | "full_snapshot" | "settings_update"
     event_id: str = ""
     data: dict = {}
 
@@ -93,10 +104,23 @@ class OrderResponse(BaseModel):
 
 
 class SettingsData(BaseModel):
-    mode: str = "demo"
-    refresh_rate: int = 5
-    chart_options: list[str] = [
-        "show_chart",
-        "show_probability",
-        "show_price_change",
-    ]
+    mode: str = "live"
+    refresh_rate: int = 1
+    timeframe_filter: str = "15m"
+    trading_mode: str = "bot"
+    chart_options: list[str] = ["show_chart"]
+    kelly_enabled: bool = True
+    kelly_fraction: float = 0.25
+    kelly_bankroll: float = 100.0
+    kelly_min_edge_pct: float = 0.5
+    kelly_max_bet_pct: float = 25.0
+    kelly_max_event_exposure_pct: float = 25.0
+    quant_gate_enabled: bool = True
+    quant_gate_min_sample: int = 120
+    quant_gate_min_edge_pct: float = 4.0
+    quant_gate_use_percentile: bool = True
+    quant_gate_percentile_low: float = 15.0
+    quant_gate_percentile_high: float = 85.0
+    quant_gate_min_price_c: float = 10.0
+    quant_gate_max_price_c: float = 90.0
+    monitored_tickers: list[str] = ["BTC", "ETH", "SOL", "XRP"]

@@ -6,6 +6,7 @@ pyyaml
 # Data handling
 pandas  # Latest: 2.3.3 (Sep 2025)
 numpy
+openpyxl
 
 # GUI and visualization
 streamlit
