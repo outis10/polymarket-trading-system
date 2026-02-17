@@ -150,3 +150,67 @@ Implementar modulo Kelly configurable desde Settings:
 - Pendiente cuando se cambie de proveedor:
   - reemplazar `close_price` proxy por fuente oficial de resolucion/final price del proveedor activo,
   - mantener compatibilidad historica de metricas (versionar campo `outcome_source`).
+
+## Estado actualizado (2026-02-16)
+
+- Hardening de tracking quant en backend:
+  - guardrail temporal para no crear señales cerca/cierre de evento (`close_guard_seconds`),
+  - dedupe por `event_id+side` con cooldown (`signal_cooldown_seconds`) y bloqueo de duplicados abiertos,
+  - hidratación de estado desde CSV al iniciar para continuidad tras reinicios.
+- Reconciliación automática de outcomes:
+  - nuevo backfill periódico desde `opportunities_log.csv` -> `opportunity_outcomes.csv`,
+  - resuelve señales cerradas pendientes (evita huecos al reiniciar o perder tick de cierre),
+  - `minutes_to_close` ahora se clampa a `>= 0`.
+- Filtro estricto de universo para tracking:
+  - `EventManager` solo trackea oportunidades en eventos cripto válidos,
+  - valida consistencia entre ticker (símbolo) y texto del evento (slug/nombre),
+  - bloquea mercados no cripto que entren por discovery.
+
+## Estado actualizado (2026-02-16, dashboard analytics)
+
+- Frontend ahora tiene vista separada de analytics de oportunidades:
+  - ruta: `/analytics/opportunities`,
+  - home live se mantiene en `/`.
+- Navegación agregada en header:
+  - tabs `Live` y `Analytics` con `history.pushState`.
+- Nuevo componente:
+  - `frontend/src/components/analytics/OpportunitiesDashboard.tsx`.
+  - Consume:
+    - `GET /api/stats/opportunities?days=...&ticker=...`
+    - `GET /api/stats/opportunities/raw?limit=200&ticker=...`
+  - Muestra:
+    - KPIs globales (`signals`, `hit rate`, `total pnl`, `avg pnl`),
+    - tablas por ticker, lado y timeframe,
+    - tabla de outcomes recientes.
+- Estilos nuevos en `frontend/src/styles/global.css` para:
+  - navegación de páginas en header (`.nav-btn*`),
+  - layout/cards/tablas del dashboard analytics.
+
+## Convención entorno Node (NVM)
+
+- En este proyecto, usar Node `v22.19.0` via `nvm`.
+- Antes de correr comandos de frontend (`npm run dev`, `npm run build`, etc.):
+  1. `export NVM_DIR="$HOME/.nvm"`
+  2. `. "$NVM_DIR/nvm.sh"`
+  3. `nvm use 22.19.0`
+- Nota: no hay `.nvmrc` en `frontend`, por eso `nvm use` sin versión falla.
+
+## Estado actualizado (2026-02-16, latencia/order book)
+
+- Diagnóstico confirmado:
+  - frontend ya soportaba `orderbook_update`, pero backend no lo emitía en el loop live,
+  - el libro se veía lento por dependencia de snapshot completo + polling round-robin.
+- Fix aplicado:
+  - `backend/services/event_manager.py` ahora emite `orderbook_update` incremental por evento al refrescar libros.
+- Recomendación operativa:
+  - para bot en vivo, mantener foco en baja latencia/predictibilidad (p95/p99),
+  - medir y monitorear al menos:
+    1. `tick_to_signal_ms`
+    2. `signal_to_order_sent_ms`
+    3. `order_sent_to_ack_ms`
+    4. `book_age_ms`
+    5. `slippage_bps`
+- Próximo bloque técnico sugerido:
+  - parametrizar `polymarket_events_per_tick`,
+  - separar ritmo de actualización de order book,
+  - evaluar integrar `PolymarketStreamer` (`on_book`) como canal realtime y REST como fallback.

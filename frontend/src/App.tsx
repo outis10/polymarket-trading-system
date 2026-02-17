@@ -1,14 +1,39 @@
+import { useEffect, useState } from "react";
 import { useWebSocket } from "./hooks/useWebSocket";
 import { useEventsStore } from "./stores/useEventsStore";
 import Header from "./components/layout/Header";
 import Sidebar from "./components/layout/Sidebar";
 import EventCard from "./components/EventCard";
+import OpportunitiesDashboard from "./components/analytics/OpportunitiesDashboard";
 import { inferTicker } from "./utils/ticker";
+
+type AppRoute = "live" | "analytics";
+
+const getRouteFromPath = (): AppRoute =>
+    window.location.pathname === "/analytics/opportunities"
+        ? "analytics"
+        : "live";
 
 export default function App() {
     const { send } = useWebSocket();
     const events = useEventsStore((s) => s.events);
     const settings = useEventsStore((s) => s.settings);
+    const [route, setRoute] = useState<AppRoute>(getRouteFromPath());
+
+    useEffect(() => {
+        const onPopState = () => setRoute(getRouteFromPath());
+        window.addEventListener("popstate", onPopState);
+        return () => window.removeEventListener("popstate", onPopState);
+    }, []);
+
+    const handleNavigate = (nextRoute: AppRoute) => {
+        const nextPath =
+            nextRoute === "analytics" ? "/analytics/opportunities" : "/";
+        if (window.location.pathname !== nextPath) {
+            window.history.pushState({}, "", nextPath);
+        }
+        setRoute(nextRoute);
+    };
     const nowMs = Date.now();
     const rawTimeframe =
         typeof settings.timeframe_filter === "string"
@@ -72,31 +97,40 @@ export default function App() {
 
     return (
         <>
-            <Header />
+            <Header route={route} onNavigate={handleNavigate} />
             <Sidebar send={send} />
 
-            {settings.mode === "demo" && (
-                <div className="demo-banner">
-                    Demo Mode - Live cards are hidden. Switch to Live mode to
-                    see active markets.
-                </div>
-            )}
+            {route === "analytics" ? (
+                <OpportunitiesDashboard />
+            ) : (
+                <>
+                    {settings.mode === "demo" && (
+                        <div className="demo-banner">
+                            Demo Mode - Live cards are hidden. Switch to Live
+                            mode to see active markets.
+                        </div>
+                    )}
 
-            <div className="event-grid">
-                {visibleLiveEvents.length === 0 ? (
-                    <div className="events-empty-state">
-                        No live {selectedTimeframe} events at this moment.
+                    <div className="event-grid">
+                        {visibleLiveEvents.length === 0 ? (
+                            <div className="events-empty-state">
+                                No live {selectedTimeframe} events at this
+                                moment.
+                            </div>
+                        ) : (
+                            orderedVisibleLiveEvents.map(
+                                ([eventId, eventData]) => (
+                                    <EventCard
+                                        key={eventId}
+                                        eventId={eventId}
+                                        event={eventData}
+                                    />
+                                ),
+                            )
+                        )}
                     </div>
-                ) : (
-                    orderedVisibleLiveEvents.map(([eventId, eventData]) => (
-                        <EventCard
-                            key={eventId}
-                            eventId={eventId}
-                            event={eventData}
-                        />
-                    ))
-                )}
-            </div>
+                </>
+            )}
         </>
     );
 }

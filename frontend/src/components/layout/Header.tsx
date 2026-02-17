@@ -2,13 +2,18 @@ import { useEffect, useState } from "react";
 import { useSettingsStore } from "../../stores/useSettingsStore";
 import { useEventsStore } from "../../stores/useEventsStore";
 
+interface HeaderProps {
+    route: "live" | "analytics";
+    onNavigate: (route: "live" | "analytics") => void;
+}
+
 function toFiniteNumber(value: unknown): number | null {
     if (value === null || value === undefined || value === "") return null;
     const n = Number(value);
     return Number.isFinite(n) ? n : null;
 }
 
-export default function Header() {
+export default function Header({ route, onNavigate }: HeaderProps) {
     const toggleSidebar = useSettingsStore((s) => s.toggleSidebar);
     const mode = useEventsStore((s) => s.settings.mode);
     const [balanceText, setBalanceText] = useState("Bankroll: --");
@@ -68,6 +73,18 @@ export default function Header() {
                 </span>
             </div>
             <div className="app-header-right">
+                <button
+                    className={`nav-btn ${route === "live" ? "nav-btn-active" : ""}`}
+                    onClick={() => onNavigate("live")}
+                >
+                    Live
+                </button>
+                <button
+                    className={`nav-btn ${route === "analytics" ? "nav-btn-active" : ""}`}
+                    onClick={() => onNavigate("analytics")}
+                >
+                    Analytics
+                </button>
                 <span className="bankroll-chip">{balanceText}</span>
                 <button className="settings-btn" onClick={toggleSidebar}>
                     Settings

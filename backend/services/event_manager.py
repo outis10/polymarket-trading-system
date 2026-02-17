@@ -373,6 +373,8 @@ class EventManager:
     def _track_opportunities_for_event(
         self, event_id: str, event_dict: dict, now_utc: datetime
     ) -> None:
+        if not self._is_trackable_crypto_event(event_id, event_dict):
+            return
         quant_gate = event_dict.get("quant_buy_gate")
         if not isinstance(quant_gate, dict):
             return
@@ -387,6 +389,41 @@ class EventManager:
                 mode=self.mode,
                 now_utc=now_utc,
             )
+
+    def _is_trackable_crypto_event(self, event_id: str, event_dict: dict) -> bool:
+        """Allow opportunity tracking only for supported crypto events."""
+        monitored = {
+            str(t).strip().upper()
+            for t in self.settings.get(
+                "monitored_tickers", ["BTC", "ETH", "SOL", "XRP"]
+            )
+            if str(t).strip()
+        }
+        if not monitored:
+            monitored = {"BTC", "ETH", "SOL", "XRP"}
+
+        raw_symbol = normalize_symbol(
+            str(
+                event_dict.get("chainlink_symbol")
+                or event_dict.get("binance_symbol", "")
+            )
+        )
+        ticker = raw_symbol.upper().strip()
+        if ticker.endswith("USDT"):
+            ticker = ticker[:-4]
+        if ticker not in monitored:
+            return False
+
+        # Extra guard: ticker inferred from symbol must match event text.
+        text = f"{event_id} {event_dict.get('name', '')}".lower()
+        patterns = {
+            "BTC": r"\b(bitcoin|btc)\b",
+            "ETH": r"\b(ethereum|eth)\b",
+            "SOL": r"\b(sol|solana)\b",
+            "XRP": r"\b(xrp|ripple)\b",
+        }
+        pattern = patterns.get(ticker)
+        return bool(pattern and re.search(pattern, text))
 
     async def start(self):
         """Start the event manager background loop."""
@@ -587,6 +624,7 @@ class EventManager:
                 "volume_24h": 0,
                 "condition_id": event_config.get("condition_id", ""),
                 "chainlink_symbol": event_config.get("chainlink_symbol", ""),
+                "binance_symbol": bsym,
                 "yes_token_id": event_config.get("tokens", {}).get("yes", ""),
                 "no_token_id": event_config.get("tokens", {}).get("no", ""),
                 "order_book_yes": None,
@@ -1071,6 +1109,20 @@ class EventManager:
                     event_dict["order_book_yes"] = pr["order_book_yes"]
                 if pr.get("order_book_no"):
                     event_dict["order_book_no"] = pr["order_book_no"]
+                event_dict["last_update"] = datetime.now(tz=timezone.utc).isoformat()
+                await manager.broadcast(
+                    {
+                        "type": "orderbook_update",
+                        "event_id": event_id,
+                        "data": {
+                            "yes_price": event_dict["yes_price"],
+                            "no_price": event_dict["no_price"],
+                            "order_book_yes": event_dict.get("order_book_yes"),
+                            "order_book_no": event_dict.get("order_book_no"),
+                            "last_update": event_dict["last_update"],
+                        },
+                    }
+                )
 
     async def _broadcast_full_snapshot(self):
         """Send complete state to all connected clients."""
