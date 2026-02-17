@@ -59,6 +59,14 @@ python export_binance_klines.py \
   --interval 5m \
   --months 6 \
   --output ethusdt_5m_6m.csv
+
+python3 export_binance_klines.py \
+  --four-cryptos \
+  --interval 1s \
+  --start 2026-02-09 \
+  --end 2026-02-14 \
+  --output-dir backtest_output
+
 ```
 
 ## Formato del CSV
