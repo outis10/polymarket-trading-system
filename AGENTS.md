@@ -21,6 +21,22 @@ python3 aggregate_pm_15m_ranges.py \
 ```
 
 ```bash
+python3 export_binance_klines.py \
+  --four-cryptos \
+  --interval 1m \
+  --months 3 \
+  --output-dir backtest_output
+```
+
+```bash
+python3 export_pm_5m_last_window_1s.py \
+  --tickers BTC,ETH,SOL,XRP \
+  --lookahead-days 14 \
+  --window-seconds 180 \
+  --output backtest_output/pm_5m_last180s_1s.csv
+```
+
+```bash
 python3 aggregate_pm_15m_ranges.py \
   --input btcusdt_multiframe.xlsx \
   --sheet 1min \
@@ -143,6 +159,14 @@ Implementar modulo Kelly configurable desde Settings:
 - Endpoints nuevos de estadisticas:
   - `GET /api/stats/opportunities?days=7&ticker=BTC` (resumen por ticker),
   - `GET /api/stats/opportunities/raw?limit=200&ticker=BTC` (filas crudas).
+- Exportador Binance actualizado:
+  - `export_binance_klines.py` soporta multi-ticker via `--symbols` y `--four-cryptos`,
+  - mantiene formato de CSV compatible con `resample_klines_to_excel.py`,
+  - soporta naming por template (`--output-template`) y salida por carpeta (`--output-dir`).
+- Script nuevo para hipotesis 5m M3-M4:
+  - `export_pm_5m_last_window_1s.py`,
+  - descubre eventos PM de 5m y exporta velas Binance `1s` solo en la ventana final (`--window-seconds`),
+  - salida consolidada lista para analisis/feature engineering de cierre.
 - Criterio actual de resultado (`win/loss`) para tracking v1:
   - se evalua al cierre con `actual_up = close_price >= price_to_beat`,
   - `UP` gana si `actual_up`, `DOWN` gana si `not actual_up`,

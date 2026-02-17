@@ -784,9 +784,36 @@ class EventManager:
 
         refresh_seconds = int(self._live_discovery.get("refresh_seconds", 60))
         now = datetime.now(tz=timezone.utc)
+        has_active_event = False
+        for event in self.events.values():
+            end_raw = event.get("event_end_utc")
+            if not isinstance(end_raw, str) or not end_raw:
+                continue
+            try:
+                end_dt = datetime.fromisoformat(end_raw)
+            except Exception:
+                continue
+            start_raw = event.get("event_start_utc")
+            if isinstance(start_raw, str) and start_raw:
+                try:
+                    start_dt = datetime.fromisoformat(start_raw)
+                    if start_dt <= now < end_dt:
+                        has_active_event = True
+                        break
+                except Exception:
+                    if now < end_dt:
+                        has_active_event = True
+                        break
+            elif now < end_dt:
+                has_active_event = True
+                break
+
+        # If no event is currently active, bypass cooldown so the next window
+        # appears without waiting the full refresh_seconds.
+        force_refresh = not has_active_event
         if self._last_discovery_refresh is not None:
             elapsed = (now - self._last_discovery_refresh).total_seconds()
-            if elapsed < refresh_seconds:
+            if elapsed < refresh_seconds and not force_refresh:
                 return
 
         previous_events = self.events
