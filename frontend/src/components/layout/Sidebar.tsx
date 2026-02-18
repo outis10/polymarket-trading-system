@@ -499,6 +499,156 @@ export default function Sidebar({ send }: SidebarProps) {
 
                 <div className="sidebar-section">
                     <div className="sidebar-section-title">
+                        Bot Risk Guardrails
+                    </div>
+                    <label className="chart-option">
+                        <input
+                            type="checkbox"
+                            checked={settings.bot_risk_enabled ?? true}
+                            onChange={(e) =>
+                                handleKellySettingChange({
+                                    bot_risk_enabled: e.target.checked,
+                                })
+                            }
+                        />
+                        Enable Risk Guards
+                    </label>
+
+                    <label className="field-label">
+                        Max Buys / Event-Side (day)
+                    </label>
+                    <input
+                        className="sidebar-number-input"
+                        type="number"
+                        min={0}
+                        step={1}
+                        value={settings.bot_max_buys_per_event_side ?? 1}
+                        onChange={(e) =>
+                            handleKellySettingChange({
+                                bot_max_buys_per_event_side: Number(
+                                    e.target.value || 0,
+                                ),
+                            })
+                        }
+                    />
+
+                    <label className="field-label">
+                        Cooldown Event-Side (s)
+                    </label>
+                    <input
+                        className="sidebar-number-input"
+                        type="number"
+                        min={0}
+                        step={1}
+                        value={
+                            settings.bot_cooldown_seconds_per_event_side ?? 60
+                        }
+                        onChange={(e) =>
+                            handleKellySettingChange({
+                                bot_cooldown_seconds_per_event_side: Number(
+                                    e.target.value || 0,
+                                ),
+                            })
+                        }
+                    />
+
+                    <label className="field-label">
+                        Global Min Gap Orders (s)
+                    </label>
+                    <input
+                        className="sidebar-number-input"
+                        type="number"
+                        min={0}
+                        step={1}
+                        value={
+                            settings.bot_global_min_seconds_between_orders ?? 2
+                        }
+                        onChange={(e) =>
+                            handleKellySettingChange({
+                                bot_global_min_seconds_between_orders: Number(
+                                    e.target.value || 0,
+                                ),
+                            })
+                        }
+                    />
+
+                    <label className="field-label">
+                        Max Event Exposure (% bankroll)
+                    </label>
+                    <input
+                        className="sidebar-number-input"
+                        type="number"
+                        min={0}
+                        max={100}
+                        step={0.5}
+                        value={settings.bot_max_event_exposure_pct ?? 15}
+                        onChange={(e) =>
+                            handleKellySettingChange({
+                                bot_max_event_exposure_pct: Number(
+                                    e.target.value || 0,
+                                ),
+                            })
+                        }
+                    />
+
+                    <label className="field-label">
+                        Max Ticker Exposure (% bankroll)
+                    </label>
+                    <input
+                        className="sidebar-number-input"
+                        type="number"
+                        min={0}
+                        max={100}
+                        step={0.5}
+                        value={settings.bot_max_ticker_exposure_pct ?? 25}
+                        onChange={(e) =>
+                            handleKellySettingChange({
+                                bot_max_ticker_exposure_pct: Number(
+                                    e.target.value || 0,
+                                ),
+                            })
+                        }
+                    />
+
+                    <label className="field-label">
+                        Min Shares (Polymarket)
+                    </label>
+                    <input
+                        className="sidebar-number-input"
+                        type="number"
+                        min={0}
+                        step={0.1}
+                        value={settings.pm_min_shares ?? 5}
+                        onChange={(e) =>
+                            handleKellySettingChange({
+                                pm_min_shares: Number(e.target.value || 0),
+                            })
+                        }
+                    />
+
+                    <label className="field-label">
+                        Min Notional USD (Polymarket)
+                    </label>
+                    <input
+                        className="sidebar-number-input"
+                        type="number"
+                        min={0}
+                        step={0.1}
+                        value={settings.pm_min_notional_usd ?? 1}
+                        onChange={(e) =>
+                            handleKellySettingChange({
+                                pm_min_notional_usd: Number(
+                                    e.target.value || 0,
+                                ),
+                            })
+                        }
+                    />
+                </div>
+
+                <hr className="sidebar-divider" />
+
+                <div className="sidebar-section">
+                    <div className="sidebar-section-title">
                         Monitored Tickers
                     </div>
                     {visibleTickerOptions.map((ticker) => (

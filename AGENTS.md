@@ -50,6 +50,15 @@ python3 aggregate_pm_15m_ranges.py \
   --exclude-minute-15
 ```
 
+```bash
+python3 run_pm_pipeline_4cryptos_5m_10s.py \
+  --lookback-days 7 \
+  --slot-seconds 10 \
+  --range-step 10 \
+  --min-count 20 \
+  --output-dir backtest_output
+```
+
 ## Convención para nuevas sesiones
 
 Cuando se pida "usar contexto previo", revisar primero:
@@ -216,8 +225,8 @@ Implementar modulo Kelly configurable desde Settings:
 - Antes de correr comandos de frontend (`npm run dev`, `npm run build`, etc.):
   1. `export NVM_DIR="$HOME/.nvm"`
   2. `. "$NVM_DIR/nvm.sh"`
-  3. `nvm use 22.19.0`
-- Nota: no hay `.nvmrc` en `frontend`, por eso `nvm use` sin versión falla.
+  3. `cd frontend && nvm use` (usa `.nvmrc`), o `nvm use 22.19.0`.
+- `.nvmrc` creado en `frontend/.nvmrc` con `22.19.0`.
 
 ## Estado actualizado (2026-02-16, latencia/order book)
 
@@ -226,6 +235,10 @@ Implementar modulo Kelly configurable desde Settings:
   - el libro se veía lento por dependencia de snapshot completo + polling round-robin.
 - Fix aplicado:
   - `backend/services/event_manager.py` ahora emite `orderbook_update` incremental por evento al refrescar libros.
+- Mejora adicional aplicada:
+  - stream realtime de order book via `PolymarketStreamer` conectado en `EventManager` (`on_book`),
+  - mapeo `asset_id -> event_id/side` para actualizar `order_book_yes/no` en caliente,
+  - fallback REST de order book se mantiene activo.
 - Recomendación operativa:
   - para bot en vivo, mantener foco en baja latencia/predictibilidad (p95/p99),
   - medir y monitorear al menos:
@@ -238,3 +251,87 @@ Implementar modulo Kelly configurable desde Settings:
   - parametrizar `polymarket_events_per_tick`,
   - separar ritmo de actualización de order book,
   - evaluar integrar `PolymarketStreamer` (`on_book`) como canal realtime y REST como fallback.
+
+## Estado actualizado (2026-02-17, pipeline subminuto 5m)
+
+- Nuevo flujo paralelo (sin reemplazar el pipeline actual 1m/15m):
+  - objetivo: research de eventos 5m con base `1s` y slots `10s`.
+- Scripts nuevos:
+  1. `resample_klines_to_excel_subminute.py`
+     - soporta resample con segundos (`10s`, `30s`, etc.).
+  2. `aggregate_pm_5m_slot_ranges.py`
+     - agrega por `slot` dentro de bloque de 5m (ej. 30 slots para 10s).
+     - salida: `slot, inf_range, sup_range, prob_up, prob_down, count_of_klines_inside_range`.
+  3. `run_pm_pipeline_4cryptos_5m_10s.py`
+     - pipeline end-to-end 4 cryptos: `1s -> Excel subminuto -> agregación 5m slots -> merge`.
+- Salida consolidada nueva:
+  - `backtest_output/merged_pm_5m_slot_ranges_4cryptos.csv`.
+
+## Estado actualizado (2026-02-17, conexión bot 5m/10s)
+
+- `EventManager` ya conecta automáticamente la tabla subminuto para eventos de 5m:
+  - source preferido: `backtest_output/merged_pm_5m_slot_ranges_4cryptos.csv`,
+  - fallback: modelo anterior `merged_pm_ranges_4cryptos.csv` si falta data subminuto.
+- Nuevo campo runtime por evento:
+  - `quant_source` (`pm_5m_slot_ranges` o `pm_15m_minute_ranges`).
+- `quant_source` se envía en WS (`price_update`, `quant_metrics_update`) para diagnóstico en UI.
+- Endpoints de estadísticas de oportunidades (`/api/stats/opportunities*`) se mantienen sin renombre para no romper clientes actuales.
+
+## Estado actualizado (2026-02-17, hard-stop por ticker)
+
+- Guardrail backend agregado para evitar trading en tickers apagados:
+  - `EventManager.is_event_trading_enabled(...)` valida ticker contra `settings.monitored_tickers`.
+  - Tracking/señales de bot no avanzan si el ticker no está monitoreado.
+  - `POST /api/orders` retorna `403` si se intenta operar un evento con ticker deshabilitado.
+
+## Estado actualizado (2026-02-17, Kelly con bankroll real)
+
+- `KS` en `Bot Trade` ahora usa bankroll real de API cuando está disponible:
+  - `Header` ya consulta `/api/balance` y publica el valor en store compartido (`useAccountStore`),
+  - `EventCard` toma ese bankroll real para cálculo Kelly (`KS %` / `KS $`).
+- Fallback:
+  - si balance API no está disponible, Kelly usa `settings.kelly_bankroll` (manual).
+
+## Estado actualizado (2026-02-17, guardrails de compra bot)
+
+- Se agregó control configurable de frecuencia/exposición para evitar compras en ráfaga:
+  - `bot_risk_enabled`,
+  - `bot_max_buys_per_event_side`,
+  - `bot_cooldown_seconds_per_event_side`,
+  - `bot_global_min_seconds_between_orders`,
+  - `bot_max_event_exposure_pct`,
+  - `bot_max_ticker_exposure_pct`.
+- Aplicación backend:
+  - validación previa en `POST /api/orders` (demo y live),
+  - rechazo con `403 Risk guard blocked: <reason>` si viola reglas,
+  - registro de fills para mantener estado de límites/cooldowns.
+- UI Settings:
+  - nueva sección `Bot Risk Guardrails` en Sidebar para ajustar estos parámetros en vivo por WebSocket.
+  - incluye límites de exchange configurables:
+    - `pm_min_shares` (default `5`),
+    - `pm_min_notional_usd` (default `1`).
+
+## Estado actualizado (2026-02-17, Buy At ejecutable)
+
+- En `Bot Trade`, botones `Buy At` ahora ejecutan orden real vía `POST /api/orders`:
+  - `side=Buy`,
+  - `order_type=market`,
+  - `outcome` por botón (`up/down`).
+- Tamaño (`shares`) se calcula desde `KS $ / precio_lado` en tiempo real.
+- Precio mostrado en botón prioriza `best ask` de order book; fallback a probabilidad (`yes_price`/`no_price`).
+- UI muestra feedback de envío (`success/error`) en el card.
+
+## Estado actualizado (2026-02-17, tracker de oportunidades alineado a ejecución)
+
+- El tracker de oportunidades (`opportunities_log.csv`) ya no registra solo por transición de gate:
+  - ahora exige stake accionable por lado usando Kelly + probabilidad quant,
+  - valida mínimos de exchange (`pm_min_shares`, `pm_min_notional_usd`),
+  - aplica caps locales base (`bot_max_event_exposure_pct`, `bot_max_ticker_exposure_pct`).
+- `stake_usd` registrado en oportunidades ahora usa stake Kelly calculado (si disponible), no fijo por defecto.
+- Frontend `Buy At` agrega pre-validación local visible en tooltip para:
+  - mínimos de exchange,
+  - caps locales de bot por evento/ticker.
+- Auditoría de bloqueos:
+  - nuevo log `backtest_output/opportunity_blocked.csv` con `blocked_reason`,
+  - endpoint nuevo `GET /api/stats/opportunities/blocked/raw`,
+  - dashboard analytics agrega tabla `Blocked Opportunities (Not Registered)`.

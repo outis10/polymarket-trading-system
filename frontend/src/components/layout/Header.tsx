@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useSettingsStore } from "../../stores/useSettingsStore";
 import { useEventsStore } from "../../stores/useEventsStore";
+import { useAccountStore } from "../../stores/useAccountStore";
 
 interface HeaderProps {
     route: "live" | "analytics";
@@ -16,6 +17,7 @@ function toFiniteNumber(value: unknown): number | null {
 export default function Header({ route, onNavigate }: HeaderProps) {
     const toggleSidebar = useSettingsStore((s) => s.toggleSidebar);
     const mode = useEventsStore((s) => s.settings.mode);
+    const setBankrollReal = useAccountStore((s) => s.setBankrollReal);
     const [balanceText, setBalanceText] = useState("Bankroll: --");
 
     useEffect(() => {
@@ -32,6 +34,7 @@ export default function Header({ route, onNavigate }: HeaderProps) {
                     toFiniteNumber(data?.usdc) ??
                     toFiniteNumber(data?.data?.balance);
                 if (balance !== null) {
+                    setBankrollReal(balance);
                     setBalanceText(
                         `Bankroll: $${balance.toLocaleString("en-US", {
                             minimumFractionDigits: 2,
@@ -39,6 +42,7 @@ export default function Header({ route, onNavigate }: HeaderProps) {
                         })}`,
                     );
                 } else {
+                    setBankrollReal(null);
                     setBalanceText(
                         mode === "demo"
                             ? "Bankroll: Demo"
@@ -47,6 +51,7 @@ export default function Header({ route, onNavigate }: HeaderProps) {
                 }
             } catch {
                 if (mounted) {
+                    setBankrollReal(null);
                     setBalanceText(
                         mode === "demo"
                             ? "Bankroll: Demo"
@@ -62,7 +67,7 @@ export default function Header({ route, onNavigate }: HeaderProps) {
             mounted = false;
             clearInterval(interval);
         };
-    }, [mode]);
+    }, [mode, setBankrollReal]);
 
     return (
         <header className="app-header">

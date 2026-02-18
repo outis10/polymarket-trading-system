@@ -2,6 +2,7 @@
 
 import logging
 import os
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
 
@@ -22,9 +23,44 @@ async def place_order(order: OrderRequest):
         raise HTTPException(
             status_code=404, detail=f"Event '{order.event_id}' not found"
         )
+    if not event_manager.is_event_trading_enabled(order.event_id, event):
+        raise HTTPException(
+            status_code=403,
+            detail="Trading disabled for this event ticker by monitored_tickers setting",
+        )
+    outcome_side = "up" if order.outcome == "up" else "down"
+    reference_price = (
+        float(event.get("yes_price") or 0.5)
+        if outcome_side == "up"
+        else float(event.get("no_price") or 0.5)
+    )
+    notional_usd = (
+        float(order.price) * float(order.shares)
+        if order.order_type == "limit"
+        else reference_price * float(order.shares)
+    )
+    bankroll_usd: float | None = None
 
     # Demo mode: simulate
     if event_manager.mode == "demo":
+        allowed, reason = event_manager.validate_order_risk_guards(
+            event_id=order.event_id,
+            event=event,
+            outcome=outcome_side,
+            shares=float(order.shares),
+            notional_usd=notional_usd,
+            now_utc=datetime.now(tz=timezone.utc),
+            bankroll_usd=bankroll_usd,
+        )
+        if not allowed:
+            raise HTTPException(status_code=403, detail=f"Risk guard blocked: {reason}")
+        event_manager.register_order_fill(
+            event_id=order.event_id,
+            event=event,
+            outcome=outcome_side,
+            notional_usd=notional_usd,
+            now_utc=datetime.now(tz=timezone.utc),
+        )
         outcome_label = "Up" if order.outcome == "up" else "Down"
         order_label = order.order_type.capitalize()
         if order.order_type == "market":
@@ -39,6 +75,24 @@ async def place_order(order: OrderRequest):
     client = get_client()
     if not client:
         raise HTTPException(status_code=503, detail="Polymarket client unavailable")
+    try:
+        balance = client.get_balance()
+        if isinstance(balance, (int, float)) and float(balance) > 0:
+            bankroll_usd = float(balance)
+    except Exception:
+        bankroll_usd = None
+
+    allowed, reason = event_manager.validate_order_risk_guards(
+        event_id=order.event_id,
+        event=event,
+        outcome=outcome_side,
+        shares=float(order.shares),
+        notional_usd=notional_usd,
+        now_utc=datetime.now(tz=timezone.utc),
+        bankroll_usd=bankroll_usd,
+    )
+    if not allowed:
+        raise HTTPException(status_code=403, detail=f"Risk guard blocked: {reason}")
 
     token_id = (
         event.get("yes_token_id") if order.outcome == "up" else event.get("no_token_id")
@@ -63,6 +117,13 @@ async def place_order(order: OrderRequest):
                 or str(result)[:16]
             )
             status = getattr(result, "status", "OPEN")
+            event_manager.register_order_fill(
+                event_id=order.event_id,
+                event=event,
+                outcome=outcome_side,
+                notional_usd=notional_usd,
+                now_utc=datetime.now(tz=timezone.utc),
+            )
             return OrderResponse(
                 order_id=str(order_id),
                 status=str(status) if status else "OPEN",

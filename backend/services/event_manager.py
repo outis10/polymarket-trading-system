@@ -58,6 +58,14 @@ class EventManager:
             "quant_gate_min_price_c": 10.0,
             "quant_gate_max_price_c": 90.0,
             "monitored_tickers": ["BTC", "ETH", "SOL", "XRP"],
+            "bot_risk_enabled": True,
+            "bot_max_buys_per_event_side": 1,
+            "bot_cooldown_seconds_per_event_side": 60,
+            "bot_global_min_seconds_between_orders": 2,
+            "bot_max_event_exposure_pct": 15.0,
+            "bot_max_ticker_exposure_pct": 25.0,
+            "pm_min_shares": 5.0,
+            "pm_min_notional_usd": 1.0,
         }
         self._config: dict = {}
         self._task: Optional[asyncio.Task] = None
@@ -66,6 +74,8 @@ class EventManager:
         self._chainlink_streamers: list[ChainlinkPriceStreamer] = []
         self._chainlink_stream_tasks: list[asyncio.Task] = []
         self._polymarket_streamers: list[PolymarketStreamer] = []
+        self._polymarket_stream_tasks: list[asyncio.Task] = []
+        self._polymarket_asset_map: dict[str, tuple[str, str]] = {}
         self._polymarket_events_per_tick: int = 4
         self._polymarket_cursor: int = 0
         self._snapshot_every_n_ticks: int = 5
@@ -73,6 +83,10 @@ class EventManager:
         self._live_event_configs: dict[str, dict] = {}
         # Quantitative PM probability table: {ticker: {minute: [(inf, sup, prob_up, prob_down, count)]}}
         self._pm_ranges: dict[
+            str, dict[int, list[tuple[float, float, float, float, int]]]
+        ] = {}
+        # 5m slot table (e.g. 10s slots): {ticker: {slot: [(inf, sup, prob_up, prob_down, count)]}}
+        self._pm_5m_slot_ranges: dict[
             str, dict[int, list[tuple[float, float, float, float, int]]]
         ] = {}
         self._live_discovery: dict = {
@@ -93,6 +107,8 @@ class EventManager:
         }
         self._last_discovery_refresh: datetime | None = None
         self._running = False
+        self._order_guard_records: list[dict] = []
+        self._last_order_at_utc: datetime | None = None
         tracker_dir = os.path.normpath(
             os.path.join(os.path.dirname(__file__), "..", "..", "backtest_output")
         )
@@ -149,6 +165,48 @@ class EventManager:
         )
         return table
 
+    def _load_pm_5m_slot_ranges(
+        self,
+    ) -> dict[str, dict[int, list[tuple[float, float, float, float, int]]]]:
+        """Load and index PM quantitative table for 5m slot-based model."""
+        csv_path = os.path.normpath(
+            os.path.join(
+                os.path.dirname(__file__),
+                "..",
+                "..",
+                "backtest_output",
+                "merged_pm_5m_slot_ranges_4cryptos.csv",
+            )
+        )
+        table: dict[str, dict[int, list[tuple[float, float, float, float, int]]]] = {}
+        if not os.path.exists(csv_path):
+            logger.info("5m slot ranges CSV not found at %s (optional)", csv_path)
+            return table
+        with open(csv_path, newline="") as f:
+            for row in csv.DictReader(f):
+                ticker = str(row.get("ticker", "")).strip().upper()
+                if not ticker:
+                    continue
+                slot = int(row["slot"])
+                entry = (
+                    float(row["inf_range"]),
+                    float(row["sup_range"]),
+                    float(row["prob_up"]),
+                    float(row["prob_down"]),
+                    int(row["count_of_klines_inside_range"]),
+                )
+                table.setdefault(ticker, {}).setdefault(slot, []).append(entry)
+        for ticker_data in table.values():
+            for slot_list in ticker_data.values():
+                slot_list.sort(key=lambda x: x[0])
+        loaded = sum(len(r) for td in table.values() for r in td.values())
+        logger.info(
+            "PM 5m slot ranges loaded: %d rows for tickers %s",
+            loaded,
+            list(table.keys()),
+        )
+        return table
+
     def _lookup_quant_probs(
         self, ticker: str, minute: int, price_diff: float
     ) -> tuple[float, float, int] | None:
@@ -157,6 +215,26 @@ class EventManager:
         if not ticker_data:
             return None
         ranges = ticker_data.get(max(1, min(14, minute)))
+        if not ranges:
+            return None
+        idx = bisect.bisect_right([r[0] for r in ranges], price_diff) - 1
+        if idx < 0:
+            return None
+        inf_r, sup_r, prob_up, prob_down, count = ranges[idx]
+        if inf_r <= price_diff < sup_r:
+            return (prob_up, prob_down, count)
+        return None
+
+    def _lookup_quant_probs_5m_slot(
+        self, ticker: str, slot: int, price_diff: float
+    ) -> tuple[float, float, int] | None:
+        """Lookup 5m slot-model probabilities. Returns (prob_up, prob_down, sample_size) or None."""
+        ticker_data = self._pm_5m_slot_ranges.get(ticker)
+        if not ticker_data:
+            return None
+        max_slot = max(ticker_data.keys())
+        slot_key = max(1, min(max_slot, int(slot)))
+        ranges = ticker_data.get(slot_key)
         if not ranges:
             return None
         idx = bisect.bisect_right([r[0] for r in ranges], price_diff) - 1
@@ -222,6 +300,67 @@ class EventManager:
             "bins": bins,
         }
 
+    def _build_quant_histogram_5m_slot(
+        self, ticker: str, slot: int, price_diff: float
+    ) -> dict | None:
+        """Build histogram payload for current ticker/slot context (5m slot model)."""
+        ticker_data = self._pm_5m_slot_ranges.get(ticker)
+        if not ticker_data:
+            return None
+        max_slot = max(ticker_data.keys())
+        slot_key = max(1, min(max_slot, int(slot)))
+        ranges = ticker_data.get(slot_key)
+        if not ranges:
+            return None
+
+        bins: list[dict] = []
+        total_count = 0
+        current_bin_index: int | None = None
+        cumulative_before = 0
+        current_count = 0
+
+        for idx, (inf_r, sup_r, prob_up, prob_down, count) in enumerate(ranges):
+            safe_count = max(0, int(count))
+            bins.append(
+                {
+                    "inf_range": inf_r,
+                    "sup_range": sup_r,
+                    "prob_up": prob_up,
+                    "prob_down": prob_down,
+                    "count": safe_count,
+                }
+            )
+            if current_bin_index is None and inf_r <= price_diff < sup_r:
+                current_bin_index = idx
+                cumulative_before = total_count
+                current_count = safe_count
+            total_count += safe_count
+
+        current_percentile: float | None = None
+        if total_count > 0:
+            if current_bin_index is not None:
+                midpoint = cumulative_before + (current_count * 0.5)
+                current_percentile = (midpoint / total_count) * 100.0
+            elif price_diff < ranges[0][0]:
+                current_percentile = 0.0
+            else:
+                current_percentile = 100.0
+
+        slot_seconds = max(1, int(300 / max_slot))
+        minute_approx = max(1, min(5, int(((slot_key - 1) * slot_seconds) // 60) + 1))
+        return {
+            "ticker": ticker,
+            "minute": minute_approx,
+            "slot": slot_key,
+            "slot_seconds": slot_seconds,
+            "bucket_type": "slot_5m",
+            "current_diff": price_diff,
+            "total_count": total_count,
+            "current_bin_index": current_bin_index,
+            "current_percentile": current_percentile,
+            "bins": bins,
+        }
+
     def _apply_quant_metrics(
         self, event_dict: dict, event_config: dict, now_utc: datetime
     ) -> None:
@@ -229,18 +368,23 @@ class EventManager:
         event_start_str = event_dict.get("event_start_utc")
         ptb = event_dict.get("price_to_beat", 0)
         cp = event_dict.get("current_price", 0)
-        if not event_start_str or ptb <= 0 or cp <= 0 or not self._pm_ranges:
+        if (
+            not event_start_str
+            or ptb <= 0
+            or cp <= 0
+            or (not self._pm_ranges and not self._pm_5m_slot_ranges)
+        ):
             event_dict["quant_prob_up"] = None
             event_dict["quant_prob_down"] = None
             event_dict["quant_sample_size"] = None
             event_dict["quant_range_histogram"] = None
+            event_dict["quant_source"] = None
             return
 
         try:
             event_start_dt = datetime.fromisoformat(event_start_str)
-            current_minute = max(
-                1, int((now_utc - event_start_dt).total_seconds() // 60) + 1
-            )
+            elapsed_seconds = max(0, int((now_utc - event_start_dt).total_seconds()))
+            current_minute = max(1, int(elapsed_seconds // 60) + 1)
             ticker = normalize_symbol(
                 str(
                     event_config.get("chainlink_symbol")
@@ -252,11 +396,33 @@ class EventManager:
                 event_dict["quant_prob_down"] = None
                 event_dict["quant_sample_size"] = None
                 event_dict["quant_range_histogram"] = None
+                event_dict["quant_source"] = None
                 return
 
             price_diff = cp - ptb
-            quant = self._lookup_quant_probs(ticker, current_minute, price_diff)
-            histogram = self._build_quant_histogram(ticker, current_minute, price_diff)
+            timeframe_minutes = int(event_dict.get("timeframe_minutes", 15) or 15)
+            use_5m_slot_model = (
+                timeframe_minutes == 5 and ticker in self._pm_5m_slot_ranges
+            )
+            if use_5m_slot_model:
+                max_slot = max(self._pm_5m_slot_ranges[ticker].keys())
+                slot_seconds = max(1, int(300 / max_slot))
+                current_slot = max(
+                    1, min(max_slot, int(elapsed_seconds // slot_seconds) + 1)
+                )
+                quant = self._lookup_quant_probs_5m_slot(
+                    ticker, current_slot, price_diff
+                )
+                histogram = self._build_quant_histogram_5m_slot(
+                    ticker, current_slot, price_diff
+                )
+                event_dict["quant_source"] = "pm_5m_slot_ranges"
+            else:
+                quant = self._lookup_quant_probs(ticker, current_minute, price_diff)
+                histogram = self._build_quant_histogram(
+                    ticker, current_minute, price_diff
+                )
+                event_dict["quant_source"] = "pm_15m_minute_ranges"
 
             if quant:
                 event_dict["quant_prob_up"] = quant[0]
@@ -273,6 +439,7 @@ class EventManager:
             event_dict["quant_prob_down"] = None
             event_dict["quant_sample_size"] = None
             event_dict["quant_range_histogram"] = None
+            event_dict["quant_source"] = None
 
     def _compute_quant_buy_gate_side(
         self,
@@ -373,6 +540,8 @@ class EventManager:
     def _track_opportunities_for_event(
         self, event_id: str, event_dict: dict, now_utc: datetime
     ) -> None:
+        if not self.is_event_trading_enabled(event_id, event_dict):
+            return
         if not self._is_trackable_crypto_event(event_id, event_dict):
             return
         quant_gate = event_dict.get("quant_buy_gate")
@@ -380,6 +549,9 @@ class EventManager:
             return
         for side in ("up", "down"):
             gate_side = quant_gate.get(side)
+            evaluation = self._evaluate_trackable_side_for_tracking(
+                event_id, event_dict, side
+            )
             self._opportunity_tracker.track_gate_transition(
                 event_id=event_id,
                 event_dict=event_dict,
@@ -388,7 +560,281 @@ class EventManager:
                 settings=self.settings,
                 mode=self.mode,
                 now_utc=now_utc,
+                stake_usd_override=evaluation.get("stake_usd"),
+                blocked_reason=(
+                    None
+                    if bool(evaluation.get("eligible"))
+                    else evaluation.get("reason")
+                ),
+                estimated_shares=evaluation.get("shares"),
             )
+
+    def _evaluate_trackable_side_for_tracking(
+        self, event_id: str, event_dict: dict, side: str
+    ) -> dict:
+        """Evaluate if side is actionable now. Returns {eligible, reason, stake_usd, shares, side_price}."""
+        side_price = (
+            float(event_dict.get("yes_price", 0.5) or 0.5)
+            if side == "up"
+            else float(event_dict.get("no_price", 0.5) or 0.5)
+        )
+        result = {
+            "eligible": False,
+            "reason": "unknown",
+            "stake_usd": 0.0,
+            "shares": 0.0,
+            "side_price": side_price,
+        }
+        if not bool(self.settings.get("kelly_enabled", True)):
+            result["reason"] = "kelly_disabled"
+            return result
+        if side_price <= 0:
+            result["reason"] = "invalid_side_price"
+            return result
+
+        quant_prob_raw = (
+            event_dict.get("quant_prob_up")
+            if side == "up"
+            else event_dict.get("quant_prob_down")
+        )
+        if not isinstance(quant_prob_raw, (float, int)):
+            result["reason"] = "no_quant_prob"
+            return result
+        quant_prob = float(quant_prob_raw)
+
+        min_edge_pct = max(0.0, float(self.settings.get("kelly_min_edge_pct", 0.5)))
+        edge_pct = (quant_prob - side_price) * 100.0
+        if edge_pct < min_edge_pct:
+            result["reason"] = "edge_below_min"
+            return result
+
+        denom = max(0.0001, 1.0 - side_price)
+        raw_kelly = max(0.0, (quant_prob - side_price) / denom)
+        kelly_fraction = max(0.0, float(self.settings.get("kelly_fraction", 0.25)))
+        max_bet_pct = (
+            max(0.0, float(self.settings.get("kelly_max_bet_pct", 25.0))) / 100.0
+        )
+        max_event_exposure_pct = (
+            max(0.0, float(self.settings.get("kelly_max_event_exposure_pct", 25.0)))
+            / 100.0
+        )
+        kelly_pct = min(raw_kelly * kelly_fraction, max_bet_pct, max_event_exposure_pct)
+
+        bankroll = max(0.0, float(self.settings.get("kelly_bankroll", 100.0)))
+        stake_usd = kelly_pct * bankroll
+        shares = stake_usd / max(0.0001, side_price)
+        result["stake_usd"] = stake_usd
+        result["shares"] = shares
+        if stake_usd <= 0:
+            result["reason"] = "stake_non_positive"
+            return result
+
+        min_shares = max(0.0, float(self.settings.get("pm_min_shares", 5.0)))
+        min_notional = max(0.0, float(self.settings.get("pm_min_notional_usd", 1.0)))
+        if shares < min_shares:
+            result["reason"] = "below_pm_min_shares"
+            return result
+        if stake_usd < min_notional:
+            result["reason"] = "below_pm_min_notional"
+            return result
+
+        if bool(self.settings.get("bot_risk_enabled", True)):
+            event_cap = (
+                bankroll
+                * max(0.0, float(self.settings.get("bot_max_event_exposure_pct", 15.0)))
+                / 100.0
+            )
+            ticker_cap = (
+                bankroll
+                * max(
+                    0.0, float(self.settings.get("bot_max_ticker_exposure_pct", 25.0))
+                )
+                / 100.0
+            )
+            if stake_usd > event_cap:
+                result["reason"] = "event_cap_exceeded"
+                return result
+            if stake_usd > ticker_cap:
+                result["reason"] = "ticker_cap_exceeded"
+                return result
+
+        result["eligible"] = True
+        result["reason"] = None
+        return result
+
+    def _extract_event_ticker(self, event_id: str, event_dict: dict) -> str:
+        raw_symbol = normalize_symbol(
+            str(
+                event_dict.get("chainlink_symbol")
+                or event_dict.get("binance_symbol", "")
+            )
+        )
+        ticker = raw_symbol.upper().strip()
+        if ticker.endswith("USDT"):
+            ticker = ticker[:-4]
+        if ticker:
+            return ticker
+
+        text = f"{event_id} {event_dict.get('name', '')}".lower()
+        if re.search(r"\b(bitcoin|btc)\b", text):
+            return "BTC"
+        if re.search(r"\b(ethereum|eth)\b", text):
+            return "ETH"
+        if re.search(r"\b(sol|solana)\b", text):
+            return "SOL"
+        if re.search(r"\b(xrp|ripple)\b", text):
+            return "XRP"
+        return "OTHER"
+
+    @staticmethod
+    def _clean_old_order_records(records: list[dict], now_utc: datetime) -> list[dict]:
+        cutoff = now_utc - timedelta(days=2)
+        return [
+            r
+            for r in records
+            if isinstance(r.get("at_utc"), datetime) and r["at_utc"] >= cutoff
+        ]
+
+    def validate_order_risk_guards(
+        self,
+        *,
+        event_id: str,
+        event: dict,
+        outcome: str,
+        shares: float,
+        notional_usd: float,
+        now_utc: datetime,
+        bankroll_usd: float | None,
+    ) -> tuple[bool, str]:
+        """Check configurable bot risk guards for a candidate order."""
+        if not self.is_event_trading_enabled(event_id, event):
+            return False, "ticker_disabled_by_monitored_tickers"
+        if shares <= 0:
+            return False, "invalid_shares"
+        if notional_usd <= 0:
+            return False, "invalid_notional"
+        min_shares = max(0.0, float(self.settings.get("pm_min_shares", 5.0)))
+        min_notional = max(0.0, float(self.settings.get("pm_min_notional_usd", 1.0)))
+        if shares < min_shares:
+            return False, f"shares_below_min_{min_shares:g}"
+        if notional_usd < min_notional:
+            return False, f"notional_below_min_{min_notional:g}"
+        if not bool(self.settings.get("bot_risk_enabled", True)):
+            return True, ""
+
+        self._order_guard_records = self._clean_old_order_records(
+            self._order_guard_records, now_utc
+        )
+
+        global_cooldown = max(
+            0.0, float(self.settings.get("bot_global_min_seconds_between_orders", 2))
+        )
+        if (
+            self._last_order_at_utc is not None
+            and global_cooldown > 0
+            and (now_utc - self._last_order_at_utc).total_seconds() < global_cooldown
+        ):
+            return False, "global_order_cooldown_active"
+
+        side = "up" if str(outcome).lower() == "up" else "down"
+        per_event_side_limit = max(
+            0, int(self.settings.get("bot_max_buys_per_event_side", 1))
+        )
+        side_cooldown = max(
+            0.0, float(self.settings.get("bot_cooldown_seconds_per_event_side", 60))
+        )
+        start_day = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+        event_side_records = [
+            r
+            for r in self._order_guard_records
+            if r.get("event_id") == event_id
+            and r.get("outcome") == side
+            and r.get("at_utc") >= start_day
+        ]
+        if per_event_side_limit > 0 and len(event_side_records) >= per_event_side_limit:
+            return False, "max_buys_per_event_side_reached"
+        if event_side_records and side_cooldown > 0:
+            last_side_at = max(r["at_utc"] for r in event_side_records)
+            if (now_utc - last_side_at).total_seconds() < side_cooldown:
+                return False, "event_side_cooldown_active"
+
+        ticker = self._extract_event_ticker(event_id, event)
+        base_bankroll = (
+            float(bankroll_usd)
+            if bankroll_usd is not None and bankroll_usd > 0
+            else float(self.settings.get("kelly_bankroll", 100.0))
+        )
+        base_bankroll = max(1.0, base_bankroll)
+        event_cap_usd = (
+            base_bankroll
+            * max(0.0, float(self.settings.get("bot_max_event_exposure_pct", 15.0)))
+            / 100.0
+        )
+        ticker_cap_usd = (
+            base_bankroll
+            * max(0.0, float(self.settings.get("bot_max_ticker_exposure_pct", 25.0)))
+            / 100.0
+        )
+
+        event_spend = sum(
+            float(r.get("notional_usd", 0.0))
+            for r in self._order_guard_records
+            if r.get("event_id") == event_id and r.get("at_utc") >= start_day
+        )
+        ticker_spend = sum(
+            float(r.get("notional_usd", 0.0))
+            for r in self._order_guard_records
+            if r.get("ticker") == ticker and r.get("at_utc") >= start_day
+        )
+        if event_spend + notional_usd > event_cap_usd:
+            return False, "event_exposure_cap_reached"
+        if ticker_spend + notional_usd > ticker_cap_usd:
+            return False, "ticker_exposure_cap_reached"
+
+        return True, ""
+
+    def register_order_fill(
+        self,
+        *,
+        event_id: str,
+        event: dict,
+        outcome: str,
+        notional_usd: float,
+        now_utc: datetime,
+    ) -> None:
+        self._order_guard_records = self._clean_old_order_records(
+            self._order_guard_records, now_utc
+        )
+        self._order_guard_records.append(
+            {
+                "at_utc": now_utc,
+                "event_id": event_id,
+                "ticker": self._extract_event_ticker(event_id, event),
+                "outcome": "up" if str(outcome).lower() == "up" else "down",
+                "notional_usd": max(0.0, float(notional_usd)),
+            }
+        )
+        self._last_order_at_utc = now_utc
+
+    def is_event_trading_enabled(
+        self, event_id: str, event_dict: dict | None = None
+    ) -> bool:
+        event = (
+            event_dict if isinstance(event_dict, dict) else self.events.get(event_id)
+        )
+        if not event:
+            return False
+        monitored = {
+            str(t).strip().upper()
+            for t in self.settings.get(
+                "monitored_tickers", ["BTC", "ETH", "SOL", "XRP"]
+            )
+            if str(t).strip()
+        }
+        if not monitored:
+            return False
+        ticker = self._extract_event_ticker(event_id, event)
+        return ticker in monitored
 
     def _is_trackable_crypto_event(self, event_id: str, event_dict: dict) -> bool:
         """Allow opportunity tracking only for supported crypto events."""
@@ -429,6 +875,7 @@ class EventManager:
         """Start the event manager background loop."""
         self.load_config()
         self._pm_ranges = self._load_pm_ranges()
+        self._pm_5m_slot_ranges = self._load_pm_5m_slot_ranges()
         self._running = True
 
         # Initialize with current mode
@@ -638,6 +1085,7 @@ class EventManager:
                 "quant_prob_down": None,
                 "quant_sample_size": None,
                 "quant_range_histogram": None,
+                "quant_source": None,
                 "quant_buy_gate": {
                     "up": {
                         "enabled": True,
@@ -818,11 +1266,15 @@ class EventManager:
 
         previous_events = self.events
         old_symbols = self._live_symbols()
+        old_assets = self._live_polymarket_assets()
         self.load_config()
         new_events = self._init_live_events()
         self._last_discovery_refresh = now
         self.events = self._merge_live_state(previous_events, new_events)
-        if self._live_symbols() != old_symbols:
+        if (
+            self._live_symbols() != old_symbols
+            or self._live_polymarket_assets() != old_assets
+        ):
             asyncio.create_task(self._sync_price_streams())
 
     async def _stop_streams(self) -> None:
@@ -841,8 +1293,12 @@ class EventManager:
             task.cancel()
         for task in self._chainlink_stream_tasks:
             task.cancel()
+        for task in self._polymarket_stream_tasks:
+            task.cancel()
         self._binance_stream_tasks.clear()
         self._chainlink_stream_tasks.clear()
+        self._polymarket_stream_tasks.clear()
+        self._polymarket_asset_map.clear()
 
     def _live_symbols(self) -> set[str]:
         return {
@@ -856,7 +1312,7 @@ class EventManager:
     async def _sync_price_streams(self) -> None:
         """Ensure price streamers match current live symbols/source config."""
         symbols = sorted(self._live_symbols())
-        if self.mode != "live" or not symbols:
+        if self.mode != "live":
             return
 
         # Stop any existing price streamers first.
@@ -875,7 +1331,7 @@ class EventManager:
 
         source = str(self._live_pricing.get("source", "chainlink")).lower()
         cl_url = str(self._live_pricing.get("chainlink_stream_url", "")).strip()
-        if source == "chainlink" and cl_url:
+        if symbols and source == "chainlink" and cl_url:
             subscribe_message = self._live_pricing.get("chainlink_subscribe", {})
             ping_interval = int(self._live_pricing.get("chainlink_ping_interval", 20))
             streamer = ChainlinkPriceStreamer(
@@ -890,20 +1346,166 @@ class EventManager:
             self._chainlink_streamers.append(streamer)
             self._chainlink_stream_tasks.append(asyncio.create_task(streamer.start()))
             logger.info("Started Chainlink WS stream for symbols: %s", symbols)
+            await self._sync_polymarket_streams()
             return
 
         # Fallback to Binance streaming.
-        for symbol in symbols:
-            # Binance streamer expects market symbol format (e.g. BTCUSDT).
-            market_symbol = f"{symbol}USDT"
-            streamer = BinanceStreamer(
-                symbol=market_symbol,
-                on_price=self._on_binance_price,
-            )
-            self._binance_streamers.append(streamer)
-            self._binance_stream_tasks.append(asyncio.create_task(streamer.start()))
+        if symbols:
+            for symbol in symbols:
+                # Binance streamer expects market symbol format (e.g. BTCUSDT).
+                market_symbol = f"{symbol}USDT"
+                streamer = BinanceStreamer(
+                    symbol=market_symbol,
+                    on_price=self._on_binance_price,
+                )
+                self._binance_streamers.append(streamer)
+                self._binance_stream_tasks.append(asyncio.create_task(streamer.start()))
 
-        logger.info("Started Binance WS streams for symbols: %s", symbols)
+            logger.info("Started Binance WS streams for symbols: %s", symbols)
+        await self._sync_polymarket_streams()
+
+    def _live_polymarket_assets(self) -> set[str]:
+        assets: set[str] = set()
+        for event in self.events.values():
+            yes_token = str(event.get("yes_token_id", "")).strip()
+            no_token = str(event.get("no_token_id", "")).strip()
+            if yes_token:
+                assets.add(yes_token)
+            if no_token:
+                assets.add(no_token)
+        return assets
+
+    async def _sync_polymarket_streams(self) -> None:
+        """Ensure Polymarket book stream matches current live event token ids."""
+        for s in self._polymarket_streamers:
+            await s.stop()
+        for task in self._polymarket_stream_tasks:
+            task.cancel()
+        self._polymarket_streamers.clear()
+        self._polymarket_stream_tasks.clear()
+        self._polymarket_asset_map.clear()
+
+        if self.mode != "live":
+            return
+
+        assets = sorted(self._live_polymarket_assets())
+        if not assets:
+            return
+
+        for event_id, event in self.events.items():
+            yes_token = str(event.get("yes_token_id", "")).strip()
+            no_token = str(event.get("no_token_id", "")).strip()
+            if yes_token:
+                self._polymarket_asset_map[yes_token] = (event_id, "yes")
+            if no_token:
+                self._polymarket_asset_map[no_token] = (event_id, "no")
+
+        streamer = PolymarketStreamer(
+            assets_ids=assets, on_book=self._on_polymarket_book
+        )
+        self._polymarket_streamers.append(streamer)
+        self._polymarket_stream_tasks.append(asyncio.create_task(streamer.start()))
+        logger.info("Started Polymarket WS stream for assets: %d", len(assets))
+
+    @staticmethod
+    def _parse_book_levels(levels: object, reverse: bool) -> list[dict]:
+        parsed: list[tuple[float, float]] = []
+        if not isinstance(levels, list):
+            return []
+        for level in levels:
+            if not isinstance(level, dict):
+                continue
+            price = level.get("price")
+            size = level.get("size", level.get("quantity", level.get("shares")))
+            try:
+                p = float(price)
+                s = float(size)
+            except (TypeError, ValueError):
+                continue
+            if p <= 0 or s <= 0:
+                continue
+            parsed.append((p, s))
+        parsed.sort(key=lambda x: x[0], reverse=reverse)
+        result: list[dict] = []
+        cumulative = 0.0
+        for p, s in parsed:
+            cumulative += p * s
+            result.append(
+                {
+                    "price": round(p, 2),
+                    "shares": round(s, 2),
+                    "total": round(cumulative, 2),
+                }
+            )
+        return result
+
+    async def _on_polymarket_book(self, msg: dict) -> None:
+        """Handle Polymarket realtime book updates and broadcast incrementally."""
+        asset_id = str(
+            msg.get("asset_id", msg.get("assetId", msg.get("market", "")))
+        ).strip()
+        if not asset_id:
+            return
+        mapping = self._polymarket_asset_map.get(asset_id)
+        if not mapping:
+            return
+        event_id, side = mapping
+        event = self.events.get(event_id)
+        if not event:
+            return
+
+        bids = self._parse_book_levels(msg.get("bids"), reverse=True)
+        asks = self._parse_book_levels(msg.get("asks"), reverse=False)
+        if not bids and not asks:
+            return
+
+        best_bid = bids[0]["price"] if bids else 0.0
+        best_ask = asks[0]["price"] if asks else 0.0
+        if best_bid > 0 and best_ask > 0:
+            mid = (best_bid + best_ask) / 2.0
+        else:
+            mid = best_bid or best_ask or 0.5
+        spread = max(0.0, best_ask - best_bid) if best_bid and best_ask else 0.0
+        volume = sum(level["price"] * level["shares"] for level in asks) + sum(
+            level["price"] * level["shares"] for level in bids
+        )
+        ob = {
+            "bids": bids,
+            "asks": asks,
+            "last_price": round(mid, 2),
+            "spread": round(spread, 2),
+            "volume": round(volume, 2),
+        }
+
+        if side == "yes":
+            event["order_book_yes"] = ob
+            event["yes_price"] = mid
+        else:
+            event["order_book_no"] = ob
+            event["no_price"] = mid
+
+        if event.get("yes_price") is not None and event.get("no_price") is not None:
+            total = float(event.get("yes_price", 0) or 0) + float(
+                event.get("no_price", 0) or 0
+            )
+            if total > 0:
+                event["yes_price"] = float(event.get("yes_price", 0) or 0) / total
+                event["no_price"] = 1.0 - event["yes_price"]
+
+        event["last_update"] = datetime.now(tz=timezone.utc).isoformat()
+        await manager.broadcast(
+            {
+                "type": "orderbook_update",
+                "event_id": event_id,
+                "data": {
+                    "yes_price": event.get("yes_price"),
+                    "no_price": event.get("no_price"),
+                    "order_book_yes": event.get("order_book_yes"),
+                    "order_book_no": event.get("order_book_no"),
+                    "last_update": event.get("last_update"),
+                },
+            }
+        )
 
     async def _on_binance_price(self, symbol: str, price: float) -> None:
         """Handle Binance tick updates and patch matching live events."""
@@ -961,6 +1563,7 @@ class EventManager:
                         "quant_prob_up": event_dict.get("quant_prob_up"),
                         "quant_prob_down": event_dict.get("quant_prob_down"),
                         "quant_sample_size": event_dict.get("quant_sample_size"),
+                        "quant_source": event_dict.get("quant_source"),
                         "quant_range_histogram": event_dict.get(
                             "quant_range_histogram"
                         ),
@@ -1074,6 +1677,7 @@ class EventManager:
                         "quant_prob_up": event_dict.get("quant_prob_up"),
                         "quant_prob_down": event_dict.get("quant_prob_down"),
                         "quant_sample_size": event_dict.get("quant_sample_size"),
+                        "quant_source": event_dict.get("quant_source"),
                         "quant_range_histogram": event_dict.get(
                             "quant_range_histogram"
                         ),

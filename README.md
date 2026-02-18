@@ -292,6 +292,25 @@ El modo se controla desde WebSocket (`switch_mode`) y por configuración de even
 
 Para live trading, asegúrate de tener `.env` con credenciales válidas.
 
+#### 4) Guardrails de riesgo para Bot Trade (UI Settings)
+
+En `Settings` ahora hay una sección **Bot Risk Guardrails** para evitar ráfagas de compras que vacíen balance:
+
+- `Enable Risk Guards`: enciende/apaga estas reglas.
+- `Max Buys / Event-Side (day)`: límite diario por `event_id + side` (UP/DOWN).
+- `Cooldown Event-Side (s)`: tiempo mínimo entre compras del mismo `event_id + side`.
+- `Global Min Gap Orders (s)`: separación mínima entre cualquier par de órdenes.
+- `Max Event Exposure (% bankroll)`: tope diario de notional por evento.
+- `Max Ticker Exposure (% bankroll)`: tope diario de notional por ticker (BTC/ETH/SOL/XRP).
+- `Min Shares (Polymarket)`: mínimo de shares por orden.
+- `Min Notional USD (Polymarket)`: mínimo de notional en USD por orden.
+
+Comportamiento backend:
+- Se valida antes de enviar orden (demo y live) en `POST /api/orders`.
+- Si bloquea, responde `403` con `Risk guard blocked: <reason>`.
+- El bankroll para topes usa `GET /api/balance` cuando está disponible; si no, fallback a `settings.kelly_bankroll`.
+- Los mínimos de exchange (`shares`/`notional`) se aplican siempre, incluso si `Enable Risk Guards` está apagado.
+
 ### Opción B: Bot CLI (flujo clásico)
 
 ```bash

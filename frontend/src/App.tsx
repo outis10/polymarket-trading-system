@@ -51,15 +51,15 @@ export default function App() {
     ).map((t) => t.toUpperCase());
     const monitoredTickerSet = new Set(monitoredTickers);
 
-    const visibleLiveEvents = Object.entries(events).filter(
+    const visibleEvents = Object.entries(events).filter(
         ([eventId, eventData]) => {
-            if (settings.mode !== "live") return false;
             if ((eventData.timeframe_minutes || 15) !== selectedMinutes)
                 return false;
             const ticker = inferTicker(eventId, eventData);
             if (!monitoredTickerSet.has(ticker)) {
                 return false;
             }
+            if (settings.mode !== "live") return true;
             if (eventData.event_start_utc) {
                 const startMs = Date.parse(eventData.event_start_utc);
                 if (!Number.isNaN(startMs) && nowMs < startMs) return false;
@@ -73,7 +73,7 @@ export default function App() {
 
     const getTickerPriority = (
         eventId: string,
-        eventData: (typeof visibleLiveEvents)[number][1],
+        eventData: (typeof visibleEvents)[number][1],
     ) => {
         const ticker = inferTicker(eventId, eventData);
         if (ticker === "BTC") return 0;
@@ -83,7 +83,7 @@ export default function App() {
         return 99;
     };
 
-    const orderedVisibleLiveEvents = visibleLiveEvents
+    const orderedVisibleEvents = visibleEvents
         .map((entry, index) => ({ entry, index }))
         .sort((a, b) => {
             const [aId, aData] = a.entry;
@@ -106,27 +106,25 @@ export default function App() {
                 <>
                     {settings.mode === "demo" && (
                         <div className="demo-banner">
-                            Demo Mode - Live cards are hidden. Switch to Live
-                            mode to see active markets.
+                            Demo Mode - Showing demo cards.
                         </div>
                     )}
 
                     <div className="event-grid">
-                        {visibleLiveEvents.length === 0 ? (
+                        {visibleEvents.length === 0 ? (
                             <div className="events-empty-state">
-                                No live {selectedTimeframe} events at this
-                                moment.
+                                {settings.mode === "live"
+                                    ? `No live ${selectedTimeframe} events at this moment.`
+                                    : `No demo ${selectedTimeframe} events available.`}
                             </div>
                         ) : (
-                            orderedVisibleLiveEvents.map(
-                                ([eventId, eventData]) => (
-                                    <EventCard
-                                        key={eventId}
-                                        eventId={eventId}
-                                        event={eventData}
-                                    />
-                                ),
-                            )
+                            orderedVisibleEvents.map(([eventId, eventData]) => (
+                                <EventCard
+                                    key={eventId}
+                                    eventId={eventId}
+                                    event={eventData}
+                                />
+                            ))
                         )}
                     </div>
                 </>

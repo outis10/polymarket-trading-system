@@ -61,6 +61,26 @@ class OpportunityTracker:
         "percentile_at_signal",
     ]
 
+    BLOCKED_HEADERS = [
+        "blocked_id",
+        "detected_at_utc",
+        "event_id",
+        "ticker",
+        "timeframe_minutes",
+        "side",
+        "blocked_reason",
+        "estimated_stake_usd",
+        "estimated_shares",
+        "side_price",
+        "event_end_utc",
+        "price_to_beat",
+        "current_price",
+        "quant_prob_side",
+        "edge_pct",
+        "sample_size",
+        "percentile",
+    ]
+
     def __init__(
         self,
         base_dir: str,
@@ -71,6 +91,7 @@ class OpportunityTracker:
         self.base_dir = base_dir
         self.signals_path = os.path.join(base_dir, "opportunities_log.csv")
         self.outcomes_path = os.path.join(base_dir, "opportunity_outcomes.csv")
+        self.blocked_path = os.path.join(base_dir, "opportunity_blocked.csv")
         self.stake_usd = float(stake_usd)
         self.close_guard_seconds = max(0, int(close_guard_seconds))
         self.signal_cooldown_seconds = max(0, int(signal_cooldown_seconds))
@@ -78,11 +99,13 @@ class OpportunityTracker:
         self._open_signals: dict[tuple[str, str], list[dict[str, Any]]] = {}
         self._resolved_signal_ids: set[str] = set()
         self._last_signal_at: dict[tuple[str, str], datetime] = {}
+        self._last_blocked_at: dict[tuple[str, str], datetime] = {}
         self._last_reconcile_at: datetime | None = None
         self._event_cache: dict[str, dict[str, Any]] = {}
         os.makedirs(self.base_dir, exist_ok=True)
         self._ensure_csv(self.signals_path, self.SIGNAL_HEADERS)
         self._ensure_csv(self.outcomes_path, self.OUTCOME_HEADERS)
+        self._ensure_csv(self.blocked_path, self.BLOCKED_HEADERS)
         self._hydrate_runtime_state_from_csv()
 
     @staticmethod
@@ -154,6 +177,7 @@ class OpportunityTracker:
         }
         self._open_signals.clear()
         self._last_signal_at.clear()
+        self._last_blocked_at.clear()
         for row in self._load_csv_rows(self.signals_path):
             signal_id = str(row.get("signal_id", "")).strip()
             event_id = str(row.get("event_id", "")).strip()
@@ -169,6 +193,19 @@ class OpportunityTracker:
             if signal_id in self._resolved_signal_ids:
                 continue
             self._open_signals.setdefault(key, []).append(row)
+
+        for row in self._load_csv_rows(self.blocked_path):
+            event_id = str(row.get("event_id", "")).strip()
+            side = str(row.get("side", "")).strip().lower()
+            if not event_id or side not in {"up", "down"}:
+                continue
+            blocked_at = self._parse_iso(row.get("detected_at_utc"))
+            if not blocked_at:
+                continue
+            key = (event_id, side)
+            prev = self._last_blocked_at.get(key)
+            if prev is None or blocked_at > prev:
+                self._last_blocked_at[key] = blocked_at
 
     def _build_outcome_row(
         self,
@@ -333,6 +370,9 @@ class OpportunityTracker:
         settings: dict[str, Any],
         mode: str,
         now_utc: datetime,
+        stake_usd_override: float | None = None,
+        blocked_reason: str | None = None,
+        estimated_shares: float | None = None,
     ) -> None:
         """Log opportunity when gate side transitions disabled -> enabled."""
         if mode != "live":
@@ -357,11 +397,17 @@ class OpportunityTracker:
         ):
             return
         last_signal = self._last_signal_at.get(key)
+        last_blocked = self._last_blocked_at.get(key)
+        last_emission = last_signal
+        if last_emission is None or (
+            last_blocked is not None and last_blocked > last_emission
+        ):
+            last_emission = last_blocked
         if (
-            last_signal is not None
+            last_emission is not None
             and self.signal_cooldown_seconds > 0
             and now_utc
-            < (last_signal + timedelta(seconds=self.signal_cooldown_seconds))
+            < (last_emission + timedelta(seconds=self.signal_cooldown_seconds))
         ):
             return
 
@@ -411,7 +457,12 @@ class OpportunityTracker:
             "edge_pct": edge_pct,
             "sample_size": sample_size,
             "percentile": percentile,
-            "stake_usd": self.stake_usd,
+            "stake_usd": (
+                float(stake_usd_override)
+                if isinstance(stake_usd_override, (int, float))
+                and float(stake_usd_override) > 0
+                else self.stake_usd
+            ),
             "quant_gate_min_sample": settings.get("quant_gate_min_sample"),
             "quant_gate_min_edge_pct": settings.get("quant_gate_min_edge_pct"),
             "quant_gate_use_percentile": settings.get("quant_gate_use_percentile"),
@@ -420,6 +471,36 @@ class OpportunityTracker:
             "quant_gate_min_price_c": settings.get("quant_gate_min_price_c"),
             "quant_gate_max_price_c": settings.get("quant_gate_max_price_c"),
         }
+
+        if blocked_reason:
+            blocked_row = {
+                "blocked_id": str(uuid.uuid4()),
+                "detected_at_utc": now_utc.isoformat(),
+                "event_id": event_id,
+                "ticker": ticker,
+                "timeframe_minutes": int(event_dict.get("timeframe_minutes", 15) or 15),
+                "side": side,
+                "blocked_reason": str(blocked_reason),
+                "estimated_stake_usd": signal["stake_usd"],
+                "estimated_shares": (
+                    float(estimated_shares)
+                    if isinstance(estimated_shares, (float, int))
+                    else None
+                ),
+                "side_price": side_price,
+                "event_end_utc": event_dict.get("event_end_utc", ""),
+                "price_to_beat": self._to_float(event_dict.get("price_to_beat")),
+                "current_price": self._to_float(event_dict.get("current_price")),
+                "quant_prob_side": quant_prob_side,
+                "edge_pct": edge_pct,
+                "sample_size": sample_size,
+                "percentile": percentile,
+            }
+            with open(self.blocked_path, "a", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=self.BLOCKED_HEADERS)
+                writer.writerow(blocked_row)
+            self._last_blocked_at[key] = now_utc
+            return
 
         with open(self.signals_path, "a", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=self.SIGNAL_HEADERS)

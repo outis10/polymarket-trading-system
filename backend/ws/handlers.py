@@ -126,6 +126,38 @@ async def websocket_events(websocket: WebSocket):
                                 for t in raw_tickers
                                 if str(t).strip()
                             ]
+                    if "bot_risk_enabled" in settings:
+                        event_manager.settings["bot_risk_enabled"] = bool(
+                            settings["bot_risk_enabled"]
+                        )
+                    if "bot_max_buys_per_event_side" in settings:
+                        event_manager.settings["bot_max_buys_per_event_side"] = int(
+                            settings["bot_max_buys_per_event_side"]
+                        )
+                    if "bot_cooldown_seconds_per_event_side" in settings:
+                        event_manager.settings[
+                            "bot_cooldown_seconds_per_event_side"
+                        ] = int(settings["bot_cooldown_seconds_per_event_side"])
+                    if "bot_global_min_seconds_between_orders" in settings:
+                        event_manager.settings[
+                            "bot_global_min_seconds_between_orders"
+                        ] = int(settings["bot_global_min_seconds_between_orders"])
+                    if "bot_max_event_exposure_pct" in settings:
+                        event_manager.settings["bot_max_event_exposure_pct"] = float(
+                            settings["bot_max_event_exposure_pct"]
+                        )
+                    if "bot_max_ticker_exposure_pct" in settings:
+                        event_manager.settings["bot_max_ticker_exposure_pct"] = float(
+                            settings["bot_max_ticker_exposure_pct"]
+                        )
+                    if "pm_min_shares" in settings:
+                        event_manager.settings["pm_min_shares"] = float(
+                            settings["pm_min_shares"]
+                        )
+                    if "pm_min_notional_usd" in settings:
+                        event_manager.settings["pm_min_notional_usd"] = float(
+                            settings["pm_min_notional_usd"]
+                        )
                     await manager.broadcast(
                         {
                             "type": "settings_update",

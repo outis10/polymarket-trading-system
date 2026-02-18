@@ -47,6 +47,7 @@ export interface EventData {
     quant_prob_up?: number | null;
     quant_prob_down?: number | null;
     quant_sample_size?: number | null;
+    quant_source?: string | null;
     quant_range_histogram?: QuantRangeHistogram | null;
     quant_buy_gate?: QuantBuyGate | null;
 }
@@ -104,6 +105,14 @@ export interface SettingsData {
     quant_gate_min_price_c?: number;
     quant_gate_max_price_c?: number;
     monitored_tickers?: string[];
+    bot_risk_enabled?: boolean;
+    bot_max_buys_per_event_side?: number;
+    bot_cooldown_seconds_per_event_side?: number;
+    bot_global_min_seconds_between_orders?: number;
+    bot_max_event_exposure_pct?: number;
+    bot_max_ticker_exposure_pct?: number;
+    pm_min_shares?: number;
+    pm_min_notional_usd?: number;
 }
 
 export interface WSMessage {

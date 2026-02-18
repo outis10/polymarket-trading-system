@@ -116,3 +116,25 @@ async def get_opportunity_outcomes_raw(limit: int = 200, ticker: str | None = No
         "ticker_filter": ticker.upper() if ticker else None,
         "rows": rows,
     }
+
+
+@router.get("/stats/opportunities/blocked/raw")
+async def get_opportunity_blocked_raw(limit: int = 200, ticker: str | None = None):
+    """Return raw recent blocked opportunity rows (not registered as signals)."""
+    path = event_manager._opportunity_tracker.blocked_path
+    rows: list[dict] = []
+    try:
+        with open(path, newline="") as f:
+            for row in csv.DictReader(f):
+                row_ticker = str(row.get("ticker", "")).upper()
+                if ticker and row_ticker != ticker.upper():
+                    continue
+                rows.append(row)
+    except FileNotFoundError:
+        rows = []
+    rows = rows[-max(1, int(limit)) :]
+    return {
+        "count": len(rows),
+        "ticker_filter": ticker.upper() if ticker else None,
+        "rows": rows,
+    }

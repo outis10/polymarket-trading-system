@@ -124,3 +124,11 @@ class SettingsData(BaseModel):
     quant_gate_min_price_c: float = 10.0
     quant_gate_max_price_c: float = 90.0
     monitored_tickers: list[str] = ["BTC", "ETH", "SOL", "XRP"]
+    bot_risk_enabled: bool = True
+    bot_max_buys_per_event_side: int = 1
+    bot_cooldown_seconds_per_event_side: int = 60
+    bot_global_min_seconds_between_orders: int = 2
+    bot_max_event_exposure_pct: float = 15.0
+    bot_max_ticker_exposure_pct: float = 25.0
+    pm_min_shares: float = 5.0
+    pm_min_notional_usd: float = 1.0

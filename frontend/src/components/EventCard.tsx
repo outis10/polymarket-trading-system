@@ -1,6 +1,7 @@
-import { memo } from "react";
-import type { EventData } from "../types/events";
+import { memo, useCallback, useState } from "react";
+import type { EventData, OrderResponse } from "../types/events";
 import { useEventsStore } from "../stores/useEventsStore";
+import { useAccountStore } from "../stores/useAccountStore";
 import Countdown from "./Countdown";
 import PriceChart from "./PriceChart";
 import OrderBook from "./OrderBook";
@@ -23,7 +24,13 @@ interface EventCardProps {
 
 function EventCard({ eventId, event }: EventCardProps) {
     const settings = useEventsStore((s) => s.settings);
+    const bankrollReal = useAccountStore((s) => s.bankrollReal);
     const chartOptions = settings.chart_options || [];
+    const [botOrderSubmitting, setBotOrderSubmitting] = useState(false);
+    const [botTradeResult, setBotTradeResult] = useState<{
+        type: "success" | "error";
+        message: string;
+    } | null>(null);
 
     const iconInfo = ICON_MAP[event.icon] || ICON_MAP.generic;
 
@@ -46,7 +53,8 @@ function EventCard({ eventId, event }: EventCardProps) {
     const tradingMode = settings.trading_mode || "manual";
     const kellyEnabled = settings.kelly_enabled ?? true;
     const kellyFraction = Math.max(0, settings.kelly_fraction ?? 0.25);
-    const bankroll = Math.max(0, settings.kelly_bankroll ?? 100);
+    const bankrollManual = Math.max(0, settings.kelly_bankroll ?? 100);
+    const bankroll = Math.max(0, bankrollReal ?? bankrollManual);
     const minEdgePct = Math.max(0, settings.kelly_min_edge_pct ?? 0.5);
     const maxBetPct = Math.max(0, settings.kelly_max_bet_pct ?? 25) / 100;
     const maxEventExposurePct =
@@ -107,7 +115,7 @@ function EventCard({ eventId, event }: EventCardProps) {
             : null;
 
     const ksTooltip = (edgePct: number) =>
-        `Kelly por evento. Source=${hasQuantData ? "quant" : "model"} | edge=${edgePct.toFixed(2)}% | frac=${kellyFraction.toFixed(2)}x`;
+        `Kelly por evento. Source=${hasQuantData ? "quant" : "model"} | bankroll=${formatUsd(bankroll)} (${bankrollReal !== null ? "api" : "manual"}) | edge=${edgePct.toFixed(2)}% | frac=${kellyFraction.toFixed(2)}x`;
 
     const formatGateReason = (reason: string) => {
         if (reason === "no_quant_data") return "No quant data";
@@ -132,6 +140,150 @@ function EventCard({ eventId, event }: EventCardProps) {
         const reasons = (gate.reasons || []).map(formatGateReason).join(" | ");
         return `Quant gate blocked: ${reasons || "rule not met"}`;
     };
+
+    const bestAskUp =
+        event.order_book_yes?.asks && event.order_book_yes.asks.length > 0
+            ? event.order_book_yes.asks[0].price
+            : null;
+    const bestAskDown =
+        event.order_book_no?.asks && event.order_book_no.asks.length > 0
+            ? event.order_book_no.asks[0].price
+            : null;
+    const buyPriceUp = bestAskUp ?? yesPrice;
+    const buyPriceDown = bestAskDown ?? noPrice;
+    const minShares = Math.max(0, settings.pm_min_shares ?? 5);
+    const minNotionalUsd = Math.max(0, settings.pm_min_notional_usd ?? 1);
+    const botRiskEnabled = settings.bot_risk_enabled ?? true;
+    const botMaxEventExposurePct = Math.max(
+        0,
+        settings.bot_max_event_exposure_pct ?? 15,
+    );
+    const botMaxTickerExposurePct = Math.max(
+        0,
+        settings.bot_max_ticker_exposure_pct ?? 25,
+    );
+    const botEventCapUsd = (bankroll * botMaxEventExposurePct) / 100;
+    const botTickerCapUsd = (bankroll * botMaxTickerExposurePct) / 100;
+    const kellySharesUp = buyPriceUp > 0 ? kellyUp.usd / buyPriceUp : 0;
+    const kellySharesDown = buyPriceDown > 0 ? kellyDown.usd / buyPriceDown : 0;
+    const minConstraintUpOk =
+        kellySharesUp >= minShares && kellyUp.usd >= minNotionalUsd;
+    const minConstraintDownOk =
+        kellySharesDown >= minShares && kellyDown.usd >= minNotionalUsd;
+    const localRiskUpOk =
+        !botRiskEnabled ||
+        (kellyUp.usd <= botEventCapUsd && kellyUp.usd <= botTickerCapUsd);
+    const localRiskDownOk =
+        !botRiskEnabled ||
+        (kellyDown.usd <= botEventCapUsd && kellyDown.usd <= botTickerCapUsd);
+    const canBuyUp =
+        (gateUp ? gateUp.enabled : true) && minConstraintUpOk && localRiskUpOk;
+    const canBuyDown =
+        (gateDown ? gateDown.enabled : true) &&
+        minConstraintDownOk &&
+        localRiskDownOk;
+    const localBlockReasonUp = !minConstraintUpOk
+        ? `blocked by exchange min (${minShares} shares, $${minNotionalUsd})`
+        : !localRiskUpOk
+          ? `blocked by local cap (event ${botMaxEventExposurePct}% / ticker ${botMaxTickerExposurePct}%)`
+          : "";
+    const localBlockReasonDown = !minConstraintDownOk
+        ? `blocked by exchange min (${minShares} shares, $${minNotionalUsd})`
+        : !localRiskDownOk
+          ? `blocked by local cap (event ${botMaxEventExposurePct}% / ticker ${botMaxTickerExposurePct}%)`
+          : "";
+
+    const submitBotBuy = useCallback(
+        async (outcome: "up" | "down") => {
+            if (botOrderSubmitting) return;
+
+            const price = outcome === "up" ? buyPriceUp : buyPriceDown;
+            const kellyUsd = outcome === "up" ? kellyUp.usd : kellyDown.usd;
+            const gateEnabled = outcome === "up" ? canBuyUp : canBuyDown;
+            if (!gateEnabled) return;
+            if (price <= 0) {
+                setBotTradeResult({
+                    type: "error",
+                    message: "Invalid price for market order",
+                });
+                return;
+            }
+            if (kellyUsd <= 0) {
+                setBotTradeResult({
+                    type: "error",
+                    message: "Kelly stake is zero for this side",
+                });
+                return;
+            }
+
+            const shares = Number((kellyUsd / price).toFixed(4));
+            if (shares <= 0) {
+                setBotTradeResult({
+                    type: "error",
+                    message: "Computed shares <= 0",
+                });
+                return;
+            }
+
+            setBotOrderSubmitting(true);
+            setBotTradeResult(null);
+            try {
+                const res = await fetch("/api/orders", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        event_id: eventId,
+                        side: "Buy",
+                        outcome,
+                        order_type: "market",
+                        price,
+                        shares,
+                    }),
+                });
+
+                let data: Partial<OrderResponse> & { detail?: string } = {};
+                try {
+                    data = await res.json();
+                } catch {
+                    data = {};
+                }
+
+                if (res.ok) {
+                    setBotTradeResult({
+                        type: "success",
+                        message:
+                            data.message ||
+                            `Market buy sent (${outcome.toUpperCase()} ${shares.toFixed(2)} shares)`,
+                    });
+                } else {
+                    setBotTradeResult({
+                        type: "error",
+                        message:
+                            data.detail ||
+                            data.message ||
+                            `Order failed (${res.status})`,
+                    });
+                }
+            } catch {
+                setBotTradeResult({
+                    type: "error",
+                    message: "Network error",
+                });
+            } finally {
+                setBotOrderSubmitting(false);
+            }
+        },
+        [
+            botOrderSubmitting,
+            buyPriceUp,
+            buyPriceDown,
+            kellyUp.usd,
+            kellyDown.usd,
+            canBuyUp,
+            canBuyDown,
+            eventId,
+        ],
+    );
 
     return (
         <article className="event-card compact-card">
@@ -345,10 +497,13 @@ function EventCard({ eventId, event }: EventCardProps) {
                                 <button
                                     type="button"
                                     className="bot-trade-buy-btn bot-trade-buy-btn-up"
-                                    disabled={gateUp ? !gateUp.enabled : false}
-                                    title={gateTooltip(gateUp)}
+                                    disabled={!canBuyUp || botOrderSubmitting}
+                                    title={`${gateTooltip(gateUp)} | price source: ${bestAskUp !== null ? "orderbook ask" : "fallback prob"}${localBlockReasonUp ? ` | ${localBlockReasonUp}` : ""}`}
+                                    onClick={() => submitBotBuy("up")}
                                 >
-                                    Buy At {formatCents(yesPrice)}
+                                    {botOrderSubmitting
+                                        ? "Submitting..."
+                                        : `Buy At ${formatCents(buyPriceUp)}`}
                                 </button>
                             </div>
                             <div className="bot-trade-subcard bot-trade-subcard-down">
@@ -373,14 +528,22 @@ function EventCard({ eventId, event }: EventCardProps) {
                                 <button
                                     type="button"
                                     className="bot-trade-buy-btn bot-trade-buy-btn-down"
-                                    disabled={
-                                        gateDown ? !gateDown.enabled : false
-                                    }
-                                    title={gateTooltip(gateDown)}
+                                    disabled={!canBuyDown || botOrderSubmitting}
+                                    title={`${gateTooltip(gateDown)} | price source: ${bestAskDown !== null ? "orderbook ask" : "fallback prob"}${localBlockReasonDown ? ` | ${localBlockReasonDown}` : ""}`}
+                                    onClick={() => submitBotBuy("down")}
                                 >
-                                    Buy At {formatCents(noPrice)}
+                                    {botOrderSubmitting
+                                        ? "Submitting..."
+                                        : `Buy At ${formatCents(buyPriceDown)}`}
                                 </button>
                             </div>
+                            {botTradeResult && (
+                                <div
+                                    className={`trade-toast trade-toast-${botTradeResult.type}`}
+                                >
+                                    {botTradeResult.message}
+                                </div>
+                            )}
                         </div>
                     ) : (
                         <TradingPanel eventId={eventId} event={event} />
