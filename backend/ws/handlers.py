@@ -135,6 +135,74 @@ async def websocket_events(websocket: WebSocket):
                         event_manager.settings["quant_gate_min_edge_vs_ask_pct"] = (
                             float(settings["quant_gate_min_edge_vs_ask_pct"])
                         )
+                    if "quant_gate_min_prob" in settings:
+                        event_manager.settings["quant_gate_min_prob"] = float(
+                            settings["quant_gate_min_prob"]
+                        )
+                    if "early_window_enabled" in settings:
+                        event_manager.settings["early_window_enabled"] = bool(
+                            settings["early_window_enabled"]
+                        )
+                    if "early_window_seconds" in settings:
+                        event_manager.settings["early_window_seconds"] = int(
+                            settings["early_window_seconds"]
+                        )
+                    if "early_quant_gate_min_sample" in settings:
+                        event_manager.settings["early_quant_gate_min_sample"] = int(
+                            settings["early_quant_gate_min_sample"]
+                        )
+                    if "early_quant_gate_min_edge_pct" in settings:
+                        event_manager.settings["early_quant_gate_min_edge_pct"] = float(
+                            settings["early_quant_gate_min_edge_pct"]
+                        )
+                    if "early_quant_gate_edge_vs_ask_enabled" in settings:
+                        event_manager.settings[
+                            "early_quant_gate_edge_vs_ask_enabled"
+                        ] = bool(settings["early_quant_gate_edge_vs_ask_enabled"])
+                    if "early_quant_gate_min_edge_vs_ask_pct" in settings:
+                        event_manager.settings[
+                            "early_quant_gate_min_edge_vs_ask_pct"
+                        ] = float(settings["early_quant_gate_min_edge_vs_ask_pct"])
+                    if "early_quant_gate_min_prob" in settings:
+                        event_manager.settings["early_quant_gate_min_prob"] = float(
+                            settings["early_quant_gate_min_prob"]
+                        )
+                    if "early_quant_gate_min_abs_diff_usd" in settings:
+                        event_manager.settings["early_quant_gate_min_abs_diff_usd"] = (
+                            float(settings["early_quant_gate_min_abs_diff_usd"])
+                        )
+                    if "late_window_enabled" in settings:
+                        event_manager.settings["late_window_enabled"] = bool(
+                            settings["late_window_enabled"]
+                        )
+                    if "late_window_seconds" in settings:
+                        event_manager.settings["late_window_seconds"] = int(
+                            settings["late_window_seconds"]
+                        )
+                    if "late_quant_gate_min_sample" in settings:
+                        event_manager.settings["late_quant_gate_min_sample"] = int(
+                            settings["late_quant_gate_min_sample"]
+                        )
+                    if "late_quant_gate_min_edge_pct" in settings:
+                        event_manager.settings["late_quant_gate_min_edge_pct"] = float(
+                            settings["late_quant_gate_min_edge_pct"]
+                        )
+                    if "late_quant_gate_edge_vs_ask_enabled" in settings:
+                        event_manager.settings[
+                            "late_quant_gate_edge_vs_ask_enabled"
+                        ] = bool(settings["late_quant_gate_edge_vs_ask_enabled"])
+                    if "late_quant_gate_min_edge_vs_ask_pct" in settings:
+                        event_manager.settings[
+                            "late_quant_gate_min_edge_vs_ask_pct"
+                        ] = float(settings["late_quant_gate_min_edge_vs_ask_pct"])
+                    if "late_quant_gate_min_prob" in settings:
+                        event_manager.settings["late_quant_gate_min_prob"] = float(
+                            settings["late_quant_gate_min_prob"]
+                        )
+                    if "late_quant_gate_min_abs_diff_usd" in settings:
+                        event_manager.settings["late_quant_gate_min_abs_diff_usd"] = (
+                            float(settings["late_quant_gate_min_abs_diff_usd"])
+                        )
                     if "monitored_tickers" in settings:
                         raw_tickers = settings["monitored_tickers"]
                         if isinstance(raw_tickers, list):

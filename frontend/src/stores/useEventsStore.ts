@@ -35,6 +35,22 @@ export const useEventsStore = create<EventsState>((set) => ({
         quant_gate_edge_vs_ask_enabled: false,
         quant_gate_min_edge_vs_ask_pct: 2,
         quant_gate_min_prob: 0.0,
+        early_window_enabled: true,
+        early_window_seconds: 50,
+        early_quant_gate_min_sample: 90,
+        early_quant_gate_min_edge_pct: 4,
+        early_quant_gate_edge_vs_ask_enabled: false,
+        early_quant_gate_min_edge_vs_ask_pct: 2,
+        early_quant_gate_min_prob: 0,
+        early_quant_gate_min_abs_diff_usd: 15,
+        late_window_enabled: true,
+        late_window_seconds: 120,
+        late_quant_gate_min_sample: 70,
+        late_quant_gate_min_edge_pct: 3,
+        late_quant_gate_edge_vs_ask_enabled: false,
+        late_quant_gate_min_edge_vs_ask_pct: 1,
+        late_quant_gate_min_prob: 0,
+        late_quant_gate_min_abs_diff_usd: 5,
         monitored_tickers: ["BTC", "ETH", "SOL", "XRP"],
         bot_risk_enabled: true,
         bot_max_buys_per_event_side: 1,
@@ -59,13 +75,15 @@ export const useEventsStore = create<EventsState>((set) => ({
             },
         })),
 
-    setSettings: (settings) => set({
-        settings: {
-            ...settings,
-            keyboard_shortcuts_enabled:
-                localStorage.getItem("keyboard_shortcuts_enabled") === "true",
-        },
-    }),
+    setSettings: (settings) =>
+        set({
+            settings: {
+                ...settings,
+                keyboard_shortcuts_enabled:
+                    localStorage.getItem("keyboard_shortcuts_enabled") ===
+                    "true",
+            },
+        }),
 
     updateSettings: (partial) =>
         set((state) => ({

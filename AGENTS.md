@@ -340,6 +340,22 @@ Implementar modulo Kelly configurable desde Settings:
   - filas con timestamp, evento/lado, reason, detail, shares/notional solicitado vs efectivo,
     cap aplicado y métricas de quant gate.
 
+## Estado actualizado (2026-02-20, multi-window quant gate)
+
+- Quant gate ahora soporta perfiles por ventana temporal del evento:
+  - `base` (reglas actuales),
+  - `early` (primeros segundos del evento),
+  - `late` (últimos segundos antes de cierre).
+- Overrides nuevos en settings (persistentes):
+  - Early: `early_window_enabled`, `early_window_seconds`,
+    `early_quant_gate_min_sample`, `early_quant_gate_min_edge_pct`,
+    `early_quant_gate_min_abs_diff_usd` (+ campos edge/prob avanzados).
+  - Late: `late_window_enabled`, `late_window_seconds`,
+    `late_quant_gate_min_sample`, `late_quant_gate_min_edge_pct`,
+    `late_quant_gate_min_abs_diff_usd` (+ campos edge/prob avanzados).
+- Nuevo motivo de bloqueo posible en gate:
+  - `diff_abs<...` (diferencia absoluta `|current_price - price_to_beat|` por debajo del mínimo de ventana).
+
 ## Estado actualizado (2026-02-17, Buy At ejecutable)
 
 - En `Bot Trade`, botones `Buy At` ahora ejecutan orden real vía `POST /api/orders`:

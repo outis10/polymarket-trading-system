@@ -61,6 +61,22 @@ class EventManager:
             "quant_gate_edge_vs_ask_enabled": False,
             "quant_gate_min_edge_vs_ask_pct": 2.0,
             "quant_gate_min_prob": 0.0,
+            "early_window_enabled": True,
+            "early_window_seconds": 50,
+            "early_quant_gate_min_sample": 90,
+            "early_quant_gate_min_edge_pct": 4.0,
+            "early_quant_gate_edge_vs_ask_enabled": False,
+            "early_quant_gate_min_edge_vs_ask_pct": 2.0,
+            "early_quant_gate_min_prob": 0.0,
+            "early_quant_gate_min_abs_diff_usd": 15.0,
+            "late_window_enabled": True,
+            "late_window_seconds": 120,
+            "late_quant_gate_min_sample": 70,
+            "late_quant_gate_min_edge_pct": 3.0,
+            "late_quant_gate_edge_vs_ask_enabled": False,
+            "late_quant_gate_min_edge_vs_ask_pct": 1.0,
+            "late_quant_gate_min_prob": 0.0,
+            "late_quant_gate_min_abs_diff_usd": 5.0,
             "monitored_tickers": ["BTC", "ETH", "SOL", "XRP"],
             "bot_risk_enabled": True,
             "bot_max_buys_per_event_side": 1,
@@ -508,21 +524,50 @@ class EventManager:
         ask_price: float | None,
         sample_size: int | None,
         percentile: float | None,
+        gate_params: dict | None = None,
+        price_diff_abs: float | None = None,
+        window_profile: str = "base",
     ) -> dict:
         settings = self.settings
-        gate_enabled = bool(settings.get("quant_gate_enabled", True))
-        min_sample = int(settings.get("quant_gate_min_sample", 120))
-        min_edge_pct = float(settings.get("quant_gate_min_edge_pct", 4.0))
-        use_percentile = bool(settings.get("quant_gate_use_percentile", True))
-        percentile_low = float(settings.get("quant_gate_percentile_low", 15.0))
-        percentile_high = float(settings.get("quant_gate_percentile_high", 85.0))
-        min_price_c = float(settings.get("quant_gate_min_price_c", 10.0))
-        max_price_c = float(settings.get("quant_gate_max_price_c", 90.0))
-        edge_vs_ask_enabled = bool(
-            settings.get("quant_gate_edge_vs_ask_enabled", False)
+        gp = gate_params or {}
+        gate_enabled = bool(
+            gp.get("gate_enabled", settings.get("quant_gate_enabled", True))
         )
-        min_edge_vs_ask_pct = float(settings.get("quant_gate_min_edge_vs_ask_pct", 2.0))
-        min_prob = float(settings.get("quant_gate_min_prob", 0.0))
+        min_sample = int(
+            gp.get("min_sample", settings.get("quant_gate_min_sample", 120))
+        )
+        min_edge_pct = float(
+            gp.get("min_edge_pct", settings.get("quant_gate_min_edge_pct", 4.0))
+        )
+        use_percentile = bool(
+            gp.get("use_percentile", settings.get("quant_gate_use_percentile", True))
+        )
+        percentile_low = float(
+            gp.get("percentile_low", settings.get("quant_gate_percentile_low", 15.0))
+        )
+        percentile_high = float(
+            gp.get("percentile_high", settings.get("quant_gate_percentile_high", 85.0))
+        )
+        min_price_c = float(
+            gp.get("min_price_c", settings.get("quant_gate_min_price_c", 10.0))
+        )
+        max_price_c = float(
+            gp.get("max_price_c", settings.get("quant_gate_max_price_c", 90.0))
+        )
+        edge_vs_ask_enabled = bool(
+            gp.get(
+                "edge_vs_ask_enabled",
+                settings.get("quant_gate_edge_vs_ask_enabled", False),
+            )
+        )
+        min_edge_vs_ask_pct = float(
+            gp.get(
+                "min_edge_vs_ask_pct",
+                settings.get("quant_gate_min_edge_vs_ask_pct", 2.0),
+            )
+        )
+        min_prob = float(gp.get("min_prob", settings.get("quant_gate_min_prob", 0.0)))
+        min_abs_diff_usd = float(gp.get("min_abs_diff_usd", 0.0))
 
         reasons: list[str] = []
         edge_pct: float | None = None
@@ -544,9 +589,14 @@ class EventManager:
                 reasons.append(f"prob<{min_prob:.2f}")
         if sample_size is None or sample_size < min_sample:
             reasons.append(f"sample<{min_sample}")
+        if min_abs_diff_usd > 0:
+            if price_diff_abs is None or price_diff_abs < min_abs_diff_usd:
+                reasons.append(f"diff_abs<{min_abs_diff_usd:.2f}")
 
         if quant_prob is not None:
-            price_for_edge = ask_price if (ask_price is not None and ask_price > 0) else market_prob
+            price_for_edge = (
+                ask_price if (ask_price is not None and ask_price > 0) else market_prob
+            )
             edge_pct = (quant_prob - price_for_edge) * 100.0
             if edge_pct < min_edge_pct:
                 reasons.append(f"edge<{min_edge_pct:.2f}%")
@@ -578,7 +628,136 @@ class EventManager:
             "sample_size": sample_size,
             "percentile": percentile,
             "side": side,
+            "window_profile": window_profile,
         }
+
+    def _resolve_quant_gate_window_params(self, event_dict: dict) -> tuple[str, dict]:
+        settings = self.settings
+        params = {
+            "gate_enabled": bool(settings.get("quant_gate_enabled", True)),
+            "min_sample": int(settings.get("quant_gate_min_sample", 120)),
+            "min_edge_pct": float(settings.get("quant_gate_min_edge_pct", 4.0)),
+            "use_percentile": bool(settings.get("quant_gate_use_percentile", True)),
+            "percentile_low": float(settings.get("quant_gate_percentile_low", 15.0)),
+            "percentile_high": float(settings.get("quant_gate_percentile_high", 85.0)),
+            "min_price_c": float(settings.get("quant_gate_min_price_c", 10.0)),
+            "max_price_c": float(settings.get("quant_gate_max_price_c", 90.0)),
+            "edge_vs_ask_enabled": bool(
+                settings.get("quant_gate_edge_vs_ask_enabled", False)
+            ),
+            "min_edge_vs_ask_pct": float(
+                settings.get("quant_gate_min_edge_vs_ask_pct", 2.0)
+            ),
+            "min_prob": float(settings.get("quant_gate_min_prob", 0.0)),
+            "min_abs_diff_usd": 0.0,
+        }
+
+        now_utc = datetime.now(tz=timezone.utc)
+        start_dt = None
+        end_dt = None
+        try:
+            start_raw = event_dict.get("event_start_utc")
+            if isinstance(start_raw, str) and start_raw:
+                start_dt = datetime.fromisoformat(start_raw)
+        except Exception:
+            start_dt = None
+        try:
+            end_raw = event_dict.get("event_end_utc")
+            if isinstance(end_raw, str) and end_raw:
+                end_dt = datetime.fromisoformat(end_raw)
+        except Exception:
+            end_dt = None
+
+        elapsed_seconds = None
+        time_left_seconds = None
+        if start_dt is not None:
+            elapsed_seconds = max(0, int((now_utc - start_dt).total_seconds()))
+        if end_dt is not None:
+            time_left_seconds = max(0, int((end_dt - now_utc).total_seconds()))
+
+        if (
+            bool(settings.get("early_window_enabled", False))
+            and elapsed_seconds is not None
+        ):
+            early_seconds = max(1, int(settings.get("early_window_seconds", 50)))
+            if elapsed_seconds <= early_seconds:
+                params.update(
+                    {
+                        "min_sample": int(
+                            settings.get(
+                                "early_quant_gate_min_sample", params["min_sample"]
+                            )
+                        ),
+                        "min_edge_pct": float(
+                            settings.get(
+                                "early_quant_gate_min_edge_pct", params["min_edge_pct"]
+                            )
+                        ),
+                        "edge_vs_ask_enabled": bool(
+                            settings.get(
+                                "early_quant_gate_edge_vs_ask_enabled",
+                                params["edge_vs_ask_enabled"],
+                            )
+                        ),
+                        "min_edge_vs_ask_pct": float(
+                            settings.get(
+                                "early_quant_gate_min_edge_vs_ask_pct",
+                                params["min_edge_vs_ask_pct"],
+                            )
+                        ),
+                        "min_prob": float(
+                            settings.get(
+                                "early_quant_gate_min_prob", params["min_prob"]
+                            )
+                        ),
+                        "min_abs_diff_usd": float(
+                            settings.get("early_quant_gate_min_abs_diff_usd", 15.0)
+                        ),
+                    }
+                )
+                return "early", params
+
+        if (
+            bool(settings.get("late_window_enabled", False))
+            and time_left_seconds is not None
+        ):
+            late_seconds = max(1, int(settings.get("late_window_seconds", 120)))
+            if time_left_seconds <= late_seconds:
+                params.update(
+                    {
+                        "min_sample": int(
+                            settings.get(
+                                "late_quant_gate_min_sample", params["min_sample"]
+                            )
+                        ),
+                        "min_edge_pct": float(
+                            settings.get(
+                                "late_quant_gate_min_edge_pct", params["min_edge_pct"]
+                            )
+                        ),
+                        "edge_vs_ask_enabled": bool(
+                            settings.get(
+                                "late_quant_gate_edge_vs_ask_enabled",
+                                params["edge_vs_ask_enabled"],
+                            )
+                        ),
+                        "min_edge_vs_ask_pct": float(
+                            settings.get(
+                                "late_quant_gate_min_edge_vs_ask_pct",
+                                params["min_edge_vs_ask_pct"],
+                            )
+                        ),
+                        "min_prob": float(
+                            settings.get("late_quant_gate_min_prob", params["min_prob"])
+                        ),
+                        "min_abs_diff_usd": float(
+                            settings.get("late_quant_gate_min_abs_diff_usd", 5.0)
+                        ),
+                    }
+                )
+                return "late", params
+
+        return "base", params
 
     def _apply_quant_buy_gates(self, event_dict: dict) -> None:
         histogram = event_dict.get("quant_range_histogram")
@@ -590,8 +769,17 @@ class EventManager:
         quant_prob_up = event_dict.get("quant_prob_up")
         quant_prob_down = event_dict.get("quant_prob_down")
         sample_size = event_dict.get("quant_sample_size")
+        ptb = event_dict.get("price_to_beat")
+        cp = event_dict.get("current_price")
+        price_diff_abs = None
+        if isinstance(ptb, (int, float)) and isinstance(cp, (int, float)):
+            try:
+                price_diff_abs = abs(float(cp) - float(ptb))
+            except Exception:
+                price_diff_abs = None
         yes_price = float(event_dict.get("yes_price", 0.5) or 0.5)
         no_price = float(event_dict.get("no_price", 0.5) or 0.5)
+        window_profile, gate_params = self._resolve_quant_gate_window_params(event_dict)
         ask_up = None
         ask_down = None
         if isinstance(event_dict.get("order_book_yes"), dict):
@@ -621,6 +809,9 @@ class EventManager:
                 ask_price=ask_up,
                 sample_size=int(sample_size) if isinstance(sample_size, int) else None,
                 percentile=percentile,
+                gate_params=gate_params,
+                price_diff_abs=price_diff_abs,
+                window_profile=window_profile,
             ),
             "down": self._compute_quant_buy_gate_side(
                 side="down",
@@ -631,6 +822,9 @@ class EventManager:
                 ask_price=ask_down,
                 sample_size=int(sample_size) if isinstance(sample_size, int) else None,
                 percentile=percentile,
+                gate_params=gate_params,
+                price_diff_abs=price_diff_abs,
+                window_profile=window_profile,
             ),
         }
 

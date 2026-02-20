@@ -82,6 +82,7 @@ export interface QuantBuyGateSide {
     sample_size: number | null;
     percentile: number | null;
     side: "up" | "down";
+    window_profile?: "early" | "base" | "late" | string;
 }
 
 export interface QuantBuyGate {
@@ -112,6 +113,22 @@ export interface SettingsData {
     quant_gate_edge_vs_ask_enabled?: boolean;
     quant_gate_min_edge_vs_ask_pct?: number;
     quant_gate_min_prob?: number;
+    early_window_enabled?: boolean;
+    early_window_seconds?: number;
+    early_quant_gate_min_sample?: number;
+    early_quant_gate_min_edge_pct?: number;
+    early_quant_gate_edge_vs_ask_enabled?: boolean;
+    early_quant_gate_min_edge_vs_ask_pct?: number;
+    early_quant_gate_min_prob?: number;
+    early_quant_gate_min_abs_diff_usd?: number;
+    late_window_enabled?: boolean;
+    late_window_seconds?: number;
+    late_quant_gate_min_sample?: number;
+    late_quant_gate_min_edge_pct?: number;
+    late_quant_gate_edge_vs_ask_enabled?: boolean;
+    late_quant_gate_min_edge_vs_ask_pct?: number;
+    late_quant_gate_min_prob?: number;
+    late_quant_gate_min_abs_diff_usd?: number;
     monitored_tickers?: string[];
     bot_risk_enabled?: boolean;
     bot_max_buys_per_event_side?: number;

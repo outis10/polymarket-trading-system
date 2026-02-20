@@ -152,6 +152,9 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
         if (reason.startsWith("sample<")) {
             return `Sample too low (${reason.replace("sample<", "min ")})`;
         }
+        if (reason.startsWith("diff_abs<")) {
+            return `Abs diff too low (${reason.replace("diff_abs<", "min $")})`;
+        }
         if (reason.startsWith("prob<")) {
             return `Prob below ${reason.replace("prob<", "")}`;
         }
@@ -174,9 +177,12 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
     };
     const gateTooltip = (gate: typeof gateUp) => {
         if (!gate) return "Gate data unavailable";
-        if (gate.enabled) return "Quant gate: enabled";
+        const profile = (gate as { window_profile?: string }).window_profile;
+        if (gate.enabled) {
+            return `Quant gate: enabled${profile ? ` (${profile})` : ""}`;
+        }
         const reasons = (gate.reasons || []).map(formatGateReason).join(" | ");
-        return `Quant gate blocked: ${reasons || "rule not met"}`;
+        return `Quant gate blocked${profile ? ` (${profile})` : ""}: ${reasons || "rule not met"}`;
     };
 
     const bestAskUp =

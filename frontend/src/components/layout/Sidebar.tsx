@@ -828,17 +828,22 @@ export default function Sidebar({ send }: SidebarProps) {
                         }
                     />
 
-                    <label className="field-label">Min Prob (% 0=off, 50=50%)</label>
+                    <label className="field-label">
+                        Min Prob (% 0=off, 50=50%)
+                    </label>
                     <input
                         className="sidebar-number-input"
                         type="number"
                         min={0}
                         max={100}
                         step={1}
-                        value={Math.round((settings.quant_gate_min_prob ?? 0) * 100)}
+                        value={Math.round(
+                            (settings.quant_gate_min_prob ?? 0) * 100,
+                        )}
                         onChange={(e) =>
                             handleKellySettingChange({
-                                quant_gate_min_prob: Number(e.target.value || 0) / 100,
+                                quant_gate_min_prob:
+                                    Number(e.target.value || 0) / 100,
                             })
                         }
                     />
@@ -971,6 +976,158 @@ export default function Sidebar({ send }: SidebarProps) {
                             })
                         }
                     />
+
+                    <hr className="sidebar-divider" />
+                    <div className="field-hint">Early Window Override</div>
+                    <label className="chart-option">
+                        <input
+                            type="checkbox"
+                            checked={settings.early_window_enabled ?? true}
+                            onChange={(e) =>
+                                handleKellySettingChange({
+                                    early_window_enabled: e.target.checked,
+                                })
+                            }
+                        />
+                        Enable Early Window
+                    </label>
+                    <label className="field-label">Early Window Seconds</label>
+                    <input
+                        className="sidebar-number-input"
+                        type="number"
+                        min={1}
+                        step={1}
+                        value={settings.early_window_seconds ?? 50}
+                        onChange={(e) =>
+                            handleKellySettingChange({
+                                early_window_seconds: Number(
+                                    e.target.value || 0,
+                                ),
+                            })
+                        }
+                    />
+                    <label className="field-label">
+                        Early Min Abs Diff ($)
+                    </label>
+                    <input
+                        className="sidebar-number-input"
+                        type="number"
+                        min={0}
+                        step={0.1}
+                        value={settings.early_quant_gate_min_abs_diff_usd ?? 15}
+                        onChange={(e) =>
+                            handleKellySettingChange({
+                                early_quant_gate_min_abs_diff_usd: Number(
+                                    e.target.value || 0,
+                                ),
+                            })
+                        }
+                    />
+                    <label className="field-label">Early Min Sample (n)</label>
+                    <input
+                        className="sidebar-number-input"
+                        type="number"
+                        min={1}
+                        step={1}
+                        value={settings.early_quant_gate_min_sample ?? 90}
+                        onChange={(e) =>
+                            handleKellySettingChange({
+                                early_quant_gate_min_sample: Number(
+                                    e.target.value || 0,
+                                ),
+                            })
+                        }
+                    />
+                    <label className="field-label">Early Min Edge (%)</label>
+                    <input
+                        className="sidebar-number-input"
+                        type="number"
+                        min={0}
+                        step={0.1}
+                        value={settings.early_quant_gate_min_edge_pct ?? 4}
+                        onChange={(e) =>
+                            handleKellySettingChange({
+                                early_quant_gate_min_edge_pct: Number(
+                                    e.target.value || 0,
+                                ),
+                            })
+                        }
+                    />
+
+                    <hr className="sidebar-divider" />
+                    <div className="field-hint">Late Window Override</div>
+                    <label className="chart-option">
+                        <input
+                            type="checkbox"
+                            checked={settings.late_window_enabled ?? true}
+                            onChange={(e) =>
+                                handleKellySettingChange({
+                                    late_window_enabled: e.target.checked,
+                                })
+                            }
+                        />
+                        Enable Late Window
+                    </label>
+                    <label className="field-label">Late Window Seconds</label>
+                    <input
+                        className="sidebar-number-input"
+                        type="number"
+                        min={1}
+                        step={1}
+                        value={settings.late_window_seconds ?? 120}
+                        onChange={(e) =>
+                            handleKellySettingChange({
+                                late_window_seconds: Number(
+                                    e.target.value || 0,
+                                ),
+                            })
+                        }
+                    />
+                    <label className="field-label">Late Min Sample (n)</label>
+                    <input
+                        className="sidebar-number-input"
+                        type="number"
+                        min={1}
+                        step={1}
+                        value={settings.late_quant_gate_min_sample ?? 70}
+                        onChange={(e) =>
+                            handleKellySettingChange({
+                                late_quant_gate_min_sample: Number(
+                                    e.target.value || 0,
+                                ),
+                            })
+                        }
+                    />
+                    <label className="field-label">Late Min Edge (%)</label>
+                    <input
+                        className="sidebar-number-input"
+                        type="number"
+                        min={0}
+                        step={0.1}
+                        value={settings.late_quant_gate_min_edge_pct ?? 3}
+                        onChange={(e) =>
+                            handleKellySettingChange({
+                                late_quant_gate_min_edge_pct: Number(
+                                    e.target.value || 0,
+                                ),
+                            })
+                        }
+                    />
+                    <label className="field-label">Late Min Abs Diff ($)</label>
+                    <input
+                        className="sidebar-number-input"
+                        type="number"
+                        min={0}
+                        step={0.1}
+                        value={settings.late_quant_gate_min_abs_diff_usd ?? 5}
+                        onChange={(e) =>
+                            handleKellySettingChange({
+                                late_quant_gate_min_abs_diff_usd: Number(
+                                    e.target.value || 0,
+                                ),
+                            })
+                        }
+                    />
                 </div>
 
                 <hr className="sidebar-divider" />
@@ -980,7 +1137,10 @@ export default function Sidebar({ send }: SidebarProps) {
                         type="checkbox"
                         checked={settings.keyboard_shortcuts_enabled ?? false}
                         onChange={(e) => {
-                            localStorage.setItem("keyboard_shortcuts_enabled", String(e.target.checked));
+                            localStorage.setItem(
+                                "keyboard_shortcuts_enabled",
+                                String(e.target.checked),
+                            );
                             handleKellySettingChange({
                                 keyboard_shortcuts_enabled: e.target.checked,
                             });
