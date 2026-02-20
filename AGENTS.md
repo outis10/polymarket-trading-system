@@ -320,6 +320,26 @@ Implementar modulo Kelly configurable desde Settings:
 - `validate_order_risk_guards` ahora prioriza este cap fijo por orden cuando está activo (>0),
   retornando temprano tras validar el tope por orden.
 
+## Estado actualizado (2026-02-20, paridad reglas front/back para Buy At)
+
+- `POST /api/orders` ahora valida adicionalmente:
+  - `timeframe_filter` activo en settings vs `timeframe_minutes` del evento,
+  - `quant_buy_gate` por lado (`up/down`) antes de ejecutar orden.
+- Frontend `Bot Trade` fue alineado para evitar reglas locales divergentes:
+  - habilitación del botón basada en `quant_buy_gate.enabled` + mínimos de exchange,
+  - cálculo de `shares` y `$` mostrado usando `bot_order_notional_cap_usd` efectivo (capped).
+- Objetivo: backend como fuente de verdad para operar bot sin depender de validaciones de UI.
+
+## Estado actualizado (2026-02-20, diagnostico 403 + log de bloqueos)
+
+- `POST /api/orders` ahora devuelve `403` enriquecido para bloqueos de `quant gate`:
+  - incluye `quant_prob`, `ask`, `market_prob`, `edge_pct`, `edge_vs_ask_pct`,
+    `sample`, `percentile` al momento del check.
+- Se agregó log persistente de bloqueos de orden:
+  - archivo: `backtest_output/order_blocked_log.csv`,
+  - filas con timestamp, evento/lado, reason, detail, shares/notional solicitado vs efectivo,
+    cap aplicado y métricas de quant gate.
+
 ## Estado actualizado (2026-02-17, Buy At ejecutable)
 
 - En `Bot Trade`, botones `Buy At` ahora ejecutan orden real vía `POST /api/orders`:

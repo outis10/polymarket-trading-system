@@ -1,6 +1,7 @@
 """REST endpoints for trading operations."""
 
 import asyncio
+import csv
 import logging
 import os
 import time
@@ -18,6 +19,114 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["trading"])
 _POSITIONS_CACHE_TTL_SECONDS = 10.0
 _positions_cache: dict[str, dict] = {}
+_ORDER_BLOCKED_LOG_PATH = os.path.normpath(
+    os.path.join(
+        os.path.dirname(__file__),
+        "..",
+        "..",
+        "backtest_output",
+        "order_blocked_log.csv",
+    )
+)
+
+
+def _parse_timeframe_filter_to_minutes(raw: object) -> int | None:
+    value = str(raw or "").strip().lower()
+    if value == "5m":
+        return 5
+    if value == "15m":
+        return 15
+    if value == "1h":
+        return 60
+    return None
+
+
+def _quant_gate_reason_text(reasons: list[object]) -> str:
+    cleaned = [str(r).strip() for r in reasons if str(r).strip()]
+    return " | ".join(cleaned) if cleaned else "quant_gate_blocked"
+
+
+def _safe_float(value: object) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _append_order_blocked_log(row: dict[str, object]) -> None:
+    os.makedirs(os.path.dirname(_ORDER_BLOCKED_LOG_PATH), exist_ok=True)
+    file_exists = os.path.exists(_ORDER_BLOCKED_LOG_PATH)
+    fieldnames = [
+        "blocked_at_utc",
+        "event_id",
+        "timeframe_minutes",
+        "side",
+        "reason",
+        "detail",
+        "requested_shares",
+        "effective_shares",
+        "requested_price",
+        "order_price_ref",
+        "requested_notional_usd",
+        "effective_notional_usd",
+        "hard_cap_usd",
+        "quant_prob_at_check",
+        "ask_price_at_check",
+        "market_prob_at_check",
+        "edge_pct_at_check",
+        "edge_vs_ask_pct_at_check",
+        "sample_size_at_check",
+        "percentile_at_check",
+    ]
+    with open(_ORDER_BLOCKED_LOG_PATH, "a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow({k: row.get(k, "") for k in fieldnames})
+
+
+def _build_quant_gate_debug(*, event: dict, side: str) -> dict[str, object]:
+    quant_prob = _safe_float(
+        event.get("quant_prob_up") if side == "up" else event.get("quant_prob_down")
+    )
+    market_prob = _safe_float(
+        event.get("yes_price") if side == "up" else event.get("no_price")
+    )
+    ask_price = None
+    if side == "up":
+        asks = (event.get("order_book_yes") or {}).get("asks", [])
+    else:
+        asks = (event.get("order_book_no") or {}).get("asks", [])
+    if isinstance(asks, list) and asks:
+        ask_price = _safe_float(
+            asks[0].get("price") if isinstance(asks[0], dict) else None
+        )
+    edge_pct = None
+    edge_vs_ask_pct = None
+    if quant_prob is not None:
+        price_ref = (
+            ask_price if (ask_price is not None and ask_price > 0) else market_prob
+        )
+        if price_ref is not None:
+            edge_pct = (quant_prob - price_ref) * 100.0
+        if ask_price is not None and ask_price > 0:
+            edge_vs_ask_pct = (quant_prob - ask_price) * 100.0
+    histogram = event.get("quant_range_histogram")
+    percentile = None
+    if isinstance(histogram, dict):
+        percentile = _safe_float(histogram.get("current_percentile"))
+    sample_size = event.get("quant_sample_size")
+    return {
+        "quant_prob_at_check": quant_prob,
+        "ask_price_at_check": ask_price,
+        "market_prob_at_check": market_prob,
+        "edge_pct_at_check": edge_pct,
+        "edge_vs_ask_pct_at_check": edge_vs_ask_pct,
+        "sample_size_at_check": sample_size if isinstance(sample_size, int) else None,
+        "percentile_at_check": percentile,
+    }
 
 
 @router.post("/orders", response_model=OrderResponse)
@@ -58,6 +167,59 @@ async def place_order(order: OrderRequest):
         cap_applied = True
     notional_usd = order_price_ref * effective_shares
     bankroll_usd: float | None = None
+    quant_debug = _build_quant_gate_debug(event=event, side=outcome_side)
+
+    def _blocked(detail: str, reason: str) -> HTTPException:
+        _append_order_blocked_log(
+            {
+                "blocked_at_utc": datetime.now(tz=timezone.utc).isoformat(),
+                "event_id": order.event_id,
+                "timeframe_minutes": int(event.get("timeframe_minutes", 15) or 15),
+                "side": outcome_side,
+                "reason": reason,
+                "detail": detail,
+                "requested_shares": requested_shares,
+                "effective_shares": effective_shares,
+                "requested_price": float(order.price),
+                "order_price_ref": order_price_ref,
+                "requested_notional_usd": requested_notional_usd,
+                "effective_notional_usd": notional_usd,
+                "hard_cap_usd": hard_cap_usd,
+                **quant_debug,
+            }
+        )
+        return HTTPException(status_code=403, detail=detail)
+
+    selected_tf = _parse_timeframe_filter_to_minutes(
+        event_manager.settings.get("timeframe_filter", "5m")
+    )
+    event_tf = int(event.get("timeframe_minutes", 15) or 15)
+    if selected_tf is not None and event_tf != selected_tf:
+        raise _blocked(
+            detail=(
+                f"Timeframe mismatch: selected={selected_tf}m, "
+                f"event={event_tf}m for event_id={order.event_id}"
+            ),
+            reason="timeframe_mismatch",
+        )
+
+    quant_gate = event.get("quant_buy_gate")
+    if isinstance(quant_gate, dict):
+        gate_side = quant_gate.get(outcome_side)
+        if isinstance(gate_side, dict) and not bool(gate_side.get("enabled", False)):
+            reasons = gate_side.get("reasons", [])
+            reasons_list = reasons if isinstance(reasons, list) else [reasons]
+            detail = (
+                f"Quant gate blocked: {_quant_gate_reason_text(reasons_list)}"
+                f" | quant_prob={quant_debug.get('quant_prob_at_check')}"
+                f" ask={quant_debug.get('ask_price_at_check')}"
+                f" market_prob={quant_debug.get('market_prob_at_check')}"
+                f" edge_pct={quant_debug.get('edge_pct_at_check')}"
+                f" edge_vs_ask_pct={quant_debug.get('edge_vs_ask_pct_at_check')}"
+                f" sample={quant_debug.get('sample_size_at_check')}"
+                f" percentile={quant_debug.get('percentile_at_check')}"
+            )
+            raise _blocked(detail=detail, reason="quant_gate_blocked")
 
     # Demo mode: simulate
     if event_manager.mode == "demo":
@@ -79,8 +241,9 @@ async def place_order(order: OrderRequest):
                 now_utc=datetime.now(tz=timezone.utc),
                 bankroll_usd=bankroll_usd,
             )
-            raise HTTPException(
-                status_code=403, detail=f"Risk guard blocked: {detailed}"
+            raise _blocked(
+                detail=f"Risk guard blocked: {detailed}",
+                reason="risk_guard_blocked",
             )
         event_manager.register_order_fill(
             event_id=order.event_id,
@@ -146,7 +309,10 @@ async def place_order(order: OrderRequest):
             now_utc=datetime.now(tz=timezone.utc),
             bankroll_usd=bankroll_usd,
         )
-        raise HTTPException(status_code=403, detail=f"Risk guard blocked: {detailed}")
+        raise _blocked(
+            detail=f"Risk guard blocked: {detailed}",
+            reason="risk_guard_blocked",
+        )
 
     token_id = (
         event.get("yes_token_id") if order.outcome == "up" else event.get("no_token_id")

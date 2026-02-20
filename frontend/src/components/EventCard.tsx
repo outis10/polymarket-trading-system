@@ -74,7 +74,6 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
     const bankrollManual = Math.max(0, settings.kelly_bankroll ?? 100);
     const bankroll = Math.max(0, bankrollReal ?? bankrollManual);
     const minEdgePct = Math.max(0, settings.kelly_min_edge_pct ?? 0.5);
-    const minQuantProb = settings.quant_gate_min_prob ?? 0.0;
     const maxBetPct = Math.max(0, settings.kelly_max_bet_pct ?? 25) / 100;
     const maxEventExposurePct =
         Math.max(0, settings.kelly_max_event_exposure_pct ?? 25) / 100;
@@ -208,64 +207,42 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
     const buyPriceDown = bestAskDown ?? noPrice;
     const minShares = Math.max(0, settings.pm_min_shares ?? 5);
     const minNotionalUsd = Math.max(0, settings.pm_min_notional_usd ?? 1);
-    const botRiskEnabled = settings.bot_risk_enabled ?? true;
-    const botMaxEventExposurePct = Math.max(
+    const orderNotionalCapUsd = Math.max(
         0,
-        settings.bot_max_event_exposure_pct ?? 15,
+        settings.bot_order_notional_cap_usd ?? 5,
     );
-    const botMaxTickerExposurePct = Math.max(
-        0,
-        settings.bot_max_ticker_exposure_pct ?? 25,
-    );
-    const botEventCapUsd = (bankroll * botMaxEventExposurePct) / 100;
-    const botTickerCapUsd = (bankroll * botMaxTickerExposurePct) / 100;
-    const kellySharesUp = buyPriceUp > 0 ? kellyUp.usd / buyPriceUp : 0;
-    const kellySharesDown = buyPriceDown > 0 ? kellyDown.usd / buyPriceDown : 0;
+    const effectiveStakeUpUsd =
+        orderNotionalCapUsd > 0
+            ? Math.min(kellyUp.usd, orderNotionalCapUsd)
+            : kellyUp.usd;
+    const effectiveStakeDownUsd =
+        orderNotionalCapUsd > 0
+            ? Math.min(kellyDown.usd, orderNotionalCapUsd)
+            : kellyDown.usd;
+    const kellySharesUp = buyPriceUp > 0 ? effectiveStakeUpUsd / buyPriceUp : 0;
+    const kellySharesDown =
+        buyPriceDown > 0 ? effectiveStakeDownUsd / buyPriceDown : 0;
     const minConstraintUpOk =
-        kellySharesUp >= minShares && kellyUp.usd >= minNotionalUsd;
+        kellySharesUp >= minShares && effectiveStakeUpUsd >= minNotionalUsd;
     const minConstraintDownOk =
-        kellySharesDown >= minShares && kellyDown.usd >= minNotionalUsd;
-    const localRiskUpOk =
-        !botRiskEnabled ||
-        (kellyUp.usd <= botEventCapUsd && kellyUp.usd <= botTickerCapUsd);
-    const localRiskDownOk =
-        !botRiskEnabled ||
-        (kellyDown.usd <= botEventCapUsd && kellyDown.usd <= botTickerCapUsd);
-    const probUpOk =
-        quantProbUp === null || quantProbUp >= minQuantProb;
-    const probDownOk =
-        quantProbDown === null || quantProbDown >= minQuantProb;
-    const edgeUpOk =
-        gateUp !== null
-            ? gateUp.enabled
-            : kellyUp.edgePct >= minEdgePct;
-    const edgeDownOk =
-        gateDown !== null
-            ? gateDown.enabled
-            : kellyDown.edgePct >= minEdgePct;
-    const askEdgeUpOk =
-        quantEdgeVsAskUpPct !== null && quantEdgeVsAskUpPct >= 0;
-    const askEdgeDownOk =
-        quantEdgeVsAskDownPct !== null && quantEdgeVsAskDownPct >= 0;
-    const canBuyUp = probUpOk && edgeUpOk && askEdgeUpOk && minConstraintUpOk && localRiskUpOk;
-    const canBuyDown = probDownOk && edgeDownOk && askEdgeDownOk && minConstraintDownOk && localRiskDownOk;
+        kellySharesDown >= minShares && effectiveStakeDownUsd >= minNotionalUsd;
+    const canBuyUp = (gateUp ? gateUp.enabled : false) && minConstraintUpOk;
+    const canBuyDown =
+        (gateDown ? gateDown.enabled : false) && minConstraintDownOk;
     const localBlockReasonUp = !minConstraintUpOk
         ? `blocked by exchange min (${minShares} shares, $${minNotionalUsd})`
-        : !localRiskUpOk
-          ? `blocked by local cap (event ${botMaxEventExposurePct}% / ticker ${botMaxTickerExposurePct}%)`
-          : "";
+        : "";
     const localBlockReasonDown = !minConstraintDownOk
         ? `blocked by exchange min (${minShares} shares, $${minNotionalUsd})`
-        : !localRiskDownOk
-          ? `blocked by local cap (event ${botMaxEventExposurePct}% / ticker ${botMaxTickerExposurePct}%)`
-          : "";
+        : "";
 
     const submitBotBuy = useCallback(
         async (outcome: "up" | "down") => {
             if (botOrderSubmitting) return;
 
             const price = outcome === "up" ? buyPriceUp : buyPriceDown;
-            const kellyUsd = outcome === "up" ? kellyUp.usd : kellyDown.usd;
+            const kellyUsd =
+                outcome === "up" ? effectiveStakeUpUsd : effectiveStakeDownUsd;
             const gateEnabled = outcome === "up" ? canBuyUp : canBuyDown;
             if (!gateEnabled) return;
             if (price <= 0) {
@@ -364,8 +341,8 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
             botOrderSubmitting,
             buyPriceUp,
             buyPriceDown,
-            kellyUp.usd,
-            kellyDown.usd,
+            effectiveStakeUpUsd,
+            effectiveStakeDownUsd,
             canBuyUp,
             canBuyDown,
             eventId,
@@ -377,7 +354,11 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
     useEffect(() => {
         if (!isFirstCard || !keyboardEnabled) return;
         const onKeyDown = (e: KeyboardEvent) => {
-            if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+            if (
+                e.target instanceof HTMLInputElement ||
+                e.target instanceof HTMLTextAreaElement
+            )
+                return;
             if (e.key === "z" || e.key === "Z") submitBotBuy("up");
             if (e.key === "x" || e.key === "X") submitBotBuy("down");
         };
@@ -612,8 +593,8 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
                                             KS {kellyUp.pct.toFixed(2)}%
                                         </span>
                                         <span className="bot-trade-ks-amount">
-                                            (${formatUsd(kellyUp.usd)} - sh{" "}
-                                            {kellySharesUp.toFixed(2)})
+                                            (${formatUsd(effectiveStakeUpUsd)} -
+                                            sh {kellySharesUp.toFixed(2)})
                                         </span>
                                     </div>
                                 </div>
@@ -655,8 +636,8 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
                                             KS {kellyDown.pct.toFixed(2)}%
                                         </span>
                                         <span className="bot-trade-ks-amount">
-                                            (${formatUsd(kellyDown.usd)} - sh{" "}
-                                            {kellySharesDown.toFixed(2)})
+                                            (${formatUsd(effectiveStakeDownUsd)}{" "}
+                                            - sh {kellySharesDown.toFixed(2)})
                                         </span>
                                     </div>
                                 </div>
