@@ -270,3 +270,34 @@ python3 run_experiments_timeframes.py \
 ```
 
 Tip: empieza con una grilla pequeña (o `--max-combos`) para iterar rápido.
+
+## Scripts disponibles (resumen corto)
+
+- `export_binance_klines.py`:
+  Exporta velas Binance a CSV (single o multi-ticker). Mantiene formato compatible con `resample_klines_to_excel.py`.
+
+- `resample_klines_to_excel.py`:
+  Convierte CSV base (1m) a Excel multiframe (`1m/2m/3m/5m/15m`) y agrega features cuantitativos.
+
+- `aggregate_pm_15m_ranges.py`:
+  Agrega rangos PM por minuto y calcula probabilidades `up/down` por rango.
+
+- `run_pm_pipeline_4cryptos.py`:
+  Ejecuta pipeline completo para BTC/ETH/SOL/XRP:
+  export -> resample -> aggregate -> merge (`merged_pm_ranges_4cryptos.csv`).
+
+- `export_pm_5m_last_window_1s.py`:
+  Descubre eventos PM de 5m y exporta velas 1s solo en la ventana final (ej. últimos 180s) para hipótesis M3-M4.
+
+- `plot_price_with_pm_closes.py`:
+  Grafica precio (resample configurable, ej. 10s) y superpone cierres de eventos PM para inspección visual.
+
+## Ejemplos rápidos
+
+### 1) Export 1m para las 4 cryptos (base pipeline)
+```bash
+python3 export_binance_klines.py \
+  --four-cryptos \
+  --interval 1m \
+  --months 3 \
+  --output-dir backtest_output
