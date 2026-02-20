@@ -126,6 +126,7 @@ class SettingsData(BaseModel):
     quant_gate_max_price_c: float = 90.0
     quant_gate_edge_vs_ask_enabled: bool = False
     quant_gate_min_edge_vs_ask_pct: float = 2.0
+    quant_gate_min_prob: float = 0.0
     monitored_tickers: list[str] = ["BTC", "ETH", "SOL", "XRP"]
     bot_risk_enabled: bool = True
     bot_max_buys_per_event_side: int = 1
