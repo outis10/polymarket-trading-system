@@ -127,6 +127,8 @@ class SettingsData(BaseModel):
     quant_gate_edge_vs_ask_enabled: bool = False
     quant_gate_min_edge_vs_ask_pct: float = 2.0
     quant_gate_min_prob: float = 0.0
+    quant_gate_min_sample_strong_signal: int = 20
+    quant_gate_strong_signal_threshold: float = 0.72
     early_window_enabled: bool = True
     early_window_seconds: int = 50
     early_quant_gate_min_sample: int = 90
@@ -134,7 +136,7 @@ class SettingsData(BaseModel):
     early_quant_gate_edge_vs_ask_enabled: bool = False
     early_quant_gate_min_edge_vs_ask_pct: float = 2.0
     early_quant_gate_min_prob: float = 0.0
-    early_quant_gate_min_abs_diff_usd: float = 15.0
+    early_quant_gate_min_diff_pct: float = 0.0
     late_window_enabled: bool = True
     late_window_seconds: int = 120
     late_quant_gate_min_sample: int = 70
@@ -142,7 +144,7 @@ class SettingsData(BaseModel):
     late_quant_gate_edge_vs_ask_enabled: bool = False
     late_quant_gate_min_edge_vs_ask_pct: float = 1.0
     late_quant_gate_min_prob: float = 0.0
-    late_quant_gate_min_abs_diff_usd: float = 5.0
+    late_quant_gate_min_diff_pct: float = 0.0
     monitored_tickers: list[str] = ["BTC", "ETH", "SOL", "XRP"]
     bot_risk_enabled: bool = True
     bot_max_buys_per_event_side: int = 1

@@ -74,6 +74,7 @@ def _append_order_blocked_log(row: dict[str, object]) -> None:
         "hard_cap_usd",
         "quant_prob_at_check",
         "ask_price_at_check",
+        "ask_is_proxy_at_check",
         "market_prob_at_check",
         "edge_pct_at_check",
         "edge_vs_ask_pct_at_check",
@@ -94,24 +95,24 @@ def _build_quant_gate_debug(*, event: dict, side: str) -> dict[str, object]:
     market_prob = _safe_float(
         event.get("yes_price") if side == "up" else event.get("no_price")
     )
-    ask_price = None
+    ask_price_raw = None
     if side == "up":
         asks = (event.get("order_book_yes") or {}).get("asks", [])
     else:
         asks = (event.get("order_book_no") or {}).get("asks", [])
     if isinstance(asks, list) and asks:
-        ask_price = _safe_float(
+        ask_price_raw = _safe_float(
             asks[0].get("price") if isinstance(asks[0], dict) else None
         )
+    ask_is_proxy = ask_price_raw is None
+    ask_price = ask_price_raw if ask_price_raw is not None else market_prob
     edge_pct = None
     edge_vs_ask_pct = None
-    if quant_prob is not None:
-        price_ref = (
-            ask_price if (ask_price is not None and ask_price > 0) else market_prob
-        )
-        if price_ref is not None:
-            edge_pct = (quant_prob - price_ref) * 100.0
-        if ask_price is not None and ask_price > 0:
+    if quant_prob is not None and market_prob is not None:
+        # edge_pct: vs mid (consistent with gate logic)
+        edge_pct = (quant_prob - market_prob) * 100.0
+        # edge_vs_ask_pct: vs actual ask (None if proxy)
+        if not ask_is_proxy and ask_price is not None:
             edge_vs_ask_pct = (quant_prob - ask_price) * 100.0
     histogram = event.get("quant_range_histogram")
     percentile = None
@@ -121,6 +122,7 @@ def _build_quant_gate_debug(*, event: dict, side: str) -> dict[str, object]:
     return {
         "quant_prob_at_check": quant_prob,
         "ask_price_at_check": ask_price,
+        "ask_is_proxy_at_check": ask_is_proxy,
         "market_prob_at_check": market_prob,
         "edge_pct_at_check": edge_pct,
         "edge_vs_ask_pct_at_check": edge_vs_ask_pct,
@@ -209,10 +211,11 @@ async def place_order(order: OrderRequest):
         if isinstance(gate_side, dict) and not bool(gate_side.get("enabled", False)):
             reasons = gate_side.get("reasons", [])
             reasons_list = reasons if isinstance(reasons, list) else [reasons]
+            ask_proxy_flag = " (proxy=mid)" if quant_debug.get("ask_is_proxy_at_check") else ""
             detail = (
                 f"Quant gate blocked: {_quant_gate_reason_text(reasons_list)}"
                 f" | quant_prob={quant_debug.get('quant_prob_at_check')}"
-                f" ask={quant_debug.get('ask_price_at_check')}"
+                f" ask={quant_debug.get('ask_price_at_check')}{ask_proxy_flag}"
                 f" market_prob={quant_debug.get('market_prob_at_check')}"
                 f" edge_pct={quant_debug.get('edge_pct_at_check')}"
                 f" edge_vs_ask_pct={quant_debug.get('edge_vs_ask_pct_at_check')}"

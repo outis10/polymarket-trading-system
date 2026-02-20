@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useSettingsStore } from "../../stores/useSettingsStore";
 import { useEventsStore } from "../../stores/useEventsStore";
 import { useAccountStore } from "../../stores/useAccountStore";
@@ -20,11 +20,38 @@ export default function Header({ route, onNavigate }: HeaderProps) {
     const bankrollReal = useAccountStore((s) => s.bankrollReal);
     const setBankrollReal = useAccountStore((s) => s.setBankrollReal);
     const [balanceText, setBalanceText] = useState("Bankroll: unavailable");
+    const [refreshing, setRefreshing] = useState(false);
+
+    const loadBalance = useCallback(async () => {
+        try {
+            const res = await fetch("/api/balance");
+            const data = await res.json();
+            const balance =
+                toFiniteNumber(data?.balance) ??
+                toFiniteNumber(data?.available) ??
+                toFiniteNumber(data?.usdc) ??
+                toFiniteNumber(data?.data?.balance);
+            if (balance !== null) {
+                setBankrollReal(balance);
+            } else {
+                setBankrollReal(null);
+            }
+        } catch {
+            setBankrollReal(null);
+        }
+    }, [setBankrollReal]);
+
+    const handleRefresh = useCallback(async () => {
+        if (refreshing) return;
+        setRefreshing(true);
+        await loadBalance();
+        setRefreshing(false);
+    }, [refreshing, loadBalance]);
 
     useEffect(() => {
         let mounted = true;
 
-        const loadBalance = async () => {
+        const load = async () => {
             try {
                 const res = await fetch("/api/balance");
                 const data = await res.json();
@@ -40,15 +67,13 @@ export default function Header({ route, onNavigate }: HeaderProps) {
                     setBankrollReal(null);
                 }
             } catch {
-                if (mounted) {
-                    setBankrollReal(null);
-                }
+                if (mounted) setBankrollReal(null);
             }
         };
 
-        loadBalance();
+        load();
         // Fallback reconciliation only: primary updates come from order fills / WS.
-        const interval = setInterval(loadBalance, 90000);
+        const interval = setInterval(load, 90000);
         return () => {
             mounted = false;
             clearInterval(interval);
@@ -80,6 +105,15 @@ export default function Header({ route, onNavigate }: HeaderProps) {
             </div>
             <div className="app-header-center">
                 <span className="bankroll-chip">{balanceText}</span>
+                <button
+                    className={`bankroll-refresh-btn${refreshing ? " bankroll-refresh-btn--spinning" : ""}`}
+                    onClick={handleRefresh}
+                    disabled={refreshing}
+                    title="Refresh balance"
+                    aria-label="Refresh balance"
+                >
+                    ↻
+                </button>
             </div>
             <div className="app-header-right">
                 <button

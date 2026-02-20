@@ -193,22 +193,33 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
         event.order_book_no?.asks && event.order_book_no.asks.length > 0
             ? event.order_book_no.asks[0].price
             : null;
-    const quantEdgeVsAskUpPct =
-        bestAskUp !== null && quantProbUp !== null
-            ? (quantProbUp - bestAskUp) * 100
+    const askUpIsProxy = (gateUp as any)?.ask_is_proxy ?? bestAskUp === null;
+    const askDownIsProxy =
+        (gateDown as any)?.ask_is_proxy ?? bestAskDown === null;
+    // QE = edge vs ask (cost to buy). Fallback to edge vs mid when ask is proxy.
+    const quantEdgeVsAskUpPct: number | null =
+        quantProbUp !== null
+            ? askUpIsProxy
+                ? ((gateUp as any)?.edge_pct ?? (quantProbUp - yesPrice) * 100)
+                : ((gateUp as any)?.edge_vs_ask_pct ??
+                  (quantProbUp - (bestAskUp ?? yesPrice)) * 100)
             : null;
-    const quantEdgeVsAskDownPct =
-        bestAskDown !== null && quantProbDown !== null
-            ? (quantProbDown - bestAskDown) * 100
+    const quantEdgeVsAskDownPct: number | null =
+        quantProbDown !== null
+            ? askDownIsProxy
+                ? ((gateDown as any)?.edge_pct ??
+                  (quantProbDown - noPrice) * 100)
+                : ((gateDown as any)?.edge_vs_ask_pct ??
+                  (quantProbDown - (bestAskDown ?? noPrice)) * 100)
             : null;
     const qeUpLabel =
         quantEdgeVsAskUpPct === null
             ? "QE n/a"
-            : `QE ${quantEdgeVsAskUpPct.toFixed(2)}%`;
+            : `QE ${quantEdgeVsAskUpPct.toFixed(2)}%${askUpIsProxy ? "*" : ""}`;
     const qeDownLabel =
         quantEdgeVsAskDownPct === null
             ? "QE n/a"
-            : `QE ${quantEdgeVsAskDownPct.toFixed(2)}%`;
+            : `QE ${quantEdgeVsAskDownPct.toFixed(2)}%${askDownIsProxy ? "*" : ""}`;
     const buyPriceUp = bestAskUp ?? yesPrice;
     const buyPriceDown = bestAskDown ?? noPrice;
     const minShares = Math.max(0, settings.pm_min_shares ?? 5);
@@ -608,7 +619,7 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
                                     type="button"
                                     className="bot-trade-buy-btn bot-trade-buy-btn-up"
                                     disabled={!canBuyUp || botOrderSubmitting}
-                                    title={`${gateTooltip(gateUp)} | price source: ${bestAskUp !== null ? "orderbook ask" : "fallback prob"}${localBlockReasonUp ? ` | ${localBlockReasonUp}` : ""}`}
+                                    title={`${gateTooltip(gateUp)} | price source: ${bestAskUp !== null ? "orderbook ask" : "fallback mid-price (no book)"}${askUpIsProxy ? " | QE* = edge vs mid (ask unavailable)" : ""}${localBlockReasonUp ? ` | ${localBlockReasonUp}` : ""}`}
                                     onClick={() => submitBotBuy("up")}
                                 >
                                     {botOrderSubmitting
@@ -651,7 +662,7 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
                                     type="button"
                                     className="bot-trade-buy-btn bot-trade-buy-btn-down"
                                     disabled={!canBuyDown || botOrderSubmitting}
-                                    title={`${gateTooltip(gateDown)} | price source: ${bestAskDown !== null ? "orderbook ask" : "fallback prob"}${localBlockReasonDown ? ` | ${localBlockReasonDown}` : ""}`}
+                                    title={`${gateTooltip(gateDown)} | price source: ${bestAskDown !== null ? "orderbook ask" : "fallback mid-price (no book)"}${askDownIsProxy ? " | QE* = edge vs mid (ask unavailable)" : ""}${localBlockReasonDown ? ` | ${localBlockReasonDown}` : ""}`}
                                     onClick={() => submitBotBuy("down")}
                                 >
                                     {botOrderSubmitting

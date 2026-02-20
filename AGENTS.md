@@ -59,6 +59,17 @@ python3 run_pm_pipeline_4cryptos_5m_10s.py \
   --output-dir backtest_output
 ```
 
+## Estado actualizado (2026-02-20, min_diff_pct ticker-agnóstico)
+
+- Reemplazado `early/late_quant_gate_min_abs_diff_usd` por `early/late_quant_gate_min_diff_pct`.
+- El nuevo filtro calcula `|current_price - price_to_beat| / price_to_beat * 100`.
+  - BTC: $27 diff en $67800 PTB = 0.04%
+  - ETH: $0.44 diff en $1964 PTB = 0.022%
+  - Ambos comparables con el mismo umbral porcentual.
+- Default: `0.0` (desactivado) para early y late — no bloquea por defecto.
+- Expuesto en Sidebar: `Early Min Diff (%)` y `Late Min Diff (%)`.
+- `reason` en gate: `diff_pct<0.030%` en vez de `diff_abs<15.00`.
+
 ## Convención para nuevas sesiones
 
 Cuando se pida "usar contexto previo", revisar primero:
@@ -339,6 +350,34 @@ Implementar modulo Kelly configurable desde Settings:
   - archivo: `backtest_output/order_blocked_log.csv`,
   - filas con timestamp, evento/lado, reason, detail, shares/notional solicitado vs efectivo,
     cap aplicado y métricas de quant gate.
+
+## Estado actualizado (2026-02-20, ask fallback + edge_pct fix)
+
+- Cuando `order_book_yes/no` no está disponible (WS no conectado aún / round-robin no llegó),
+  el gate usa `yes_price`/`no_price` (mid) como proxy del ask.
+- Flag `ask_is_proxy: bool` incluido en cada lado del `quant_buy_gate`.
+- Lógica de edge en el gate:
+  - `edge_pct` = `quant_prob - market_mid` (informativo)
+  - `edge_vs_ask_pct` = `quant_prob - ask` (accionable — lo que realmente pagás)
+  - Check principal `min_edge_pct` usa `edge_vs_ask_pct` cuando hay ask real,
+    fallback a `edge_pct` vs mid cuando `ask_is_proxy=True`.
+  - Filtro secundario `edge_vs_ask_enabled` sigue funcionando con threshold propio.
+- Frontend: QE muestra `edge_vs_ask_pct` cuando hay order book real,
+  `edge_pct*` (con asterisco) cuando ask es proxy (no hay book).
+- Si `edge_vs_ask_enabled=True` y `ask_is_proxy=True` → bloquea con `no_ask_price`.
+
+## Estado actualizado (2026-02-20, strong-signal sample override)
+
+- Nuevo parámetro `quant_gate_min_sample_strong_signal` (default `20`):
+  - cuando `quant_prob >= quant_gate_strong_signal_threshold` (default `0.72`),
+    el gate usa este sample mínimo reducido en lugar de `quant_gate_min_sample` (120).
+  - permite operar bins extremos fuera del rango entrenado que tienen señal fuerte
+    pero pocos casos históricos (ej. BTC con price_diff = -272, prob_down ≈ 82%).
+- Lógica: bins centrales (señal débil) siguen exigiendo n=120; bins extremos (señal fuerte) solo exigen n=20.
+- `reason` en gate muestra `sample<20` (el efectivo) en vez de `sample<120`.
+- Ambos lookups (`_lookup_quant_probs` y `_lookup_quant_probs_5m_slot`) ahora clampean
+  al bin extremo cuando `price_diff` está fuera del rango entrenado (en vez de retornar None).
+- Expuesto en Sidebar: `Strong Signal Min Sample` y `Strong Signal Threshold (%)`.
 
 ## Estado actualizado (2026-02-20, multi-window quant gate)
 

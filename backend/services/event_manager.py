@@ -61,6 +61,8 @@ class EventManager:
             "quant_gate_edge_vs_ask_enabled": False,
             "quant_gate_min_edge_vs_ask_pct": 2.0,
             "quant_gate_min_prob": 0.0,
+            "quant_gate_min_sample_strong_signal": 20,
+            "quant_gate_strong_signal_threshold": 0.72,
             "early_window_enabled": True,
             "early_window_seconds": 50,
             "early_quant_gate_min_sample": 90,
@@ -68,7 +70,7 @@ class EventManager:
             "early_quant_gate_edge_vs_ask_enabled": False,
             "early_quant_gate_min_edge_vs_ask_pct": 2.0,
             "early_quant_gate_min_prob": 0.0,
-            "early_quant_gate_min_abs_diff_usd": 15.0,
+            "early_quant_gate_min_diff_pct": 0.0,
             "late_window_enabled": True,
             "late_window_seconds": 120,
             "late_quant_gate_min_sample": 70,
@@ -76,7 +78,7 @@ class EventManager:
             "late_quant_gate_edge_vs_ask_enabled": False,
             "late_quant_gate_min_edge_vs_ask_pct": 1.0,
             "late_quant_gate_min_prob": 0.0,
-            "late_quant_gate_min_abs_diff_usd": 5.0,
+            "late_quant_gate_min_diff_pct": 0.0,
             "monitored_tickers": ["BTC", "ETH", "SOL", "XRP"],
             "bot_risk_enabled": True,
             "bot_max_buys_per_event_side": 1,
@@ -293,9 +295,15 @@ class EventManager:
             return None
         idx = bisect.bisect_right([r[0] for r in ranges], price_diff) - 1
         if idx < 0:
-            return None
+            # price_diff below all known ranges → use first bin
+            idx = 0
+        elif idx >= len(ranges):
+            idx = len(ranges) - 1
         inf_r, sup_r, prob_up, prob_down, count = ranges[idx]
         if inf_r <= price_diff < sup_r:
+            return (prob_up, prob_down, count)
+        # price_diff above all known ranges → use last bin
+        if price_diff >= sup_r and idx == len(ranges) - 1:
             return (prob_up, prob_down, count)
         return None
 
@@ -313,9 +321,15 @@ class EventManager:
             return None
         idx = bisect.bisect_right([r[0] for r in ranges], price_diff) - 1
         if idx < 0:
-            return None
+            # price_diff below all known ranges → use first bin
+            idx = 0
+        elif idx >= len(ranges):
+            idx = len(ranges) - 1
         inf_r, sup_r, prob_up, prob_down, count = ranges[idx]
         if inf_r <= price_diff < sup_r:
+            return (prob_up, prob_down, count)
+        # price_diff above all known ranges → use last bin
+        if price_diff >= sup_r and idx == len(ranges) - 1:
             return (prob_up, prob_down, count)
         return None
 
@@ -522,10 +536,12 @@ class EventManager:
         quant_prob: float | None,
         market_prob: float,
         ask_price: float | None,
+        ask_is_proxy: bool = False,
         sample_size: int | None,
         percentile: float | None,
         gate_params: dict | None = None,
         price_diff_abs: float | None = None,
+        price_diff_pct: float | None = None,
         window_profile: str = "base",
     ) -> dict:
         settings = self.settings
@@ -567,7 +583,13 @@ class EventManager:
             )
         )
         min_prob = float(gp.get("min_prob", settings.get("quant_gate_min_prob", 0.0)))
-        min_abs_diff_usd = float(gp.get("min_abs_diff_usd", 0.0))
+        min_diff_pct = float(gp.get("min_diff_pct", 0.0))
+        min_sample_strong = int(
+            settings.get("quant_gate_min_sample_strong_signal", 20)
+        )
+        strong_signal_threshold = float(
+            settings.get("quant_gate_strong_signal_threshold", 0.72)
+        )
 
         reasons: list[str] = []
         edge_pct: float | None = None
@@ -587,26 +609,37 @@ class EventManager:
         else:
             if quant_prob < min_prob:
                 reasons.append(f"prob<{min_prob:.2f}")
-        if sample_size is None or sample_size < min_sample:
-            reasons.append(f"sample<{min_sample}")
-        if min_abs_diff_usd > 0:
-            if price_diff_abs is None or price_diff_abs < min_abs_diff_usd:
-                reasons.append(f"diff_abs<{min_abs_diff_usd:.2f}")
+
+        # Strong-signal override: if quant_prob is high-confidence, use lower sample floor
+        is_strong_signal = (
+            quant_prob is not None and quant_prob >= strong_signal_threshold
+        )
+        effective_min_sample = min_sample_strong if is_strong_signal else min_sample
+        if sample_size is None or sample_size < effective_min_sample:
+            reasons.append(f"sample<{effective_min_sample}")
+        # min_diff_pct: ticker-agnostic filter — |current_price - price_to_beat| / price_to_beat * 100
+        # Replaces min_abs_diff_usd which discriminated against low-price tickers (ETH/SOL/XRP).
+        # Example: BTC $27 diff on $67800 PTB = 0.04%; ETH $0.44 on $1964 PTB = 0.022%
+        if min_diff_pct > 0:
+            if price_diff_pct is None or price_diff_pct < min_diff_pct:
+                reasons.append(f"diff_pct<{min_diff_pct:.3f}%")
 
         if quant_prob is not None:
-            price_for_edge = (
-                ask_price if (ask_price is not None and ask_price > 0) else market_prob
-            )
-            edge_pct = (quant_prob - price_for_edge) * 100.0
-            if edge_pct < min_edge_pct:
+            # edge_pct: informational — quant advantage vs mid-market
+            edge_pct = (quant_prob - market_prob) * 100.0
+            # edge_vs_ask_pct: quant advantage vs actual cost to buy (ask)
+            if ask_price is not None and ask_price > 0:
+                edge_vs_ask_pct = (quant_prob - ask_price) * 100.0
+            # Primary edge check: use edge_vs_ask when ask is real, fallback to edge_pct when proxy
+            effective_edge = edge_vs_ask_pct if not ask_is_proxy else edge_pct
+            if effective_edge is None or effective_edge < min_edge_pct:
                 reasons.append(f"edge<{min_edge_pct:.2f}%")
+            # Optional secondary filter: explicit edge_vs_ask check (requires real ask)
             if edge_vs_ask_enabled:
-                if ask_price is None or ask_price <= 0:
+                if ask_is_proxy or ask_price is None or ask_price <= 0:
                     reasons.append("no_ask_price")
-                else:
-                    edge_vs_ask_pct = (quant_prob - ask_price) * 100.0
-                    if edge_vs_ask_pct < min_edge_vs_ask_pct:
-                        reasons.append(f"ask_edge<{min_edge_vs_ask_pct:.2f}%")
+                elif edge_vs_ask_pct is not None and edge_vs_ask_pct < min_edge_vs_ask_pct:
+                    reasons.append(f"ask_edge<{min_edge_vs_ask_pct:.2f}%")
 
         price_c = market_prob * 100.0
         if price_c < min_price_c or price_c > max_price_c:
@@ -625,6 +658,7 @@ class EventManager:
             "reasons": reasons,
             "edge_pct": edge_pct,
             "edge_vs_ask_pct": edge_vs_ask_pct,
+            "ask_is_proxy": ask_is_proxy,
             "sample_size": sample_size,
             "percentile": percentile,
             "side": side,
@@ -649,7 +683,6 @@ class EventManager:
                 settings.get("quant_gate_min_edge_vs_ask_pct", 2.0)
             ),
             "min_prob": float(settings.get("quant_gate_min_prob", 0.0)),
-            "min_abs_diff_usd": 0.0,
         }
 
         now_utc = datetime.now(tz=timezone.utc)
@@ -710,8 +743,8 @@ class EventManager:
                                 "early_quant_gate_min_prob", params["min_prob"]
                             )
                         ),
-                        "min_abs_diff_usd": float(
-                            settings.get("early_quant_gate_min_abs_diff_usd", 15.0)
+                        "min_diff_pct": float(
+                            settings.get("early_quant_gate_min_diff_pct", 0.0)
                         ),
                     }
                 )
@@ -750,8 +783,8 @@ class EventManager:
                         "min_prob": float(
                             settings.get("late_quant_gate_min_prob", params["min_prob"])
                         ),
-                        "min_abs_diff_usd": float(
-                            settings.get("late_quant_gate_min_abs_diff_usd", 5.0)
+                        "min_diff_pct": float(
+                            settings.get("late_quant_gate_min_diff_pct", 0.0)
                         ),
                     }
                 )
@@ -772,32 +805,41 @@ class EventManager:
         ptb = event_dict.get("price_to_beat")
         cp = event_dict.get("current_price")
         price_diff_abs = None
-        if isinstance(ptb, (int, float)) and isinstance(cp, (int, float)):
+        price_diff_pct = None
+        if isinstance(ptb, (int, float)) and isinstance(cp, (int, float)) and float(ptb) > 0:
             try:
                 price_diff_abs = abs(float(cp) - float(ptb))
+                price_diff_pct = price_diff_abs / float(ptb) * 100.0
             except Exception:
                 price_diff_abs = None
+                price_diff_pct = None
         yes_price = float(event_dict.get("yes_price", 0.5) or 0.5)
         no_price = float(event_dict.get("no_price", 0.5) or 0.5)
         window_profile, gate_params = self._resolve_quant_gate_window_params(event_dict)
-        ask_up = None
-        ask_down = None
+        ask_up_raw = None
+        ask_down_raw = None
         if isinstance(event_dict.get("order_book_yes"), dict):
             asks = event_dict.get("order_book_yes", {}).get("asks", [])
             if isinstance(asks, list) and asks:
                 raw = asks[0].get("price") if isinstance(asks[0], dict) else None
                 try:
-                    ask_up = float(raw) if raw is not None else None
+                    ask_up_raw = float(raw) if raw is not None else None
                 except (TypeError, ValueError):
-                    ask_up = None
+                    ask_up_raw = None
         if isinstance(event_dict.get("order_book_no"), dict):
             asks = event_dict.get("order_book_no", {}).get("asks", [])
             if isinstance(asks, list) and asks:
                 raw = asks[0].get("price") if isinstance(asks[0], dict) else None
                 try:
-                    ask_down = float(raw) if raw is not None else None
+                    ask_down_raw = float(raw) if raw is not None else None
                 except (TypeError, ValueError):
-                    ask_down = None
+                    ask_down_raw = None
+
+        # Fallback: use mid-price as ask proxy when order book is unavailable
+        ask_up_is_proxy = ask_up_raw is None
+        ask_down_is_proxy = ask_down_raw is None
+        ask_up = ask_up_raw if ask_up_raw is not None else yes_price
+        ask_down = ask_down_raw if ask_down_raw is not None else no_price
 
         event_dict["quant_buy_gate"] = {
             "up": self._compute_quant_buy_gate_side(
@@ -807,10 +849,12 @@ class EventManager:
                 else None,
                 market_prob=yes_price,
                 ask_price=ask_up,
+                ask_is_proxy=ask_up_is_proxy,
                 sample_size=int(sample_size) if isinstance(sample_size, int) else None,
                 percentile=percentile,
                 gate_params=gate_params,
                 price_diff_abs=price_diff_abs,
+                price_diff_pct=price_diff_pct,
                 window_profile=window_profile,
             ),
             "down": self._compute_quant_buy_gate_side(
@@ -820,10 +864,12 @@ class EventManager:
                 else None,
                 market_prob=no_price,
                 ask_price=ask_down,
+                ask_is_proxy=ask_down_is_proxy,
                 sample_size=int(sample_size) if isinstance(sample_size, int) else None,
                 percentile=percentile,
                 gate_params=gate_params,
                 price_diff_abs=price_diff_abs,
+                price_diff_pct=price_diff_pct,
                 window_profile=window_profile,
             ),
         }

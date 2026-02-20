@@ -72,6 +72,38 @@ body {
     letter-spacing: 0.2px;
 }
 
+.bankroll-refresh-btn {
+    background: none;
+    border: none;
+    color: #79e2bf;
+    font-size: 18px;
+    line-height: 1;
+    padding: 2px 4px;
+    margin-left: 4px;
+    cursor: pointer;
+    opacity: 0.6;
+    transition: opacity 0.15s, transform 0.15s;
+    border-radius: 4px;
+}
+
+.bankroll-refresh-btn:hover:not(:disabled) {
+    opacity: 1;
+}
+
+.bankroll-refresh-btn:disabled {
+    cursor: default;
+}
+
+@keyframes spin-balance {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+}
+
+.bankroll-refresh-btn--spinning {
+    animation: spin-balance 0.6s linear infinite;
+    opacity: 0.8;
+}
+
 .settings-btn {
     background: #21262d;
     border: 1px solid #30363d;

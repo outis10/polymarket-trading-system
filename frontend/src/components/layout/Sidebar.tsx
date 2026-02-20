@@ -848,6 +848,50 @@ export default function Sidebar({ send }: SidebarProps) {
                         }
                     />
 
+                    <label
+                        className="field-label"
+                        title="Sample mínimo requerido cuando la señal es fuerte (prob ≥ threshold). Permite operar en bins extremos con pocos datos históricos pero señal consistente."
+                    >
+                        Strong Signal Min Sample
+                    </label>
+                    <input
+                        className="sidebar-number-input"
+                        type="number"
+                        min={1}
+                        step={1}
+                        value={settings.quant_gate_min_sample_strong_signal ?? 20}
+                        onChange={(e) =>
+                            handleKellySettingChange({
+                                quant_gate_min_sample_strong_signal: Number(
+                                    e.target.value || 20,
+                                ),
+                            })
+                        }
+                    />
+
+                    <label
+                        className="field-label"
+                        title="Prob mínima para considerar una señal 'fuerte' y aplicar el sample mínimo reducido."
+                    >
+                        Strong Signal Threshold (%)
+                    </label>
+                    <input
+                        className="sidebar-number-input"
+                        type="number"
+                        min={50}
+                        max={100}
+                        step={1}
+                        value={Math.round(
+                            (settings.quant_gate_strong_signal_threshold ?? 0.72) * 100,
+                        )}
+                        onChange={(e) =>
+                            handleKellySettingChange({
+                                quant_gate_strong_signal_threshold:
+                                    Number(e.target.value || 72) / 100,
+                            })
+                        }
+                    />
+
                     <label className="field-label">Min Edge (%)</label>
                     <input
                         className="sidebar-number-input"
@@ -1006,18 +1050,21 @@ export default function Sidebar({ send }: SidebarProps) {
                             })
                         }
                     />
-                    <label className="field-label">
-                        Early Min Abs Diff ($)
+                    <label
+                        className="field-label"
+                        title="Diferencia mínima |precio - PTB| / PTB en %. Ticker-agnóstico. 0 = desactivado."
+                    >
+                        Early Min Diff (%)
                     </label>
                     <input
                         className="sidebar-number-input"
                         type="number"
                         min={0}
-                        step={0.1}
-                        value={settings.early_quant_gate_min_abs_diff_usd ?? 15}
+                        step={0.01}
+                        value={settings.early_quant_gate_min_diff_pct ?? 0}
                         onChange={(e) =>
                             handleKellySettingChange({
-                                early_quant_gate_min_abs_diff_usd: Number(
+                                early_quant_gate_min_diff_pct: Number(
                                     e.target.value || 0,
                                 ),
                             })
@@ -1113,16 +1160,21 @@ export default function Sidebar({ send }: SidebarProps) {
                             })
                         }
                     />
-                    <label className="field-label">Late Min Abs Diff ($)</label>
+                    <label
+                        className="field-label"
+                        title="Diferencia mínima |precio - PTB| / PTB en %. Ticker-agnóstico. 0 = desactivado."
+                    >
+                        Late Min Diff (%)
+                    </label>
                     <input
                         className="sidebar-number-input"
                         type="number"
                         min={0}
-                        step={0.1}
-                        value={settings.late_quant_gate_min_abs_diff_usd ?? 5}
+                        step={0.01}
+                        value={settings.late_quant_gate_min_diff_pct ?? 0}
                         onChange={(e) =>
                             handleKellySettingChange({
-                                late_quant_gate_min_abs_diff_usd: Number(
+                                late_quant_gate_min_diff_pct: Number(
                                     e.target.value || 0,
                                 ),
                             })
