@@ -29,9 +29,21 @@ export default function PositionDisplay({ eventId }: PositionDisplayProps) {
 
     useEffect(() => {
         fetchPositions();
-        // Refresh positions every 30 seconds
-        const interval = setInterval(fetchPositions, 30000);
-        return () => clearInterval(interval);
+        const onPositionsRefresh = (evt: Event) => {
+            const custom = evt as CustomEvent<{ eventId?: string }>;
+            const targetEventId = custom.detail?.eventId;
+            if (!targetEventId || targetEventId === eventId) {
+                fetchPositions();
+            }
+        };
+        window.addEventListener("positions_refresh", onPositionsRefresh);
+
+        // Fallback reconciliation only: primary refresh is event-driven after fills.
+        const interval = setInterval(fetchPositions, 90000);
+        return () => {
+            window.removeEventListener("positions_refresh", onPositionsRefresh);
+            clearInterval(interval);
+        };
     }, [fetchPositions]);
 
     if (loading) {

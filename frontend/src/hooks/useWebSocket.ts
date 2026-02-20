@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback } from "react";
 import { useEventsStore } from "../stores/useEventsStore";
+import { useAccountStore } from "../stores/useAccountStore";
 import type { WSMessage, EventData, SettingsData } from "../types/events";
 
 const WS_URL = import.meta.env.DEV
@@ -12,6 +13,7 @@ export function useWebSocket() {
     const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
     const shouldReconnectRef = useRef(true);
     const { setEvents, setSettings, updateEvent } = useEventsStore();
+    const setBankrollReal = useAccountStore((s) => s.setBankrollReal);
 
     const connect = useCallback(() => {
         if (!shouldReconnectRef.current) return;
@@ -69,6 +71,13 @@ export function useWebSocket() {
                         setSettings(msg.data as unknown as SettingsData);
                         break;
                     }
+                    case "balance_update": {
+                        const raw = (msg.data as Record<string, unknown>)
+                            ?.balance;
+                        const n = Number(raw);
+                        setBankrollReal(Number.isFinite(n) ? n : null);
+                        break;
+                    }
                 }
             } catch {
                 // ignore parse errors
@@ -84,7 +93,7 @@ export function useWebSocket() {
         ws.onerror = () => {
             ws.close();
         };
-    }, [setEvents, setSettings, updateEvent]);
+    }, [setEvents, setSettings, setBankrollReal, updateEvent]);
 
     const send = useCallback((msg: Record<string, unknown>) => {
         if (wsRef.current?.readyState === WebSocket.OPEN) {

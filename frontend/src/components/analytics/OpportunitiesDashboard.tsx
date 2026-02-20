@@ -30,12 +30,29 @@ interface RawOutcome {
     pnl_usd: string;
     entry_side_price: string;
     actual_outcome: "up" | "down";
+    percentile_at_signal?: string;
 }
 
 interface RawResponse {
     count: number;
     ticker_filter: string | null;
     rows: RawOutcome[];
+}
+
+interface RawSignal {
+    signal_id: string;
+    detected_at_utc: string;
+    event_id: string;
+    ticker: string;
+    timeframe_minutes: string;
+    side: "up" | "down";
+    stake_usd: string;
+}
+
+interface RawSignalResponse {
+    count: number;
+    ticker_filter: string | null;
+    rows: RawSignal[];
 }
 
 interface RawBlocked {
@@ -76,6 +93,7 @@ export default function OpportunitiesDashboard() {
     const [error, setError] = useState("");
     const [summary, setSummary] = useState<SummaryRow[]>([]);
     const [rawRows, setRawRows] = useState<RawOutcome[]>([]);
+    const [signalRows, setSignalRows] = useState<RawSignal[]>([]);
     const [blockedRows, setBlockedRows] = useState<RawBlocked[]>([]);
 
     const tickerQuery = ticker === "ALL" ? "" : `&ticker=${ticker}`;
@@ -84,25 +102,42 @@ export default function OpportunitiesDashboard() {
         setLoading(true);
         setError("");
         try {
-            const [summaryRes, rawRes, blockedRes] = await Promise.all([
-                fetch(`/api/stats/opportunities?days=${days}${tickerQuery}`),
-                fetch(`/api/stats/opportunities/raw?limit=200${tickerQuery}`),
-                fetch(
-                    `/api/stats/opportunities/blocked/raw?limit=200${tickerQuery}`,
-                ),
-            ]);
-            if (!summaryRes.ok || !rawRes.ok || !blockedRes.ok) {
+            const [summaryRes, rawRes, signalsRes, blockedRes] =
+                await Promise.all([
+                    fetch(
+                        `/api/stats/opportunities?days=${days}${tickerQuery}`,
+                    ),
+                    fetch(
+                        `/api/stats/opportunities/raw?limit=5000${tickerQuery}`,
+                    ),
+                    fetch(
+                        `/api/stats/opportunities/signals/raw?limit=5000${tickerQuery}`,
+                    ),
+                    fetch(
+                        `/api/stats/opportunities/blocked/raw?limit=5000${tickerQuery}`,
+                    ),
+                ]);
+            if (
+                !summaryRes.ok ||
+                !rawRes.ok ||
+                !signalsRes.ok ||
+                !blockedRes.ok
+            ) {
                 throw new Error(
-                    `Failed to load analytics (${summaryRes.status}/${rawRes.status}/${blockedRes.status})`,
+                    `Failed to load analytics (${summaryRes.status}/${rawRes.status}/${signalsRes.status}/${blockedRes.status})`,
                 );
             }
             const summaryJson = (await summaryRes.json()) as SummaryResponse;
             const rawJson = (await rawRes.json()) as RawResponse;
+            const signalJson = (await signalsRes.json()) as RawSignalResponse;
             const blockedJson = (await blockedRes.json()) as RawBlockedResponse;
             setSummary(
                 Array.isArray(summaryJson.summary) ? summaryJson.summary : [],
             );
             setRawRows(Array.isArray(rawJson.rows) ? rawJson.rows : []);
+            setSignalRows(
+                Array.isArray(signalJson.rows) ? signalJson.rows : [],
+            );
             setBlockedRows(
                 Array.isArray(blockedJson.rows) ? blockedJson.rows : [],
             );
@@ -140,6 +175,16 @@ export default function OpportunitiesDashboard() {
         });
     }, [blockedRows, regimeFilter]);
 
+    const filteredSignalRows = useMemo(() => {
+        if (regimeFilter === "all") return signalRows;
+        return signalRows.filter((row) => {
+            const dt = new Date(row.detected_at_utc);
+            const day = dt.getUTCDay();
+            const regime = day === 0 || day === 6 ? "weekend" : "weekday";
+            return regime === regimeFilter;
+        });
+    }, [signalRows, regimeFilter]);
+
     const totals = useMemo(() => {
         let signals = 0;
         let wins = 0;
@@ -157,6 +202,14 @@ export default function OpportunitiesDashboard() {
             avgPnl: signals > 0 ? pnl / signals : 0,
         };
     }, [filteredRows]);
+
+    const opportunityFunnel = useMemo(() => {
+        const registered = filteredSignalRows.length;
+        const blocked = filteredBlockedRows.length;
+        const detected = registered + blocked;
+        const executablePct = detected > 0 ? (registered / detected) * 100 : 0;
+        return { detected, registered, blocked, executablePct };
+    }, [filteredSignalRows, filteredBlockedRows]);
 
     const summaryForView = useMemo(() => {
         if (regimeFilter === "all") return summary;
@@ -307,6 +360,31 @@ export default function OpportunitiesDashboard() {
                 </article>
             </section>
 
+            <section className="analytics-kpis">
+                <article className="analytics-kpi-card">
+                    <div className="kpi-label">Detected</div>
+                    <div className="kpi-value">
+                        {opportunityFunnel.detected}
+                    </div>
+                </article>
+                <article className="analytics-kpi-card">
+                    <div className="kpi-label">Registered</div>
+                    <div className="kpi-value">
+                        {opportunityFunnel.registered}
+                    </div>
+                </article>
+                <article className="analytics-kpi-card">
+                    <div className="kpi-label">Blocked</div>
+                    <div className="kpi-value">{opportunityFunnel.blocked}</div>
+                </article>
+                <article className="analytics-kpi-card">
+                    <div className="kpi-label">% Executable</div>
+                    <div className="kpi-value">
+                        {opportunityFunnel.executablePct.toFixed(2)}%
+                    </div>
+                </article>
+            </section>
+
             <section className="analytics-panels">
                 <article className="analytics-panel">
                     <h3>By Ticker</h3>
@@ -432,6 +510,7 @@ export default function OpportunitiesDashboard() {
                             <th>Ticker</th>
                             <th>TF</th>
                             <th>Side</th>
+                            <th>Percentile @ Signal</th>
                             <th>Won</th>
                             <th>PnL</th>
                             <th>Event</th>
@@ -452,6 +531,13 @@ export default function OpportunitiesDashboard() {
                                     <td>{row.ticker}</td>
                                     <td>{row.timeframe_minutes}m</td>
                                     <td>{row.side.toUpperCase()}</td>
+                                    <td>
+                                        {Number.isFinite(
+                                            Number(row.percentile_at_signal),
+                                        )
+                                            ? `${asNumber(row.percentile_at_signal).toFixed(1)}%`
+                                            : "n/a"}
+                                    </td>
                                     <td>{row.won === "1" ? "YES" : "NO"}</td>
                                     <td>${asNumber(row.pnl_usd).toFixed(2)}</td>
                                     <td className="analytics-event-id">

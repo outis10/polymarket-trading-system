@@ -107,8 +107,12 @@ function OrderBook({ orderBookYes, orderBookNo }: OrderBookProps) {
             </div>
 
             <div className="book-levels-grid">
-                <BookLevelsList title="Latest asks" levels={asks} tone="down" />
-                <BookLevelsList title="Latest bids" levels={bids} tone="up" />
+                <BookLevelsList
+                    title="Asks (venta)"
+                    levels={asks}
+                    tone="down"
+                />
+                <BookLevelsList title="Bids (compra)" levels={bids} tone="up" />
             </div>
         </div>
     );

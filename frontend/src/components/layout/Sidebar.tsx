@@ -19,6 +19,8 @@ const QUANT_PRESETS = {
         quant_gate_use_percentile: true,
         quant_gate_percentile_low: 15,
         quant_gate_percentile_high: 85,
+        quant_gate_edge_vs_ask_enabled: false,
+        quant_gate_min_edge_vs_ask_pct: 2,
     },
     balanced: {
         quant_gate_enabled: true,
@@ -29,6 +31,8 @@ const QUANT_PRESETS = {
         quant_gate_use_percentile: true,
         quant_gate_percentile_low: 20,
         quant_gate_percentile_high: 80,
+        quant_gate_edge_vs_ask_enabled: false,
+        quant_gate_min_edge_vs_ask_pct: 2,
     },
     aggressive: {
         quant_gate_enabled: true,
@@ -39,6 +43,8 @@ const QUANT_PRESETS = {
         quant_gate_use_percentile: false,
         quant_gate_percentile_low: 20,
         quant_gate_percentile_high: 80,
+        quant_gate_edge_vs_ask_enabled: false,
+        quant_gate_min_edge_vs_ask_pct: 2,
     },
 } as const;
 
@@ -77,6 +83,26 @@ export default function Sidebar({ send }: SidebarProps) {
     const handleRangeHistogramCardToggle = () => {
         const current = settings.chart_options || [];
         const hideKey = "hide_range_histogram_card";
+        const updated = current.includes(hideKey)
+            ? current.filter((o) => o !== hideKey)
+            : [...current, hideKey];
+        updateSettings({ chart_options: updated });
+        send({ type: "update_settings", settings: { chart_options: updated } });
+    };
+
+    const handleOrderBookCardToggle = () => {
+        const current = settings.chart_options || [];
+        const hideKey = "hide_order_book_card";
+        const updated = current.includes(hideKey)
+            ? current.filter((o) => o !== hideKey)
+            : [...current, hideKey];
+        updateSettings({ chart_options: updated });
+        send({ type: "update_settings", settings: { chart_options: updated } });
+    };
+
+    const handlePositionsCardToggle = () => {
+        const current = settings.chart_options || [];
+        const hideKey = "hide_positions_card";
         const updated = current.includes(hideKey)
             ? current.filter((o) => o !== hideKey)
             : [...current, hideKey];
@@ -136,6 +162,12 @@ export default function Sidebar({ send }: SidebarProps) {
         approxEqual(
             settings.quant_gate_percentile_high ?? 85,
             preset.quant_gate_percentile_high,
+        ) &&
+        (settings.quant_gate_edge_vs_ask_enabled ?? false) ===
+            preset.quant_gate_edge_vs_ask_enabled &&
+        approxEqual(
+            settings.quant_gate_min_edge_vs_ask_pct ?? 2,
+            preset.quant_gate_min_edge_vs_ask_pct,
         );
     const quantProfile: QuantProfile = matchesPreset(QUANT_PRESETS.conservative)
         ? "conservative"
@@ -199,6 +231,27 @@ export default function Sidebar({ send }: SidebarProps) {
             setRefreshLiveMessage("Network error during live refresh");
         } finally {
             setRefreshingLiveEvents(false);
+        }
+    };
+
+    const handleSaveSettings = async () => {
+        const { mode, ...persistable } = settings;
+        try {
+            const res = await fetch("/api/settings", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ settings: persistable }),
+            });
+            if (!res.ok) {
+                throw new Error(`save failed ${res.status}`);
+            }
+            setRefreshLiveMessage("Settings saved");
+        } catch {
+            // Fallback to WS path if REST save is unavailable.
+            send({ type: "update_settings", settings: persistable });
+            setRefreshLiveMessage(
+                "Settings sent via WebSocket (REST save unavailable)",
+            );
         }
     };
 
@@ -281,7 +334,7 @@ export default function Sidebar({ send }: SidebarProps) {
                             type="radio"
                             name="timeframe"
                             checked={
-                                (settings.timeframe_filter || "15m") === "5m"
+                                (settings.timeframe_filter || "5m") === "5m"
                             }
                             onChange={() => handleTimeframeChange("5m")}
                         />
@@ -292,7 +345,7 @@ export default function Sidebar({ send }: SidebarProps) {
                             type="radio"
                             name="timeframe"
                             checked={
-                                (settings.timeframe_filter || "15m") === "15m"
+                                (settings.timeframe_filter || "5m") === "15m"
                             }
                             onChange={() => handleTimeframeChange("15m")}
                         />
@@ -303,7 +356,7 @@ export default function Sidebar({ send }: SidebarProps) {
                             type="radio"
                             name="timeframe"
                             checked={
-                                (settings.timeframe_filter || "15m") === "1h"
+                                (settings.timeframe_filter || "5m") === "1h"
                             }
                             onChange={() => handleTimeframeChange("1h")}
                         />
@@ -393,6 +446,34 @@ export default function Sidebar({ send }: SidebarProps) {
                             onChange={handleRangeHistogramCardToggle}
                         />
                         Show Range Histogram Card
+                    </label>
+                    <label className="chart-option">
+                        <input
+                            type="checkbox"
+                            checked={
+                                !(
+                                    settings.chart_options?.includes(
+                                        "hide_order_book_card",
+                                    ) ?? false
+                                )
+                            }
+                            onChange={handleOrderBookCardToggle}
+                        />
+                        Show Order Book Card
+                    </label>
+                    <label className="chart-option">
+                        <input
+                            type="checkbox"
+                            checked={
+                                !(
+                                    settings.chart_options?.includes(
+                                        "hide_positions_card",
+                                    ) ?? false
+                                )
+                            }
+                            onChange={handlePositionsCardToggle}
+                        />
+                        Show Positions Card
                     </label>
                 </div>
 
@@ -611,6 +692,24 @@ export default function Sidebar({ send }: SidebarProps) {
                     />
 
                     <label className="field-label">
+                        Max Order Notional USD (cap)
+                    </label>
+                    <input
+                        className="sidebar-number-input"
+                        type="number"
+                        min={0}
+                        step={0.1}
+                        value={settings.bot_order_notional_cap_usd ?? 5}
+                        onChange={(e) =>
+                            handleKellySettingChange({
+                                bot_order_notional_cap_usd: Number(
+                                    e.target.value || 0,
+                                ),
+                            })
+                        }
+                    />
+
+                    <label className="field-label">
                         Min Shares (Polymarket)
                     </label>
                     <input
@@ -792,6 +891,38 @@ export default function Sidebar({ send }: SidebarProps) {
                         Use Percentile Filter
                     </label>
 
+                    <label className="chart-option">
+                        <input
+                            type="checkbox"
+                            checked={
+                                settings.quant_gate_edge_vs_ask_enabled ?? false
+                            }
+                            onChange={(e) =>
+                                handleKellySettingChange({
+                                    quant_gate_edge_vs_ask_enabled:
+                                        e.target.checked,
+                                })
+                            }
+                        />
+                        Enable Edge vs Ask Filter
+                    </label>
+
+                    <label className="field-label">Min Edge vs Ask (%)</label>
+                    <input
+                        className="sidebar-number-input"
+                        type="number"
+                        min={0}
+                        step={0.1}
+                        value={settings.quant_gate_min_edge_vs_ask_pct ?? 2}
+                        onChange={(e) =>
+                            handleKellySettingChange({
+                                quant_gate_min_edge_vs_ask_pct: Number(
+                                    e.target.value || 0,
+                                ),
+                            })
+                        }
+                    />
+
                     <label className="field-label">Percentile Low</label>
                     <input
                         className="sidebar-number-input"
@@ -829,11 +960,8 @@ export default function Sidebar({ send }: SidebarProps) {
 
                 <hr className="sidebar-divider" />
 
-                <button
-                    className="refresh-btn"
-                    onClick={() => send({ type: "refresh" })}
-                >
-                    Refresh Now
+                <button className="refresh-btn" onClick={handleSaveSettings}>
+                    Save Settings
                 </button>
                 <button
                     className="refresh-btn refresh-live-btn"

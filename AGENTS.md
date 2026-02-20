@@ -311,6 +311,15 @@ Implementar modulo Kelly configurable desde Settings:
     - `pm_min_shares` (default `5`),
     - `pm_min_notional_usd` (default `1`).
 
+## Estado actualizado (2026-02-19, cap fijo por orden bot)
+
+- Nuevo parámetro persistente en settings: `bot_order_notional_cap_usd` (default `5.0`).
+- En `POST /api/orders`, si una orden excede ese notional:
+  - se recorta automáticamente `shares` para quedar en el cap,
+  - se intenta ejecutar con el tamaño recortado (en vez de bloquear por tamaño de orden).
+- `validate_order_risk_guards` ahora prioriza este cap fijo por orden cuando está activo (>0),
+  retornando temprano tras validar el tope por orden.
+
 ## Estado actualizado (2026-02-17, Buy At ejecutable)
 
 - En `Bot Trade`, botones `Buy At` ahora ejecutan orden real vía `POST /api/orders`:
@@ -335,3 +344,68 @@ Implementar modulo Kelly configurable desde Settings:
   - nuevo log `backtest_output/opportunity_blocked.csv` con `blocked_reason`,
   - endpoint nuevo `GET /api/stats/opportunities/blocked/raw`,
   - dashboard analytics agrega tabla `Blocked Opportunities (Not Registered)`.
+
+## Estado actualizado (2026-02-18, trazabilidad PTB)
+
+- Se agregó trazabilidad de fuente para `price_to_beat`:
+  - campo runtime nuevo por evento: `price_to_beat_source` (`gamma`, `config`, `binance_klines`, `binance_open`, `unknown`).
+  - prioridad de asignación en backend:
+    1. `settings.price_to_beat` (`gamma` si viene de discovery, o `config` si estático),
+    2. fallback `binance_klines`,
+    3. fallback `binance_open`.
+- UI live:
+  - `EventCard` muestra badge de fuente junto a `Price To Beat`:
+    - `G` (Gamma),
+    - `C` (Config),
+    - `B` (Binance),
+    - `U` (Unknown).
+
+## Estado actualizado (2026-02-18, analytics funnel)
+
+- Analytics de oportunidades ahora incluye KPI de funnel:
+  - `Detected`,
+  - `Registered`,
+  - `Blocked`,
+  - `% Executable` (`registered / (registered + blocked)`).
+- Nuevo endpoint backend:
+  - `GET /api/stats/opportunities/signals/raw?limit=...&ticker=...`
+  - fuente: `opportunities_log.csv` (señales registradas).
+- `Recent Outcomes` agrega columna:
+  - `Percentile @ Signal` (desde `percentile_at_signal`).
+
+## Estado actualizado (2026-02-18, default timeframe)
+
+- Default de timeframe en app actualizado a `5m` (antes `15m`):
+  - backend settings default (`EventManager`, `SettingsData`),
+  - frontend store default (`useEventsStore`),
+  - fallbacks de UI (`App` y selector `Sidebar`).
+
+## Estado actualizado (2026-02-19, persistencia runtime settings)
+
+- `mode` y `settings` de runtime ahora persisten en disco para continuidad sin frontend:
+  - archivo: `backtest_output/runtime_settings.json`.
+- Backend carga ese estado al iniciar (`EventManager.start()`), antes de inicializar eventos/streams.
+- Backend guarda estado al:
+  - `switch_mode`,
+  - `update_settings` via WebSocket.
+
+## Estado actualizado (2026-02-19, quant gate edge vs ask)
+
+- Nuevo filtro opcional en `Quant Buy Gate`:
+  - `quant_gate_edge_vs_ask_enabled` (default `false`),
+  - `quant_gate_min_edge_vs_ask_pct` (default `2.0`).
+- Regla:
+  - para cada lado (`up/down`), exige `quant_prob_side - best_ask_side >= min_edge_vs_ask_pct`.
+  - si falta ask, bloquea con reason `no_ask_price` cuando el filtro está activo.
+- UI Settings (Sidebar):
+  - toggle `Enable Edge vs Ask Filter`,
+  - input `Min Edge vs Ask (%)`.
+
+## Estado actualizado (2026-02-19, toggles UI cards)
+
+- Settings -> `Chart Options` agrega toggles nuevos:
+  - `Show Order Book Card` (`hide_order_book_card`),
+  - `Show Positions Card` (`hide_positions_card`).
+- `EventCard` respeta ambos toggles para ocultar/mostrar:
+  - panel `Order Flow`,
+  - panel `Positions`.

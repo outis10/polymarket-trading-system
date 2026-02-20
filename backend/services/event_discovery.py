@@ -67,9 +67,25 @@ def _detect_symbol(text: str, symbols: set[str]) -> str | None:
     for symbol, hints in SYMBOL_HINTS.items():
         if symbol not in symbols:
             continue
-        if any(h in txt for h in hints):
+        # Use word boundaries to avoid false positives like "eth" inside
+        # unrelated words (e.g. "whether").
+        if any(re.search(rf"\b{re.escape(h)}\b", txt) for h in hints):
             return symbol
     return None
+
+
+def _symbol_matches_text(symbol: str, *texts: str) -> bool:
+    patterns = {
+        "BTC": r"\b(bitcoin|btc)\b",
+        "ETH": r"\b(ethereum|eth)\b",
+        "SOL": r"\b(sol|solana)\b",
+        "XRP": r"\b(xrp|ripple)\b",
+    }
+    pattern = patterns.get(symbol.upper())
+    if not pattern:
+        return False
+    blob = " ".join(str(t or "") for t in texts).lower()
+    return bool(re.search(pattern, blob))
 
 
 def _parse_json_list(raw: Any) -> list[Any]:
@@ -291,8 +307,16 @@ def discover_live_events(config: dict[str, Any]) -> list[dict[str, Any]]:
 
                 question = str(market.get("question") or title)
                 market_slug = str(market.get("slug") or event.get("slug") or "")
-                market_symbol = _detect_symbol(question, symbols) or symbol
+                market_symbol = _detect_symbol(question, symbols) or _detect_symbol(
+                    market_slug, symbols
+                )
                 if not market_symbol:
+                    continue
+                # Extra guard: do not inherit event-level symbol blindly.
+                # Market text itself must explicitly match the selected symbol.
+                if not _symbol_matches_text(
+                    market_symbol, question, market_slug, market.get("description", "")
+                ):
                     continue
 
                 start_dt = _parse_iso_utc(

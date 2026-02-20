@@ -66,7 +66,9 @@ pnpm-debug.log*
 data/
 *.db
 *.sqlite
-backtest_output/
+backtest_output/*
+!backtest_output/merged_pm_5m_slot_ranges_4cryptos.csv
+!backtest_output/merged_pm_ranges_4cryptos.csv
 *.xlsx
 sum_range_up_down_probabilities*.csv
 

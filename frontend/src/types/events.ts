@@ -30,6 +30,7 @@ export interface EventData {
     no_price: number;
     current_price: number;
     price_to_beat: number;
+    price_to_beat_source?: string | null;
     last_update: string;
     price_change: number;
     volume_24h: number;
@@ -63,6 +64,9 @@ export interface QuantRangeHistogramBin {
 export interface QuantRangeHistogram {
     ticker: string;
     minute: number;
+    slot?: number;
+    slot_seconds?: number;
+    bucket_type?: string;
     current_diff: number;
     total_count: number;
     current_bin_index: number | null;
@@ -74,6 +78,7 @@ export interface QuantBuyGateSide {
     enabled: boolean;
     reasons: string[];
     edge_pct: number | null;
+    edge_vs_ask_pct?: number | null;
     sample_size: number | null;
     percentile: number | null;
     side: "up" | "down";
@@ -104,6 +109,8 @@ export interface SettingsData {
     quant_gate_percentile_high?: number;
     quant_gate_min_price_c?: number;
     quant_gate_max_price_c?: number;
+    quant_gate_edge_vs_ask_enabled?: boolean;
+    quant_gate_min_edge_vs_ask_pct?: number;
     monitored_tickers?: string[];
     bot_risk_enabled?: boolean;
     bot_max_buys_per_event_side?: number;
@@ -111,6 +118,7 @@ export interface SettingsData {
     bot_global_min_seconds_between_orders?: number;
     bot_max_event_exposure_pct?: number;
     bot_max_ticker_exposure_pct?: number;
+    bot_order_notional_cap_usd?: number;
     pm_min_shares?: number;
     pm_min_notional_usd?: number;
 }
@@ -121,7 +129,8 @@ export interface WSMessage {
         | "price_update"
         | "orderbook_update"
         | "quant_metrics_update"
-        | "settings_update";
+        | "settings_update"
+        | "balance_update";
     event_id: string;
     data: Record<string, unknown>;
 }

@@ -39,6 +39,7 @@ class EventData(BaseModel):
     no_price: float = 0.50
     current_price: float = 0.0
     price_to_beat: float = 0.0
+    price_to_beat_source: Optional[str] = None
     last_update: str = ""
     price_change: float = 0.0
     volume_24h: float = 0.0
@@ -106,7 +107,7 @@ class OrderResponse(BaseModel):
 class SettingsData(BaseModel):
     mode: str = "live"
     refresh_rate: int = 1
-    timeframe_filter: str = "15m"
+    timeframe_filter: str = "5m"
     trading_mode: str = "bot"
     chart_options: list[str] = ["show_chart"]
     kelly_enabled: bool = True
@@ -123,6 +124,8 @@ class SettingsData(BaseModel):
     quant_gate_percentile_high: float = 85.0
     quant_gate_min_price_c: float = 10.0
     quant_gate_max_price_c: float = 90.0
+    quant_gate_edge_vs_ask_enabled: bool = False
+    quant_gate_min_edge_vs_ask_pct: float = 2.0
     monitored_tickers: list[str] = ["BTC", "ETH", "SOL", "XRP"]
     bot_risk_enabled: bool = True
     bot_max_buys_per_event_side: int = 1
@@ -130,5 +133,6 @@ class SettingsData(BaseModel):
     bot_global_min_seconds_between_orders: int = 2
     bot_max_event_exposure_pct: float = 15.0
     bot_max_ticker_exposure_pct: float = 25.0
+    bot_order_notional_cap_usd: float = 5.0
     pm_min_shares: float = 5.0
     pm_min_notional_usd: float = 1.0

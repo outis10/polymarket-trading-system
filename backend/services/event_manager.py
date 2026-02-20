@@ -3,6 +3,7 @@
 import asyncio
 import bisect
 import csv
+import json
 import logging
 import os
 import re
@@ -40,7 +41,7 @@ class EventManager:
         self.settings: dict = {
             "mode": "live",
             "refresh_rate": 1,
-            "timeframe_filter": "15m",
+            "timeframe_filter": "5m",
             "trading_mode": "bot",
             "chart_options": ["show_chart"],
             "kelly_enabled": True,
@@ -57,6 +58,8 @@ class EventManager:
             "quant_gate_percentile_high": 85.0,
             "quant_gate_min_price_c": 10.0,
             "quant_gate_max_price_c": 90.0,
+            "quant_gate_edge_vs_ask_enabled": False,
+            "quant_gate_min_edge_vs_ask_pct": 2.0,
             "monitored_tickers": ["BTC", "ETH", "SOL", "XRP"],
             "bot_risk_enabled": True,
             "bot_max_buys_per_event_side": 1,
@@ -64,8 +67,11 @@ class EventManager:
             "bot_global_min_seconds_between_orders": 2,
             "bot_max_event_exposure_pct": 15.0,
             "bot_max_ticker_exposure_pct": 25.0,
+            "bot_order_notional_cap_usd": 5.0,
             "pm_min_shares": 5.0,
             "pm_min_notional_usd": 1.0,
+            "order_book_max_levels": 8,
+            "order_book_min_broadcast_ms": 120,
         }
         self._config: dict = {}
         self._task: Optional[asyncio.Task] = None
@@ -80,6 +86,7 @@ class EventManager:
         self._polymarket_cursor: int = 0
         self._snapshot_every_n_ticks: int = 5
         self._tick_counter: int = 0
+        self._orderbook_last_emit_ms: dict[tuple[str, str], int] = {}
         self._live_event_configs: dict[str, dict] = {}
         # Quantitative PM probability table: {ticker: {minute: [(inf, sup, prob_up, prob_down, count)]}}
         self._pm_ranges: dict[
@@ -113,6 +120,56 @@ class EventManager:
             os.path.join(os.path.dirname(__file__), "..", "..", "backtest_output")
         )
         self._opportunity_tracker = OpportunityTracker(base_dir=tracker_dir)
+        self._runtime_settings_path = os.path.join(tracker_dir, "runtime_settings.json")
+        self._persisted_setting_keys = set(self.settings.keys())
+
+    def _load_runtime_settings(self) -> None:
+        """Load persisted runtime mode/settings from disk, if available."""
+        path = self._runtime_settings_path
+        if not os.path.exists(path):
+            return
+        try:
+            with open(path) as f:
+                payload = json.load(f)
+        except Exception as exc:
+            logger.warning("Could not read runtime settings from %s: %s", path, exc)
+            return
+
+        if not isinstance(payload, dict):
+            return
+
+        persisted_mode = str(payload.get("mode", "")).strip().lower()
+        if persisted_mode in {"live", "demo"}:
+            self.mode = persisted_mode
+            self.settings["mode"] = persisted_mode
+
+        persisted_settings = payload.get("settings")
+        if isinstance(persisted_settings, dict):
+            for key, value in persisted_settings.items():
+                if key in self._persisted_setting_keys:
+                    self.settings[key] = value
+            self.settings["mode"] = self.mode
+
+    def persist_runtime_settings(self) -> None:
+        """Persist current runtime mode/settings for restart continuity."""
+        os.makedirs(os.path.dirname(self._runtime_settings_path), exist_ok=True)
+        payload = {
+            "mode": self.mode,
+            "settings": {
+                key: self.settings.get(key)
+                for key in sorted(self._persisted_setting_keys)
+            },
+            "updated_at_utc": datetime.now(tz=timezone.utc).isoformat(),
+        }
+        try:
+            with open(self._runtime_settings_path, "w") as f:
+                json.dump(payload, f, indent=2, sort_keys=True)
+        except Exception as exc:
+            logger.warning(
+                "Could not persist runtime settings to %s: %s",
+                self._runtime_settings_path,
+                exc,
+            )
 
     def load_config(self):
         self._config = load_events_config()
@@ -447,6 +504,7 @@ class EventManager:
         side: str,
         quant_prob: float | None,
         market_prob: float,
+        ask_price: float | None,
         sample_size: int | None,
         percentile: float | None,
     ) -> dict:
@@ -459,9 +517,14 @@ class EventManager:
         percentile_high = float(settings.get("quant_gate_percentile_high", 85.0))
         min_price_c = float(settings.get("quant_gate_min_price_c", 10.0))
         max_price_c = float(settings.get("quant_gate_max_price_c", 90.0))
+        edge_vs_ask_enabled = bool(
+            settings.get("quant_gate_edge_vs_ask_enabled", False)
+        )
+        min_edge_vs_ask_pct = float(settings.get("quant_gate_min_edge_vs_ask_pct", 2.0))
 
         reasons: list[str] = []
         edge_pct: float | None = None
+        edge_vs_ask_pct: float | None = None
 
         if not gate_enabled:
             return {
@@ -481,6 +544,13 @@ class EventManager:
             edge_pct = (quant_prob - market_prob) * 100.0
             if edge_pct < min_edge_pct:
                 reasons.append(f"edge<{min_edge_pct:.2f}%")
+            if edge_vs_ask_enabled:
+                if ask_price is None or ask_price <= 0:
+                    reasons.append("no_ask_price")
+                else:
+                    edge_vs_ask_pct = (quant_prob - ask_price) * 100.0
+                    if edge_vs_ask_pct < min_edge_vs_ask_pct:
+                        reasons.append(f"ask_edge<{min_edge_vs_ask_pct:.2f}%")
 
         price_c = market_prob * 100.0
         if price_c < min_price_c or price_c > max_price_c:
@@ -498,6 +568,7 @@ class EventManager:
             "enabled": len(reasons) == 0,
             "reasons": reasons,
             "edge_pct": edge_pct,
+            "edge_vs_ask_pct": edge_vs_ask_pct,
             "sample_size": sample_size,
             "percentile": percentile,
             "side": side,
@@ -515,6 +586,24 @@ class EventManager:
         sample_size = event_dict.get("quant_sample_size")
         yes_price = float(event_dict.get("yes_price", 0.5) or 0.5)
         no_price = float(event_dict.get("no_price", 0.5) or 0.5)
+        ask_up = None
+        ask_down = None
+        if isinstance(event_dict.get("order_book_yes"), dict):
+            asks = event_dict.get("order_book_yes", {}).get("asks", [])
+            if isinstance(asks, list) and asks:
+                raw = asks[0].get("price") if isinstance(asks[0], dict) else None
+                try:
+                    ask_up = float(raw) if raw is not None else None
+                except (TypeError, ValueError):
+                    ask_up = None
+        if isinstance(event_dict.get("order_book_no"), dict):
+            asks = event_dict.get("order_book_no", {}).get("asks", [])
+            if isinstance(asks, list) and asks:
+                raw = asks[0].get("price") if isinstance(asks[0], dict) else None
+                try:
+                    ask_down = float(raw) if raw is not None else None
+                except (TypeError, ValueError):
+                    ask_down = None
 
         event_dict["quant_buy_gate"] = {
             "up": self._compute_quant_buy_gate_side(
@@ -523,6 +612,7 @@ class EventManager:
                 if isinstance(quant_prob_up, (float, int))
                 else None,
                 market_prob=yes_price,
+                ask_price=ask_up,
                 sample_size=int(sample_size) if isinstance(sample_size, int) else None,
                 percentile=percentile,
             ),
@@ -532,6 +622,7 @@ class EventManager:
                 if isinstance(quant_prob_down, (float, int))
                 else None,
                 market_prob=no_price,
+                ask_price=ask_down,
                 sample_size=int(sample_size) if isinstance(sample_size, int) else None,
                 percentile=percentile,
             ),
@@ -759,6 +850,14 @@ class EventManager:
                 return False, "event_side_cooldown_active"
 
         ticker = self._extract_event_ticker(event_id, event)
+        hard_order_cap = max(
+            0.0, float(self.settings.get("bot_order_notional_cap_usd", 0.0))
+        )
+        if hard_order_cap > 0:
+            if notional_usd > hard_order_cap:
+                return False, f"order_notional_above_cap_{hard_order_cap:g}"
+            return True, ""
+
         base_bankroll = (
             float(bankroll_usd)
             if bankroll_usd is not None and bankroll_usd > 0
@@ -792,6 +891,66 @@ class EventManager:
             return False, "ticker_exposure_cap_reached"
 
         return True, ""
+
+    def format_risk_guard_block_reason(
+        self,
+        *,
+        reason: str,
+        event_id: str,
+        event: dict,
+        notional_usd: float,
+        now_utc: datetime,
+        bankroll_usd: float | None,
+    ) -> str:
+        """
+        Expand compact risk-guard reason codes with actionable context.
+        """
+        if reason not in {"event_exposure_cap_reached", "ticker_exposure_cap_reached"}:
+            return reason
+
+        records = self._clean_old_order_records(self._order_guard_records, now_utc)
+        start_day = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+        ticker = self._extract_event_ticker(event_id, event)
+        base_bankroll = (
+            float(bankroll_usd)
+            if bankroll_usd is not None and bankroll_usd > 0
+            else float(self.settings.get("kelly_bankroll", 100.0))
+        )
+        base_bankroll = max(1.0, base_bankroll)
+        event_cap_usd = (
+            base_bankroll
+            * max(0.0, float(self.settings.get("bot_max_event_exposure_pct", 15.0)))
+            / 100.0
+        )
+        ticker_cap_usd = (
+            base_bankroll
+            * max(0.0, float(self.settings.get("bot_max_ticker_exposure_pct", 25.0)))
+            / 100.0
+        )
+        event_spend = sum(
+            float(r.get("notional_usd", 0.0))
+            for r in records
+            if r.get("event_id") == event_id and r.get("at_utc") >= start_day
+        )
+        ticker_spend = sum(
+            float(r.get("notional_usd", 0.0))
+            for r in records
+            if r.get("ticker") == ticker and r.get("at_utc") >= start_day
+        )
+        new_notional = max(0.0, float(notional_usd))
+
+        if reason == "event_exposure_cap_reached":
+            return (
+                "event_exposure_cap_reached "
+                f"(event_spend=${event_spend:.2f}, new_notional=${new_notional:.2f}, "
+                f"cap=${event_cap_usd:.2f}, bankroll=${base_bankroll:.2f})"
+            )
+        return (
+            "ticker_exposure_cap_reached "
+            f"(ticker={ticker}, ticker_spend=${ticker_spend:.2f}, "
+            f"new_notional=${new_notional:.2f}, cap=${ticker_cap_usd:.2f}, "
+            f"bankroll=${base_bankroll:.2f})"
+        )
 
     def register_order_fill(
         self,
@@ -874,6 +1033,7 @@ class EventManager:
     async def start(self):
         """Start the event manager background loop."""
         self.load_config()
+        self._load_runtime_settings()
         self._pm_ranges = self._load_pm_ranges()
         self._pm_5m_slot_ranges = self._load_pm_5m_slot_ranges()
         self._running = True
@@ -921,6 +1081,7 @@ class EventManager:
         await manager.broadcast(
             {"type": "settings_update", "event_id": "", "data": self.settings}
         )
+        self.persist_runtime_settings()
 
     async def refresh_live_events(self, force: bool = True) -> dict:
         """Manually refresh live events discovery and broadcast a new snapshot."""
@@ -1066,6 +1227,7 @@ class EventManager:
                 "no_price": 0.50,
                 "current_price": 0,
                 "price_to_beat": 0,
+                "price_to_beat_source": "unknown",
                 "last_update": "",
                 "price_change": 0,
                 "volume_24h": 0,
@@ -1113,6 +1275,9 @@ class EventManager:
             )
             if isinstance(configured_ptb, (int, float)) and float(configured_ptb) > 0:
                 event_dict["price_to_beat"] = float(configured_ptb)
+                event_dict["price_to_beat_source"] = (
+                    "gamma" if str(event_config.get("slug", "")).strip() else "config"
+                )
 
             if bsym and est:
                 start_ms = parse_event_start_ms(est)
@@ -1122,6 +1287,7 @@ class EventManager:
                         event_dict["price_history"] = kh
                         if event_dict.get("price_to_beat", 0) <= 0:
                             event_dict["price_to_beat"] = kh[0]["price_to_beat"]
+                            event_dict["price_to_beat_source"] = "binance_klines"
                         event_dict["current_price"] = kh[-1]["price"]
                     else:
                         op = fetch_binance_candle_open(
@@ -1129,6 +1295,7 @@ class EventManager:
                         )
                         if op and event_dict.get("price_to_beat", 0) <= 0:
                             event_dict["price_to_beat"] = op
+                            event_dict["price_to_beat_source"] = "binance_open"
 
             events[event_id] = event_dict
             self._live_event_configs[event_id] = event_config
@@ -1186,6 +1353,8 @@ class EventManager:
         merged: list[dict] = []
         seen: set[str] = set()
         for event_cfg in static_events:
+            if not self._is_supported_crypto_event_config(event_cfg):
+                continue
             cid = str(event_cfg.get("condition_id", "")).strip()
             key = cid or str(event_cfg.get("name", "")).strip().lower()
             if not key or key in seen:
@@ -1197,6 +1366,8 @@ class EventManager:
             try:
                 discovered = discover_live_events(self._live_discovery)
                 for event_cfg in discovered:
+                    if not self._is_supported_crypto_event_config(event_cfg):
+                        continue
                     cid = str(event_cfg.get("condition_id", "")).strip()
                     key = cid or str(event_cfg.get("name", "")).strip().lower()
                     if not key or key in seen:
@@ -1213,6 +1384,40 @@ class EventManager:
             len(merged),
         )
         return merged
+
+    @staticmethod
+    def _is_supported_crypto_event_config(event_cfg: dict) -> bool:
+        """
+        Hard filter for supported universe. We only operate BTC/ETH/SOL/XRP.
+        """
+        raw_symbol = normalize_symbol(
+            str(
+                event_cfg.get("chainlink_symbol") or event_cfg.get("binance_symbol", "")
+            )
+        ).upper()
+        if raw_symbol.endswith("USDT"):
+            raw_symbol = raw_symbol[:-4]
+
+        text = (
+            f"{event_cfg.get('name', '')} "
+            f"{event_cfg.get('description', '')} "
+            f"{event_cfg.get('slug', '')}"
+        ).lower()
+        patterns = {
+            "BTC": r"\b(bitcoin|btc)\b",
+            "ETH": r"\b(ethereum|eth)\b",
+            "SOL": r"\b(sol|solana)\b",
+            "XRP": r"\b(xrp|ripple)\b",
+        }
+        text_matches = {
+            symbol for symbol, pattern in patterns.items() if re.search(pattern, text)
+        }
+
+        if raw_symbol in {"BTC", "ETH", "SOL", "XRP"}:
+            # If symbol is declared, text must also be consistent to avoid
+            # accidental cross-category contamination.
+            return raw_symbol in text_matches
+        return bool(text_matches)
 
     @staticmethod
     def _build_event_id(name: str, used: set[str]) -> str:
@@ -1366,7 +1571,9 @@ class EventManager:
 
     def _live_polymarket_assets(self) -> set[str]:
         assets: set[str] = set()
-        for event in self.events.values():
+        for event_id, event in self.events.items():
+            if not self._is_trackable_crypto_event(event_id, event):
+                continue
             yes_token = str(event.get("yes_token_id", "")).strip()
             no_token = str(event.get("no_token_id", "")).strip()
             if yes_token:
@@ -1393,6 +1600,8 @@ class EventManager:
             return
 
         for event_id, event in self.events.items():
+            if not self._is_trackable_crypto_event(event_id, event):
+                continue
             yes_token = str(event.get("yes_token_id", "")).strip()
             no_token = str(event.get("no_token_id", "")).strip()
             if yes_token:
@@ -1408,7 +1617,9 @@ class EventManager:
         logger.info("Started Polymarket WS stream for assets: %d", len(assets))
 
     @staticmethod
-    def _parse_book_levels(levels: object, reverse: bool) -> list[dict]:
+    def _parse_book_levels(
+        levels: object, reverse: bool, max_levels: int
+    ) -> list[dict]:
         parsed: list[tuple[float, float]] = []
         if not isinstance(levels, list):
             return []
@@ -1428,7 +1639,9 @@ class EventManager:
         parsed.sort(key=lambda x: x[0], reverse=reverse)
         result: list[dict] = []
         cumulative = 0.0
-        for p, s in parsed:
+        for idx, (p, s) in enumerate(parsed):
+            if idx >= max_levels:
+                break
             cumulative += p * s
             result.append(
                 {
@@ -1454,13 +1667,48 @@ class EventManager:
         if not event:
             return
 
-        bids = self._parse_book_levels(msg.get("bids"), reverse=True)
-        asks = self._parse_book_levels(msg.get("asks"), reverse=False)
+        max_levels = max(1, int(self.settings.get("order_book_max_levels", 8)))
+        bids = self._parse_book_levels(
+            msg.get("bids"), reverse=True, max_levels=max_levels
+        )
+        asks = self._parse_book_levels(
+            msg.get("asks"), reverse=False, max_levels=max_levels
+        )
         if not bids and not asks:
             return
 
         best_bid = bids[0]["price"] if bids else 0.0
         best_ask = asks[0]["price"] if asks else 0.0
+        prev_ob = (
+            event.get("order_book_yes") if side == "yes" else event.get("order_book_no")
+        )
+        prev_best_bid = 0.0
+        prev_best_ask = 0.0
+        if isinstance(prev_ob, dict):
+            prev_bids = prev_ob.get("bids")
+            prev_asks = prev_ob.get("asks")
+            if isinstance(prev_bids, list) and prev_bids:
+                try:
+                    prev_best_bid = float(prev_bids[0].get("price", 0.0))
+                except Exception:
+                    prev_best_bid = 0.0
+            if isinstance(prev_asks, list) and prev_asks:
+                try:
+                    prev_best_ask = float(prev_asks[0].get("price", 0.0))
+                except Exception:
+                    prev_best_ask = 0.0
+
+        now_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+        min_emit_ms = max(0, int(self.settings.get("order_book_min_broadcast_ms", 120)))
+        emit_key = (event_id, side)
+        last_emit = self._orderbook_last_emit_ms.get(emit_key, 0)
+        top_unchanged = (
+            abs(best_bid - prev_best_bid) < 1e-9
+            and abs(best_ask - prev_best_ask) < 1e-9
+        )
+        if top_unchanged and (now_ms - last_emit) < min_emit_ms:
+            return
+
         if best_bid > 0 and best_ask > 0:
             mid = (best_bid + best_ask) / 2.0
         else:
@@ -1493,17 +1741,21 @@ class EventManager:
                 event["no_price"] = 1.0 - event["yes_price"]
 
         event["last_update"] = datetime.now(tz=timezone.utc).isoformat()
+        self._orderbook_last_emit_ms[emit_key] = now_ms
+        data: dict = {
+            "yes_price": event.get("yes_price"),
+            "no_price": event.get("no_price"),
+            "last_update": event.get("last_update"),
+        }
+        if side == "yes":
+            data["order_book_yes"] = event.get("order_book_yes")
+        else:
+            data["order_book_no"] = event.get("order_book_no")
         await manager.broadcast(
             {
                 "type": "orderbook_update",
                 "event_id": event_id,
-                "data": {
-                    "yes_price": event.get("yes_price"),
-                    "no_price": event.get("no_price"),
-                    "order_book_yes": event.get("order_book_yes"),
-                    "order_book_no": event.get("order_book_no"),
-                    "last_update": event.get("last_update"),
-                },
+                "data": data,
             }
         )
 
@@ -1524,6 +1776,8 @@ class EventManager:
         for event_id, event_dict in self.events.items():
             ecfg = self._live_event_configs.get(event_id)
             if not ecfg:
+                continue
+            if not self._is_trackable_crypto_event(event_id, event_dict):
                 continue
             ref_symbol = normalize_symbol(
                 str(ecfg.get("chainlink_symbol") or ecfg.get("binance_symbol", ""))
@@ -1588,6 +1842,7 @@ class EventManager:
             "no_price",
             "current_price",
             "price_to_beat",
+            "price_to_beat_source",
             "last_update",
             "price_change",
             "volume_24h",
@@ -1637,6 +1892,8 @@ class EventManager:
             event_dict = self.events[event_id]
             ecfg = self._live_event_configs.get(event_id)
             if not ecfg:
+                continue
+            if not self._is_trackable_crypto_event(event_id, event_dict):
                 continue
 
             bsym = str(ecfg.get("binance_symbol", ""))
@@ -1730,6 +1987,8 @@ class EventManager:
             event_dict = self.events[event_id]
             ecfg = self._live_event_configs.get(event_id)
             if not ecfg:
+                continue
+            if not self._is_trackable_crypto_event(event_id, event_dict):
                 continue
 
             pr = fetch_real_prices(client, ecfg)

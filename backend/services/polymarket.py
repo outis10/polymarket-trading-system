@@ -50,13 +50,16 @@ def reset_client():
     logger.info("Polymarket client reset - will reinitialize on next request")
 
 
-def _convert_order_book(ob_summary) -> Optional[dict]:
+def _convert_order_book(ob_summary, max_levels: int = 8) -> Optional[dict]:
     """Convert an OrderBookSummary from py_clob_client to our internal dict."""
     if ob_summary is None:
         return None
 
-    raw_bids = sorted(ob_summary.bids or [], key=lambda l: float(l.price), reverse=True)
-    raw_asks = sorted(ob_summary.asks or [], key=lambda l: float(l.price))
+    safe_levels = max(1, int(max_levels))
+    raw_bids = sorted(
+        ob_summary.bids or [], key=lambda l: float(l.price), reverse=True
+    )[:safe_levels]
+    raw_asks = sorted(ob_summary.asks or [], key=lambda l: float(l.price))[:safe_levels]
 
     asks = []
     cumulative = 0.0
@@ -64,7 +67,13 @@ def _convert_order_book(ob_summary) -> Optional[dict]:
         price = float(level.price)
         shares = float(level.size)
         cumulative += shares * price
-        asks.append({"price": round(price, 2), "shares": round(shares, 2), "total": round(cumulative, 2)})
+        asks.append(
+            {
+                "price": round(price, 2),
+                "shares": round(shares, 2),
+                "total": round(cumulative, 2),
+            }
+        )
 
     bids = []
     cumulative = 0.0
@@ -72,7 +81,13 @@ def _convert_order_book(ob_summary) -> Optional[dict]:
         price = float(level.price)
         shares = float(level.size)
         cumulative += shares * price
-        bids.append({"price": round(price, 2), "shares": round(shares, 2), "total": round(cumulative, 2)})
+        bids.append(
+            {
+                "price": round(price, 2),
+                "shares": round(shares, 2),
+                "total": round(cumulative, 2),
+            }
+        )
 
     best_ask = asks[0]["price"] if asks else 0.50
     best_bid = bids[0]["price"] if bids else 0.49
@@ -84,7 +99,9 @@ def _convert_order_book(ob_summary) -> Optional[dict]:
         except (ValueError, TypeError):
             pass
 
-    total_volume = sum(a["shares"] * a["price"] for a in asks) + sum(b["shares"] * b["price"] for b in bids)
+    total_volume = sum(a["shares"] * a["price"] for a in asks) + sum(
+        b["shares"] * b["price"] for b in bids
+    )
 
     return {
         "bids": bids,
@@ -126,8 +143,8 @@ def fetch_real_prices(client, event_config: dict) -> Optional[dict]:
             "yes_ask": yes_ask,
             "no_bid": no_bid,
             "no_ask": no_ask,
-            "order_book_yes": _convert_order_book(yes_ob),
-            "order_book_no": _convert_order_book(no_ob),
+            "order_book_yes": _convert_order_book(yes_ob, max_levels=8),
+            "order_book_no": _convert_order_book(no_ob, max_levels=8),
         }
     except Exception as e:
         logger.error("Error fetching prices: %s", e)
@@ -135,6 +152,7 @@ def fetch_real_prices(client, event_config: dict) -> Optional[dict]:
 
 
 # --- WebSocket stream ---
+
 
 class PolymarketStreamer:
     """Connects to Polymarket WebSocket for real-time market data."""

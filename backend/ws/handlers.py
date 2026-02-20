@@ -46,6 +46,15 @@ async def websocket_events(websocket: WebSocket):
 
                 elif msg_type == "update_settings":
                     settings = msg.get("settings", {})
+                    if isinstance(settings, dict):
+                        # Generic merge first so newly added persisted keys do not get
+                        # dropped when frontend/backend evolve at different times.
+                        for key, value in settings.items():
+                            if (
+                                key in event_manager._persisted_setting_keys
+                                and key != "mode"
+                            ):
+                                event_manager.settings[key] = value
                     if "refresh_rate" in settings:
                         event_manager.settings["refresh_rate"] = settings[
                             "refresh_rate"
@@ -118,6 +127,14 @@ async def websocket_events(websocket: WebSocket):
                         event_manager.settings["quant_gate_max_price_c"] = float(
                             settings["quant_gate_max_price_c"]
                         )
+                    if "quant_gate_edge_vs_ask_enabled" in settings:
+                        event_manager.settings["quant_gate_edge_vs_ask_enabled"] = bool(
+                            settings["quant_gate_edge_vs_ask_enabled"]
+                        )
+                    if "quant_gate_min_edge_vs_ask_pct" in settings:
+                        event_manager.settings["quant_gate_min_edge_vs_ask_pct"] = (
+                            float(settings["quant_gate_min_edge_vs_ask_pct"])
+                        )
                     if "monitored_tickers" in settings:
                         raw_tickers = settings["monitored_tickers"]
                         if isinstance(raw_tickers, list):
@@ -150,6 +167,10 @@ async def websocket_events(websocket: WebSocket):
                         event_manager.settings["bot_max_ticker_exposure_pct"] = float(
                             settings["bot_max_ticker_exposure_pct"]
                         )
+                    if "bot_order_notional_cap_usd" in settings:
+                        event_manager.settings["bot_order_notional_cap_usd"] = float(
+                            settings["bot_order_notional_cap_usd"]
+                        )
                     if "pm_min_shares" in settings:
                         event_manager.settings["pm_min_shares"] = float(
                             settings["pm_min_shares"]
@@ -158,6 +179,7 @@ async def websocket_events(websocket: WebSocket):
                         event_manager.settings["pm_min_notional_usd"] = float(
                             settings["pm_min_notional_usd"]
                         )
+                    event_manager.persist_runtime_settings()
                     await manager.broadcast(
                         {
                             "type": "settings_update",

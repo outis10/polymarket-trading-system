@@ -1,7 +1,9 @@
 """REST endpoints for trading operations."""
 
+import asyncio
 import logging
 import os
+import time
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
@@ -9,10 +11,13 @@ from fastapi import APIRouter, HTTPException
 from ..models.schemas import OrderRequest, OrderResponse
 from ..services.event_manager import event_manager
 from ..services.polymarket import get_client, reset_client
+from ..ws.manager import manager
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["trading"])
+_POSITIONS_CACHE_TTL_SECONDS = 10.0
+_positions_cache: dict[str, dict] = {}
 
 
 @router.post("/orders", response_model=OrderResponse)
@@ -34,11 +39,24 @@ async def place_order(order: OrderRequest):
         if outcome_side == "up"
         else float(event.get("no_price") or 0.5)
     )
-    notional_usd = (
-        float(order.price) * float(order.shares)
-        if order.order_type == "limit"
-        else reference_price * float(order.shares)
+    order_price_ref = (
+        float(order.price) if order.order_type == "limit" else float(reference_price)
     )
+    requested_shares = max(0.0, float(order.shares))
+    requested_notional_usd = order_price_ref * requested_shares
+    hard_cap_usd = max(
+        0.0, float(event_manager.settings.get("bot_order_notional_cap_usd", 5.0))
+    )
+    effective_shares = requested_shares
+    cap_applied = False
+    if (
+        hard_cap_usd > 0
+        and requested_notional_usd > hard_cap_usd
+        and order_price_ref > 0
+    ):
+        effective_shares = hard_cap_usd / order_price_ref
+        cap_applied = True
+    notional_usd = order_price_ref * effective_shares
     bankroll_usd: float | None = None
 
     # Demo mode: simulate
@@ -47,13 +65,23 @@ async def place_order(order: OrderRequest):
             event_id=order.event_id,
             event=event,
             outcome=outcome_side,
-            shares=float(order.shares),
+            shares=float(effective_shares),
             notional_usd=notional_usd,
             now_utc=datetime.now(tz=timezone.utc),
             bankroll_usd=bankroll_usd,
         )
         if not allowed:
-            raise HTTPException(status_code=403, detail=f"Risk guard blocked: {reason}")
+            detailed = event_manager.format_risk_guard_block_reason(
+                reason=reason,
+                event_id=order.event_id,
+                event=event,
+                notional_usd=notional_usd,
+                now_utc=datetime.now(tz=timezone.utc),
+                bankroll_usd=bankroll_usd,
+            )
+            raise HTTPException(
+                status_code=403, detail=f"Risk guard blocked: {detailed}"
+            )
         event_manager.register_order_fill(
             event_id=order.event_id,
             event=event,
@@ -64,9 +92,27 @@ async def place_order(order: OrderRequest):
         outcome_label = "Up" if order.outcome == "up" else "Down"
         order_label = order.order_type.capitalize()
         if order.order_type == "market":
-            msg = f"{order.side} {order.shares} shares of {outcome_label} ({order_label} order)"
+            msg = (
+                f"{order.side} {effective_shares:.4f} shares of "
+                f"{outcome_label} ({order_label} order)"
+            )
         else:
-            msg = f"{order.side} {order.shares} shares of {outcome_label} @ ${order.price:.2f} ({order_label} order)"
+            msg = (
+                f"{order.side} {effective_shares:.4f} shares of {outcome_label} "
+                f"@ ${order.price:.2f} ({order_label} order)"
+            )
+        if cap_applied:
+            msg += f" [notional capped to ${hard_cap_usd:.2f}]"
+        try:
+            await manager.broadcast(
+                {
+                    "type": "balance_update",
+                    "event_id": "",
+                    "data": {"balance": 1000.00, "source": "demo"},
+                }
+            )
+        except Exception:
+            pass
         return OrderResponse(
             order_id="demo-" + order.event_id[:8], status="FILLED", message=msg
         )
@@ -86,13 +132,21 @@ async def place_order(order: OrderRequest):
         event_id=order.event_id,
         event=event,
         outcome=outcome_side,
-        shares=float(order.shares),
+        shares=float(effective_shares),
         notional_usd=notional_usd,
         now_utc=datetime.now(tz=timezone.utc),
         bankroll_usd=bankroll_usd,
     )
     if not allowed:
-        raise HTTPException(status_code=403, detail=f"Risk guard blocked: {reason}")
+        detailed = event_manager.format_risk_guard_block_reason(
+            reason=reason,
+            event_id=order.event_id,
+            event=event,
+            notional_usd=notional_usd,
+            now_utc=datetime.now(tz=timezone.utc),
+            bankroll_usd=bankroll_usd,
+        )
+        raise HTTPException(status_code=403, detail=f"Risk guard blocked: {detailed}")
 
     token_id = (
         event.get("yes_token_id") if order.outcome == "up" else event.get("no_token_id")
@@ -105,9 +159,9 @@ async def place_order(order: OrderRequest):
     try:
         side = order.side.upper()
         if order.order_type == "market":
-            result = client.place_market_order(token_id, side, order.shares)
+            result = client.place_market_order(token_id, side, effective_shares)
         else:
-            result = client.place_order(token_id, side, order.price, order.shares)
+            result = client.place_order(token_id, side, order.price, effective_shares)
 
         if result:
             # SignedOrder object - access attributes directly
@@ -124,10 +178,36 @@ async def place_order(order: OrderRequest):
                 notional_usd=notional_usd,
                 now_utc=datetime.now(tz=timezone.utc),
             )
+            try:
+                refreshed_balance = client.get_balance()
+            except Exception:
+                refreshed_balance = None
+            try:
+                await manager.broadcast(
+                    {
+                        "type": "balance_update",
+                        "event_id": "",
+                        "data": {
+                            "balance": float(refreshed_balance)
+                            if isinstance(refreshed_balance, (int, float))
+                            else None,
+                            "source": "post_order_fill",
+                        },
+                    }
+                )
+            except Exception:
+                pass
             return OrderResponse(
                 order_id=str(order_id),
                 status=str(status) if status else "OPEN",
-                message="Order placed successfully",
+                message=(
+                    f"Order placed successfully"
+                    + (
+                        f" (notional capped to ${hard_cap_usd:.2f})"
+                        if cap_applied
+                        else ""
+                    )
+                ),
             )
         raise HTTPException(
             status_code=500, detail="Order placement returned no result"
@@ -351,8 +431,16 @@ async def get_positions(event_id: str):
                 "message": "Token IDs not configured for this event",
             }
 
+        now_ts = time.time()
+        cached = _positions_cache.get(event_id)
+        if (
+            cached
+            and (now_ts - float(cached.get("ts", 0.0))) < _POSITIONS_CACHE_TTL_SECONDS
+        ):
+            return cached["payload"]
+
         # Get all trades
-        trades = client.get_trades()
+        trades = await asyncio.to_thread(client.get_trades)
 
         # Calculate positions per token
         positions = []
@@ -404,7 +492,12 @@ async def get_positions(event_id: str):
                     }
                 )
 
-        return {"positions": positions}
+        payload = {
+            "positions": positions,
+            "cached_for_seconds": _POSITIONS_CACHE_TTL_SECONDS,
+        }
+        _positions_cache[event_id] = {"ts": now_ts, "payload": payload}
+        return payload
 
     except Exception as e:
         logger.error("Error getting positions: %s", e)

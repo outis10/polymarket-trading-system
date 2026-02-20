@@ -32,12 +32,22 @@ body {
     display: flex;
     align-items: center;
     gap: 12px;
+    flex: 1;
+}
+
+.app-header-center {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: 1;
 }
 
 .app-header-right {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
+    justify-content: flex-end;
+    flex: 1;
 }
 
 .app-header-title {
@@ -77,15 +87,73 @@ body {
     background: #30363d;
 }
 
+.settings-btn-gear {
+    display: none;
+    font-size: 18px;
+    line-height: 1;
+}
+
 .nav-btn {
     background: #0f1720;
     border: 1px solid #2b3542;
     border-radius: 8px;
-    padding: 8px 12px;
+    padding: 8px 10px;
     color: #9fb0bf;
     cursor: pointer;
     font-size: 13px;
     font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+}
+
+.nav-btn-label {
+    line-height: 1;
+}
+
+.nav-btn-icon {
+    width: 14px;
+    height: 14px;
+    display: inline-flex;
+    align-items: flex-end;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.nav-icon-live {
+    align-items: center;
+    justify-content: center;
+}
+
+.nav-icon-live-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: #3fb950;
+    box-shadow: 0 0 0 3px rgba(63, 185, 80, 0.22);
+}
+
+.nav-icon-analytics {
+    gap: 2px;
+}
+
+.nav-icon-bar {
+    width: 3px;
+    border-radius: 2px;
+    background: currentColor;
+    opacity: 0.95;
+}
+
+.nav-icon-bar-1 {
+    height: 7px;
+}
+
+.nav-icon-bar-2 {
+    height: 10px;
+}
+
+.nav-icon-bar-3 {
+    height: 5px;
 }
 
 .nav-btn:hover {
@@ -983,6 +1051,10 @@ body {
     height: 100%;
 }
 
+.positions-inline-wrap {
+    margin-top: 10px;
+}
+
 .positions-header {
     display: flex;
     justify-content: space-between;
@@ -1168,6 +1240,28 @@ body {
     text-transform: uppercase;
     letter-spacing: 0.7px;
     color: #8fa7b8;
+}
+
+.metric-label-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.ptb-source-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    border-radius: 999px;
+    border: 1px solid #4a6475;
+    background: rgba(16, 30, 40, 0.9);
+    color: #b6cedd;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1;
 }
 
 .metric-value {
@@ -1478,11 +1572,27 @@ body {
     font-weight: 600;
     color: #d5e9f7;
     letter-spacing: 0.2px;
-    white-space: nowrap;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 2px;
 }
 
 .bot-trade-ks-inline span {
     cursor: help;
+}
+
+.bot-trade-ks-amount {
+    font-size: 11px;
+    color: #9bb2bf;
+}
+
+.bot-trade-qe-positive {
+    color: #2fc687;
+}
+
+.bot-trade-qe-negative {
+    color: #f26a5c;
 }
 
 .bot-trade-buy-btn {
@@ -1705,6 +1815,15 @@ body {
     padding: 8px 10px;
 }
 
+.analytics-controls select {
+    color-scheme: dark;
+}
+
+.analytics-controls select option {
+    background: #0f1720;
+    color: #e6edf3;
+}
+
 .analytics-controls button {
     cursor: pointer;
     font-weight: 700;
@@ -1820,6 +1939,11 @@ body {
 }
 
 @media (max-width: 680px) {
+    .app-header {
+        padding: 10px 12px;
+        gap: 8px;
+    }
+
     .compact-metrics {
         grid-template-columns: 1fr;
     }
@@ -1839,6 +1963,42 @@ body {
     .bankroll-chip {
         font-size: 11px;
         padding: 5px 9px;
+    }
+
+    .settings-btn {
+        padding: 7px 10px;
+        min-width: 38px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .app-header-right {
+        gap: 6px;
+    }
+
+    .nav-btn {
+        min-width: 38px;
+        padding: 7px 8px;
+        gap: 0;
+        justify-content: center;
+    }
+
+    .nav-btn-label {
+        display: none;
+    }
+
+    .nav-btn-icon {
+        width: 15px;
+        height: 15px;
+    }
+
+    .settings-btn-text {
+        display: none;
+    }
+
+    .settings-btn-gear {
+        display: inline;
     }
 
     .analytics-kpis {

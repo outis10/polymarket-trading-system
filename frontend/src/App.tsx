@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useWebSocket } from "./hooks/useWebSocket";
 import { useEventsStore } from "./stores/useEventsStore";
 import Header from "./components/layout/Header";
@@ -19,6 +19,7 @@ export default function App() {
     const events = useEventsStore((s) => s.events);
     const settings = useEventsStore((s) => s.settings);
     const [route, setRoute] = useState<AppRoute>(getRouteFromPath());
+    const lastAutoRefreshAtRef = useRef(0);
 
     useEffect(() => {
         const onPopState = () => setRoute(getRouteFromPath());
@@ -38,10 +39,10 @@ export default function App() {
     const rawTimeframe =
         typeof settings.timeframe_filter === "string"
             ? settings.timeframe_filter
-            : "15m";
+            : "5m";
     const selectedTimeframe = ["5m", "15m", "1h"].includes(rawTimeframe)
         ? (rawTimeframe as "5m" | "15m" | "1h")
-        : "15m";
+        : "5m";
     const selectedMinutes =
         selectedTimeframe === "1h"
             ? 60
@@ -95,6 +96,19 @@ export default function App() {
         })
         .map(({ entry }) => entry);
 
+    useEffect(() => {
+        if (route !== "live") return;
+        if (settings.mode !== "live") return;
+        if (visibleEvents.length > 0) return;
+        const now = Date.now();
+        // Throttle auto-discovery refresh when UI is empty between event windows.
+        if (now - lastAutoRefreshAtRef.current < 20000) return;
+        lastAutoRefreshAtRef.current = now;
+        fetch("/api/events/refresh-live", { method: "POST" }).catch(() => {
+            // no-op: UI already displays empty state
+        });
+    }, [route, settings.mode, visibleEvents.length]);
+
     return (
         <>
             <Header route={route} onNavigate={handleNavigate} />
@@ -114,7 +128,7 @@ export default function App() {
                         {visibleEvents.length === 0 ? (
                             <div className="events-empty-state">
                                 {settings.mode === "live"
-                                    ? `No live ${selectedTimeframe} events at this moment.`
+                                    ? `No live ${selectedTimeframe} events right now (tickers: ${Array.from(monitoredTickerSet).join(", ")}).`
                                     : `No demo ${selectedTimeframe} events available.`}
                             </div>
                         ) : (

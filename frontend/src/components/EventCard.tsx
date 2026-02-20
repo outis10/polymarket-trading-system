@@ -5,6 +5,7 @@ import { useAccountStore } from "../stores/useAccountStore";
 import Countdown from "./Countdown";
 import PriceChart from "./PriceChart";
 import OrderBook from "./OrderBook";
+import PositionDisplay from "./PositionDisplay";
 import TradingPanel from "./TradingPanel";
 
 const ICON_MAP: Record<string, { className: string; symbol: string }> = {
@@ -22,9 +23,18 @@ interface EventCardProps {
     event: EventData;
 }
 
+const PTB_SOURCE_META: Record<string, { badge: string; label: string }> = {
+    gamma: { badge: "G", label: "Gamma (Polymarket market metadata)" },
+    config: { badge: "C", label: "Local config/static value" },
+    binance_klines: { badge: "B", label: "Binance (first kline open)" },
+    binance_open: { badge: "B", label: "Binance (candle open fallback)" },
+    unknown: { badge: "U", label: "Unknown source" },
+};
+
 function EventCard({ eventId, event }: EventCardProps) {
     const settings = useEventsStore((s) => s.settings);
     const bankrollReal = useAccountStore((s) => s.bankrollReal);
+    const setBankrollReal = useAccountStore((s) => s.setBankrollReal);
     const chartOptions = settings.chart_options || [];
     const [botOrderSubmitting, setBotOrderSubmitting] = useState(false);
     const [botTradeResult, setBotTradeResult] = useState<{
@@ -41,8 +51,15 @@ function EventCard({ eventId, event }: EventCardProps) {
     const showRangeHistogramCard = !chartOptions.includes(
         "hide_range_histogram_card",
     );
+    const showOrderBookCard = !chartOptions.includes("hide_order_book_card");
+    const showPositionsCard = !chartOptions.includes("hide_positions_card");
     const currentPrice = event.current_price || 0;
     const priceToBeat = event.price_to_beat || 0;
+    const ptbSourceKey = (
+        event.price_to_beat_source || "unknown"
+    ).toLowerCase();
+    const ptbSourceMeta =
+        PTB_SOURCE_META[ptbSourceKey] || PTB_SOURCE_META.unknown;
     const yesPrice = event.yes_price || 0.5;
     const noPrice = event.no_price || 0.5;
     const priceDiff = currentPrice - priceToBeat;
@@ -101,6 +118,7 @@ function EventCard({ eventId, event }: EventCardProps) {
     const gateUp = quantBuyGate?.up ?? null;
     const gateDown = quantBuyGate?.down ?? null;
     const quantHistogram = event.quant_range_histogram ?? null;
+    const quantSource = event.quant_source ?? null;
     const histogramBins = quantHistogram?.bins || [];
     const currentDiff = quantHistogram?.current_diff ?? 0;
     const isHistogramUp = currentDiff >= 0;
@@ -113,6 +131,16 @@ function EventCard({ eventId, event }: EventCardProps) {
         currentBinIndex !== null && histogramBins.length > 0
             ? ((currentBinIndex + 0.5) / histogramBins.length) * 100
             : null;
+    const isSlotHistogram = quantHistogram?.bucket_type === "slot_5m";
+    const histogramWindowLabel = isSlotHistogram
+        ? `slot ${quantHistogram.slot ?? "?"} (${quantHistogram.slot_seconds ?? "?"}s)`
+        : `m${quantHistogram?.minute ?? "?"}`;
+    const quantSourceLabel =
+        quantSource === "pm_5m_slot_ranges"
+            ? "5m-slot"
+            : quantSource === "pm_15m_minute_ranges"
+              ? "15m-minute"
+              : quantSource;
 
     const ksTooltip = (edgePct: number) =>
         `Kelly por evento. Source=${hasQuantData ? "quant" : "model"} | bankroll=${formatUsd(bankroll)} (${bankrollReal !== null ? "api" : "manual"}) | edge=${edgePct.toFixed(2)}% | frac=${kellyFraction.toFixed(2)}x`;
@@ -125,6 +153,12 @@ function EventCard({ eventId, event }: EventCardProps) {
         }
         if (reason.startsWith("edge<")) {
             return `Edge below ${reason.replace("edge<", "")}`;
+        }
+        if (reason === "no_ask_price") {
+            return "No ask price available";
+        }
+        if (reason.startsWith("ask_edge<")) {
+            return `Edge vs ask below ${reason.replace("ask_edge<", "")}`;
         }
         if (reason.startsWith("price_outside_")) {
             return `Price outside ${reason.replace("price_outside_", "")}c`;
@@ -149,6 +183,22 @@ function EventCard({ eventId, event }: EventCardProps) {
         event.order_book_no?.asks && event.order_book_no.asks.length > 0
             ? event.order_book_no.asks[0].price
             : null;
+    const quantEdgeVsAskUpPct =
+        bestAskUp !== null && quantProbUp !== null
+            ? (quantProbUp - bestAskUp) * 100
+            : null;
+    const quantEdgeVsAskDownPct =
+        bestAskDown !== null && quantProbDown !== null
+            ? (quantProbDown - bestAskDown) * 100
+            : null;
+    const qeUpLabel =
+        quantEdgeVsAskUpPct === null
+            ? "QE n/a"
+            : `QE ${quantEdgeVsAskUpPct.toFixed(2)}%`;
+    const qeDownLabel =
+        quantEdgeVsAskDownPct === null
+            ? "QE n/a"
+            : `QE ${quantEdgeVsAskDownPct.toFixed(2)}%`;
     const buyPriceUp = bestAskUp ?? yesPrice;
     const buyPriceDown = bestAskDown ?? noPrice;
     const minShares = Math.max(0, settings.pm_min_shares ?? 5);
@@ -249,6 +299,26 @@ function EventCard({ eventId, event }: EventCardProps) {
                 }
 
                 if (res.ok) {
+                    try {
+                        const balanceRes = await fetch("/api/balance");
+                        const balanceData = await balanceRes.json();
+                        const rawBalance = (
+                            balanceData as { balance?: unknown }
+                        )?.balance;
+                        const parsedBalance = Number(rawBalance);
+                        setBankrollReal(
+                            Number.isFinite(parsedBalance)
+                                ? parsedBalance
+                                : null,
+                        );
+                    } catch {
+                        // ignore balance refresh errors after order
+                    }
+                    window.dispatchEvent(
+                        new CustomEvent("positions_refresh", {
+                            detail: { eventId },
+                        }),
+                    );
                     setBotTradeResult({
                         type: "success",
                         message:
@@ -282,6 +352,7 @@ function EventCard({ eventId, event }: EventCardProps) {
             canBuyUp,
             canBuyDown,
             eventId,
+            setBankrollReal,
         ],
     );
 
@@ -297,7 +368,15 @@ function EventCard({ eventId, event }: EventCardProps) {
 
             <section className="compact-metrics">
                 <div className="metric-card">
-                    <span className="metric-label">Price To Beat</span>
+                    <div className="metric-label-row">
+                        <span className="metric-label">Price To Beat</span>
+                        <span
+                            className="ptb-source-badge"
+                            title={`PTB source: ${ptbSourceMeta.label}`}
+                        >
+                            {ptbSourceMeta.badge}
+                        </span>
+                    </div>
                     <span className="metric-value">
                         ${formatUsd(priceToBeat)}
                     </span>
@@ -323,7 +402,7 @@ function EventCard({ eventId, event }: EventCardProps) {
             {showProbabilitiesCard && (
                 <section className="probability-strip">
                     <div className="probability-title-row">
-                        <span>Probabilities</span>
+                        <span>Live Probabilities</span>
                         <span className="probability-inline-values">
                             UP {formatCents(yesPrice)} / DOWN{" "}
                             {formatCents(noPrice)}
@@ -354,47 +433,17 @@ function EventCard({ eventId, event }: EventCardProps) {
                 </section>
             )}
 
-            {hasQuantData && (
-                <section className="quant-edge-strip">
-                    <div className="probability-title-row">
-                        <span>Quant Edge</span>
-                        <span className="quant-edge-sample">
-                            n={quantSampleSize}
-                        </span>
-                    </div>
-                    <div className="probability-bar">
-                        <div
-                            className="probability-fill-up"
-                            style={{
-                                width: `${Math.round(quantProbUp! * 100)}%`,
-                            }}
-                        />
-                        <div
-                            className="probability-fill-down"
-                            style={{
-                                width: `${Math.round(quantProbDown! * 100)}%`,
-                            }}
-                        />
-                    </div>
-                    <div className="probability-values">
-                        <span className="prob-up">
-                            {(quantProbUp! * 100).toFixed(1)}% up (quant)
-                        </span>
-                        <span className="prob-down">
-                            {(quantProbDown! * 100).toFixed(1)}% down (quant)
-                        </span>
-                    </div>
-                </section>
-            )}
-
             {showRangeHistogramCard &&
                 quantHistogram &&
                 histogramBins.length > 0 && (
                     <section className="range-histogram-strip">
                         <div className="probability-title-row">
                             <span>
-                                Range Histogram {quantHistogram.ticker} m
-                                {quantHistogram.minute}{" "}
+                                Range Histogram {quantHistogram.ticker}{" "}
+                                {histogramWindowLabel}{" "}
+                                {quantSourceLabel
+                                    ? `[${quantSourceLabel}] `
+                                    : ""}
                                 <span
                                     className={
                                         isHistogramUp
@@ -468,6 +517,39 @@ function EventCard({ eventId, event }: EventCardProps) {
                     </section>
                 )}
 
+            {hasQuantData && (
+                <section className="quant-edge-strip">
+                    <div className="probability-title-row">
+                        <span>Quant Probabilities</span>
+                        <span className="quant-edge-sample">
+                            n={quantSampleSize}
+                        </span>
+                    </div>
+                    <div className="probability-bar">
+                        <div
+                            className="probability-fill-up"
+                            style={{
+                                width: `${Math.round(quantProbUp! * 100)}%`,
+                            }}
+                        />
+                        <div
+                            className="probability-fill-down"
+                            style={{
+                                width: `${Math.round(quantProbDown! * 100)}%`,
+                            }}
+                        />
+                    </div>
+                    <div className="probability-values">
+                        <span className="prob-up">
+                            {(quantProbUp! * 100).toFixed(1)}% up (quant)
+                        </span>
+                        <span className="prob-down">
+                            {(quantProbDown! * 100).toFixed(1)}% down (quant)
+                        </span>
+                    </div>
+                </section>
+            )}
+
             <div className="compact-panels-grid">
                 <div className="compact-panel">
                     <div className="compact-panel-title">
@@ -481,16 +563,28 @@ function EventCard({ eventId, event }: EventCardProps) {
                                         <span className="bot-trade-side-label">
                                             UP
                                         </span>
-                                        <span className="bot-trade-side-pct">
-                                            {(yesPrice * 100).toFixed(0)}%
+                                        <span
+                                            className={`bot-trade-side-pct ${
+                                                quantEdgeVsAskUpPct === null
+                                                    ? ""
+                                                    : quantEdgeVsAskUpPct >= 0
+                                                      ? "bot-trade-qe-positive"
+                                                      : "bot-trade-qe-negative"
+                                            }`}
+                                            title="QE = QuantProb - BestAsk del lado"
+                                        >
+                                            {qeUpLabel}
                                         </span>
                                     </div>
                                     <div className="bot-trade-ks-inline">
                                         <span
                                             title={ksTooltip(kellyUp.edgePct)}
                                         >
-                                            KS {kellyUp.pct.toFixed(2)}% ($
-                                            {formatUsd(kellyUp.usd)})
+                                            KS {kellyUp.pct.toFixed(2)}%
+                                        </span>
+                                        <span className="bot-trade-ks-amount">
+                                            (${formatUsd(kellyUp.usd)} - sh{" "}
+                                            {kellySharesUp.toFixed(2)})
                                         </span>
                                     </div>
                                 </div>
@@ -512,16 +606,28 @@ function EventCard({ eventId, event }: EventCardProps) {
                                         <span className="bot-trade-side-label">
                                             DOWN
                                         </span>
-                                        <span className="bot-trade-side-pct">
-                                            {(noPrice * 100).toFixed(0)}%
+                                        <span
+                                            className={`bot-trade-side-pct ${
+                                                quantEdgeVsAskDownPct === null
+                                                    ? ""
+                                                    : quantEdgeVsAskDownPct >= 0
+                                                      ? "bot-trade-qe-positive"
+                                                      : "bot-trade-qe-negative"
+                                            }`}
+                                            title="QE = QuantProb - BestAsk del lado"
+                                        >
+                                            {qeDownLabel}
                                         </span>
                                     </div>
                                     <div className="bot-trade-ks-inline">
                                         <span
                                             title={ksTooltip(kellyDown.edgePct)}
                                         >
-                                            KS {kellyDown.pct.toFixed(2)}% ($
-                                            {formatUsd(kellyDown.usd)})
+                                            KS {kellyDown.pct.toFixed(2)}%
+                                        </span>
+                                        <span className="bot-trade-ks-amount">
+                                            (${formatUsd(kellyDown.usd)} - sh{" "}
+                                            {kellySharesDown.toFixed(2)})
                                         </span>
                                     </div>
                                 </div>
@@ -550,14 +656,22 @@ function EventCard({ eventId, event }: EventCardProps) {
                     )}
                 </div>
 
-                <div className="compact-panel">
-                    <div className="compact-panel-title">Order Flow</div>
-                    <OrderBook
-                        orderBookYes={event.order_book_yes}
-                        orderBookNo={event.order_book_no}
-                    />
-                </div>
+                {showOrderBookCard && (
+                    <div className="compact-panel">
+                        <div className="compact-panel-title">Order Flow</div>
+                        <OrderBook
+                            orderBookYes={event.order_book_yes}
+                            orderBookNo={event.order_book_no}
+                        />
+                    </div>
+                )}
             </div>
+
+            {showPositionsCard && (
+                <div className="positions-inline-wrap">
+                    <PositionDisplay eventId={eventId} />
+                </div>
+            )}
 
             {showChart && (
                 <div className="compact-chart-wrap">
