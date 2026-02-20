@@ -828,6 +828,21 @@ export default function Sidebar({ send }: SidebarProps) {
                         }
                     />
 
+                    <label className="field-label">Min Prob (% 0=off, 50=50%)</label>
+                    <input
+                        className="sidebar-number-input"
+                        type="number"
+                        min={0}
+                        max={100}
+                        step={1}
+                        value={Math.round((settings.quant_gate_min_prob ?? 0) * 100)}
+                        onChange={(e) =>
+                            handleKellySettingChange({
+                                quant_gate_min_prob: Number(e.target.value || 0) / 100,
+                            })
+                        }
+                    />
+
                     <label className="field-label">Min Edge (%)</label>
                     <input
                         className="sidebar-number-input"
@@ -891,38 +906,6 @@ export default function Sidebar({ send }: SidebarProps) {
                         Use Percentile Filter
                     </label>
 
-                    <label className="chart-option">
-                        <input
-                            type="checkbox"
-                            checked={
-                                settings.quant_gate_edge_vs_ask_enabled ?? false
-                            }
-                            onChange={(e) =>
-                                handleKellySettingChange({
-                                    quant_gate_edge_vs_ask_enabled:
-                                        e.target.checked,
-                                })
-                            }
-                        />
-                        Enable Edge vs Ask Filter
-                    </label>
-
-                    <label className="field-label">Min Edge vs Ask (%)</label>
-                    <input
-                        className="sidebar-number-input"
-                        type="number"
-                        min={0}
-                        step={0.1}
-                        value={settings.quant_gate_min_edge_vs_ask_pct ?? 2}
-                        onChange={(e) =>
-                            handleKellySettingChange({
-                                quant_gate_min_edge_vs_ask_pct: Number(
-                                    e.target.value || 0,
-                                ),
-                            })
-                        }
-                    />
-
                     <label className="field-label">Percentile Low</label>
                     <input
                         className="sidebar-number-input"
@@ -956,7 +939,55 @@ export default function Sidebar({ send }: SidebarProps) {
                             })
                         }
                     />
+
+                    <label className="chart-option">
+                        <input
+                            type="checkbox"
+                            checked={
+                                settings.quant_gate_edge_vs_ask_enabled ?? false
+                            }
+                            onChange={(e) =>
+                                handleKellySettingChange({
+                                    quant_gate_edge_vs_ask_enabled:
+                                        e.target.checked,
+                                })
+                            }
+                        />
+                        Enable Edge vs Ask Filter
+                    </label>
+
+                    <label className="field-label">Min Edge vs Ask (%)</label>
+                    <input
+                        className="sidebar-number-input"
+                        type="number"
+                        min={0}
+                        step={0.1}
+                        value={settings.quant_gate_min_edge_vs_ask_pct ?? 2}
+                        onChange={(e) =>
+                            handleKellySettingChange({
+                                quant_gate_min_edge_vs_ask_pct: Number(
+                                    e.target.value || 0,
+                                ),
+                            })
+                        }
+                    />
                 </div>
+
+                <hr className="sidebar-divider" />
+
+                <label className="chart-option">
+                    <input
+                        type="checkbox"
+                        checked={settings.keyboard_shortcuts_enabled ?? false}
+                        onChange={(e) => {
+                            localStorage.setItem("keyboard_shortcuts_enabled", String(e.target.checked));
+                            handleKellySettingChange({
+                                keyboard_shortcuts_enabled: e.target.checked,
+                            });
+                        }}
+                    />
+                    Enable Keyboard Shortcuts (Z=UP, X=DOWN)
+                </label>
 
                 <hr className="sidebar-divider" />
 

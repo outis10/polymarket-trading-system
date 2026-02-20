@@ -60,6 +60,7 @@ class EventManager:
             "quant_gate_max_price_c": 90.0,
             "quant_gate_edge_vs_ask_enabled": False,
             "quant_gate_min_edge_vs_ask_pct": 2.0,
+            "quant_gate_min_prob": 0.0,
             "monitored_tickers": ["BTC", "ETH", "SOL", "XRP"],
             "bot_risk_enabled": True,
             "bot_max_buys_per_event_side": 1,
@@ -521,6 +522,7 @@ class EventManager:
             settings.get("quant_gate_edge_vs_ask_enabled", False)
         )
         min_edge_vs_ask_pct = float(settings.get("quant_gate_min_edge_vs_ask_pct", 2.0))
+        min_prob = float(settings.get("quant_gate_min_prob", 0.0))
 
         reasons: list[str] = []
         edge_pct: float | None = None
@@ -537,11 +539,15 @@ class EventManager:
 
         if quant_prob is None:
             reasons.append("no_quant_data")
+        else:
+            if quant_prob < min_prob:
+                reasons.append(f"prob<{min_prob:.2f}")
         if sample_size is None or sample_size < min_sample:
             reasons.append(f"sample<{min_sample}")
 
         if quant_prob is not None:
-            edge_pct = (quant_prob - market_prob) * 100.0
+            price_for_edge = ask_price if (ask_price is not None and ask_price > 0) else market_prob
+            edge_pct = (quant_prob - price_for_edge) * 100.0
             if edge_pct < min_edge_pct:
                 reasons.append(f"edge<{min_edge_pct:.2f}%")
             if edge_vs_ask_enabled:

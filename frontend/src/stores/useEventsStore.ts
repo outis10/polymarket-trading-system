@@ -34,6 +34,7 @@ export const useEventsStore = create<EventsState>((set) => ({
         quant_gate_max_price_c: 90,
         quant_gate_edge_vs_ask_enabled: false,
         quant_gate_min_edge_vs_ask_pct: 2,
+        quant_gate_min_prob: 0.0,
         monitored_tickers: ["BTC", "ETH", "SOL", "XRP"],
         bot_risk_enabled: true,
         bot_max_buys_per_event_side: 1,
@@ -44,6 +45,8 @@ export const useEventsStore = create<EventsState>((set) => ({
         bot_order_notional_cap_usd: 5,
         pm_min_shares: 5,
         pm_min_notional_usd: 1,
+        keyboard_shortcuts_enabled:
+            localStorage.getItem("keyboard_shortcuts_enabled") === "true",
     },
 
     setEvents: (events) => set({ events }),
@@ -56,7 +59,13 @@ export const useEventsStore = create<EventsState>((set) => ({
             },
         })),
 
-    setSettings: (settings) => set({ settings }),
+    setSettings: (settings) => set({
+        settings: {
+            ...settings,
+            keyboard_shortcuts_enabled:
+                localStorage.getItem("keyboard_shortcuts_enabled") === "true",
+        },
+    }),
 
     updateSettings: (partial) =>
         set((state) => ({

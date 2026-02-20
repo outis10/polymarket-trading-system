@@ -132,11 +132,12 @@ export default function App() {
                                     : `No demo ${selectedTimeframe} events available.`}
                             </div>
                         ) : (
-                            orderedVisibleEvents.map(([eventId, eventData]) => (
+                            orderedVisibleEvents.map(([eventId, eventData], index) => (
                                 <EventCard
                                     key={eventId}
                                     eventId={eventId}
                                     event={eventData}
+                                    isFirstCard={index === 0}
                                 />
                             ))
                         )}

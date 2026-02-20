@@ -1,4 +1,4 @@
-import { memo, useCallback, useState } from "react";
+import { memo, useCallback, useEffect, useState } from "react";
 import type { EventData, OrderResponse } from "../types/events";
 import { useEventsStore } from "../stores/useEventsStore";
 import { useAccountStore } from "../stores/useAccountStore";
@@ -21,6 +21,7 @@ const ICON_MAP: Record<string, { className: string; symbol: string }> = {
 interface EventCardProps {
     eventId: string;
     event: EventData;
+    isFirstCard?: boolean;
 }
 
 const PTB_SOURCE_META: Record<string, { badge: string; label: string }> = {
@@ -31,7 +32,7 @@ const PTB_SOURCE_META: Record<string, { badge: string; label: string }> = {
     unknown: { badge: "U", label: "Unknown source" },
 };
 
-function EventCard({ eventId, event }: EventCardProps) {
+function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
     const settings = useEventsStore((s) => s.settings);
     const bankrollReal = useAccountStore((s) => s.bankrollReal);
     const setBankrollReal = useAccountStore((s) => s.setBankrollReal);
@@ -73,6 +74,7 @@ function EventCard({ eventId, event }: EventCardProps) {
     const bankrollManual = Math.max(0, settings.kelly_bankroll ?? 100);
     const bankroll = Math.max(0, bankrollReal ?? bankrollManual);
     const minEdgePct = Math.max(0, settings.kelly_min_edge_pct ?? 0.5);
+    const minQuantProb = settings.quant_gate_min_prob ?? 0.0;
     const maxBetPct = Math.max(0, settings.kelly_max_bet_pct ?? 25) / 100;
     const maxEventExposurePct =
         Math.max(0, settings.kelly_max_event_exposure_pct ?? 25) / 100;
@@ -151,6 +153,9 @@ function EventCard({ eventId, event }: EventCardProps) {
         if (reason.startsWith("sample<")) {
             return `Sample too low (${reason.replace("sample<", "min ")})`;
         }
+        if (reason.startsWith("prob<")) {
+            return `Prob below ${reason.replace("prob<", "")}`;
+        }
         if (reason.startsWith("edge<")) {
             return `Edge below ${reason.replace("edge<", "")}`;
         }
@@ -226,12 +231,24 @@ function EventCard({ eventId, event }: EventCardProps) {
     const localRiskDownOk =
         !botRiskEnabled ||
         (kellyDown.usd <= botEventCapUsd && kellyDown.usd <= botTickerCapUsd);
-    const canBuyUp =
-        (gateUp ? gateUp.enabled : true) && minConstraintUpOk && localRiskUpOk;
-    const canBuyDown =
-        (gateDown ? gateDown.enabled : true) &&
-        minConstraintDownOk &&
-        localRiskDownOk;
+    const probUpOk =
+        quantProbUp === null || quantProbUp >= minQuantProb;
+    const probDownOk =
+        quantProbDown === null || quantProbDown >= minQuantProb;
+    const edgeUpOk =
+        gateUp !== null
+            ? gateUp.enabled
+            : kellyUp.edgePct >= minEdgePct;
+    const edgeDownOk =
+        gateDown !== null
+            ? gateDown.enabled
+            : kellyDown.edgePct >= minEdgePct;
+    const askEdgeUpOk =
+        quantEdgeVsAskUpPct !== null && quantEdgeVsAskUpPct >= 0;
+    const askEdgeDownOk =
+        quantEdgeVsAskDownPct !== null && quantEdgeVsAskDownPct >= 0;
+    const canBuyUp = probUpOk && edgeUpOk && askEdgeUpOk && minConstraintUpOk && localRiskUpOk;
+    const canBuyDown = probDownOk && edgeDownOk && askEdgeDownOk && minConstraintDownOk && localRiskDownOk;
     const localBlockReasonUp = !minConstraintUpOk
         ? `blocked by exchange min (${minShares} shares, $${minNotionalUsd})`
         : !localRiskUpOk
@@ -355,6 +372,18 @@ function EventCard({ eventId, event }: EventCardProps) {
             setBankrollReal,
         ],
     );
+
+    const keyboardEnabled = settings.keyboard_shortcuts_enabled ?? false;
+    useEffect(() => {
+        if (!isFirstCard || !keyboardEnabled) return;
+        const onKeyDown = (e: KeyboardEvent) => {
+            if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+            if (e.key === "z" || e.key === "Z") submitBotBuy("up");
+            if (e.key === "x" || e.key === "X") submitBotBuy("down");
+        };
+        window.addEventListener("keydown", onKeyDown);
+        return () => window.removeEventListener("keydown", onKeyDown);
+    }, [isFirstCard, keyboardEnabled, submitBotBuy]);
 
     return (
         <article className="event-card compact-card">

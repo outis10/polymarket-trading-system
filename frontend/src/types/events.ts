@@ -111,6 +111,7 @@ export interface SettingsData {
     quant_gate_max_price_c?: number;
     quant_gate_edge_vs_ask_enabled?: boolean;
     quant_gate_min_edge_vs_ask_pct?: number;
+    quant_gate_min_prob?: number;
     monitored_tickers?: string[];
     bot_risk_enabled?: boolean;
     bot_max_buys_per_event_side?: number;
@@ -121,6 +122,7 @@ export interface SettingsData {
     bot_order_notional_cap_usd?: number;
     pm_min_shares?: number;
     pm_min_notional_usd?: number;
+    keyboard_shortcuts_enabled?: boolean;
 }
 
 export interface WSMessage {
