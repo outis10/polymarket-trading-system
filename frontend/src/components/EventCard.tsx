@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import type { EventData, OrderResponse } from "../types/events";
 import { useEventsStore } from "../stores/useEventsStore";
 import { useAccountStore } from "../stores/useAccountStore";
@@ -42,6 +42,26 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
         type: "success" | "error";
         message: string;
     } | null>(null);
+
+    // Show toast when backend bot places an order automatically
+    const botLastOrder = (event as Record<string, unknown>)._bot_last_order as
+        | Record<string, unknown>
+        | undefined;
+    const botLastOrderRef = useRef<Record<string, unknown> | undefined>(undefined);
+    useEffect(() => {
+        if (!botLastOrder || botLastOrder === botLastOrderRef.current) return;
+        botLastOrderRef.current = botLastOrder;
+        const side = String(botLastOrder.side ?? "").toUpperCase();
+        const shares = Number(botLastOrder.shares ?? 0).toFixed(2);
+        const price = Number(botLastOrder.price ?? 0).toFixed(4);
+        const notional = Number(botLastOrder.notional_usd ?? 0).toFixed(2);
+        setBotTradeResult({
+            type: "success",
+            message: `⚡ Bot: BUY ${side} ${shares} sh @ ${price} ($${notional})`,
+        });
+        const t = setTimeout(() => setBotTradeResult(null), 6000);
+        return () => clearTimeout(t);
+    }, [botLastOrder]);
 
     const iconInfo = ICON_MAP[event.icon] || ICON_MAP.generic;
 
@@ -391,6 +411,17 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
                     <div className="event-title">{event.name}</div>
                     <div className="event-subtitle">{event.description}</div>
                 </div>
+                <div className="event-header-mode">
+                    {tradingMode === "bot" ? (
+                        <span className="trading-mode-badge trading-mode-badge-bot" title="Bot Trader activo — las órdenes se ejecutan automáticamente">
+                            ⚡ Bot
+                        </span>
+                    ) : (
+                        <span className="trading-mode-badge trading-mode-badge-manual" title="Modo manual — las órdenes requieren confirmación">
+                            Manual
+                        </span>
+                    )}
+                </div>
             </div>
 
             <section className="compact-metrics">
@@ -679,6 +710,8 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
                             )}
                         </div>
                     ) : (
+                        // TODO: TradingPanel = modo manual con limit/market order
+                        // Pendiente de revisar/retomar cuando se necesite trading manual
                         <TradingPanel eventId={eventId} event={event} />
                     )}
                 </div>

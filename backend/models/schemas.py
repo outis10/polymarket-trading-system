@@ -127,6 +127,7 @@ class SettingsData(BaseModel):
     quant_gate_edge_vs_ask_enabled: bool = False
     quant_gate_min_edge_vs_ask_pct: float = 2.0
     quant_gate_min_prob: float = 0.0
+    quant_gate_min_diff_pct: float = 0.0
     quant_gate_min_sample_strong_signal: int = 20
     quant_gate_strong_signal_threshold: float = 0.72
     early_window_enabled: bool = True

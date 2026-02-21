@@ -78,6 +78,18 @@ export function useWebSocket() {
                         setBankrollReal(Number.isFinite(n) ? n : null);
                         break;
                     }
+                    case "bot_order_placed": {
+                        // Inject bot order result into event state so EventCard can show toast
+                        const d = msg.data as Record<string, unknown>;
+                        const bal = Number(d?.balance);
+                        if (Number.isFinite(bal) && bal > 0) {
+                            setBankrollReal(bal);
+                        }
+                        if (msg.event_id) {
+                            updateEvent(msg.event_id, { _bot_last_order: d } as Partial<EventData>);
+                        }
+                        break;
+                    }
                 }
             } catch {
                 // ignore parse errors

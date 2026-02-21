@@ -21,6 +21,7 @@ export default function Header({ route, onNavigate }: HeaderProps) {
     const setBankrollReal = useAccountStore((s) => s.setBankrollReal);
     const [balanceText, setBalanceText] = useState("Bankroll: unavailable");
     const [refreshing, setRefreshing] = useState(false);
+    const [claimableUsd, setClaimableUsd] = useState<number | null>(null);
 
     const loadBalance = useCallback(async () => {
         try {
@@ -41,12 +42,23 @@ export default function Header({ route, onNavigate }: HeaderProps) {
         }
     }, [setBankrollReal]);
 
+    const loadClaimable = useCallback(async () => {
+        try {
+            const res = await fetch("/api/claimable");
+            const data = await res.json();
+            const v = toFiniteNumber(data?.claimable_usd);
+            setClaimableUsd(v !== null && v > 0 ? v : null);
+        } catch {
+            setClaimableUsd(null);
+        }
+    }, []);
+
     const handleRefresh = useCallback(async () => {
         if (refreshing) return;
         setRefreshing(true);
-        await loadBalance();
+        await Promise.all([loadBalance(), loadClaimable()]);
         setRefreshing(false);
-    }, [refreshing, loadBalance]);
+    }, [refreshing, loadBalance, loadClaimable]);
 
     useEffect(() => {
         let mounted = true;
@@ -72,13 +84,18 @@ export default function Header({ route, onNavigate }: HeaderProps) {
         };
 
         load();
+        // Defer claimable fetch so it doesn't block initial page render
+        const claimableDelay = setTimeout(() => { if (mounted) loadClaimable(); }, 3000);
         // Fallback reconciliation only: primary updates come from order fills / WS.
         const interval = setInterval(load, 90000);
+        const claimableInterval = setInterval(loadClaimable, 300000);
         return () => {
             mounted = false;
+            clearTimeout(claimableDelay);
             clearInterval(interval);
+            clearInterval(claimableInterval);
         };
-    }, [mode, setBankrollReal]);
+    }, [mode, setBankrollReal, loadClaimable]);
 
     useEffect(() => {
         if (bankrollReal !== null) {
@@ -105,11 +122,16 @@ export default function Header({ route, onNavigate }: HeaderProps) {
             </div>
             <div className="app-header-center">
                 <span className="bankroll-chip">{balanceText}</span>
+                {claimableUsd !== null && (
+                    <span className="claimable-chip" title="Redeemable from resolved markets">
+                        +${claimableUsd.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} claimable
+                    </span>
+                )}
                 <button
                     className={`bankroll-refresh-btn${refreshing ? " bankroll-refresh-btn--spinning" : ""}`}
                     onClick={handleRefresh}
                     disabled={refreshing}
-                    title="Refresh balance"
+                    title="Refresh balance & claimable"
                     aria-label="Refresh balance"
                 >
                     ↻

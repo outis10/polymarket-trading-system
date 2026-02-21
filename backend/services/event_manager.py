@@ -135,6 +135,9 @@ class EventManager:
         self._running = False
         self._order_guard_records: list[dict] = []
         self._last_order_at_utc: datetime | None = None
+        # Bot auto-order: track previous gate state to detect disabled→enabled transitions
+        self._bot_prev_gate_enabled: dict[tuple[str, str], bool] = {}
+        self._bot_pending_orders: set[tuple[str, str]] = set()
         tracker_dir = os.path.normpath(
             os.path.join(os.path.dirname(__file__), "..", "..", "backtest_output")
         )
@@ -683,6 +686,7 @@ class EventManager:
                 settings.get("quant_gate_min_edge_vs_ask_pct", 2.0)
             ),
             "min_prob": float(settings.get("quant_gate_min_prob", 0.0)),
+            "min_diff_pct": float(settings.get("quant_gate_min_diff_pct", 0.0)),
         }
 
         now_utc = datetime.now(tz=timezone.utc)
@@ -2108,6 +2112,176 @@ class EventManager:
             merged[event_id] = new_event
         return merged
 
+    async def _bot_maybe_place_order(
+        self, event_id: str, event_dict: dict, side: str
+    ) -> None:
+        """Auto-place an order when gate transitions disabled→enabled in bot mode."""
+        key = (event_id, side)
+        quant_gate = event_dict.get("quant_buy_gate")
+        if not isinstance(quant_gate, dict):
+            self._bot_prev_gate_enabled[key] = False
+            return
+
+        gate_side = quant_gate.get(side)
+        now_enabled = isinstance(gate_side, dict) and bool(gate_side.get("enabled"))
+        prev_enabled = self._bot_prev_gate_enabled.get(key, False)
+        self._bot_prev_gate_enabled[key] = now_enabled
+
+        # Only fire on disabled→enabled transition, and not if already pending
+        if not now_enabled or prev_enabled:
+            return
+        if key in self._bot_pending_orders:
+            return
+
+        self._bot_pending_orders.add(key)
+        try:
+            client = get_client()
+            if not client:
+                logger.warning("Bot auto-order: Polymarket client unavailable")
+                return
+
+            # Determine price and token
+            if side == "up":
+                side_price = float(event_dict.get("yes_price") or 0.5)
+                token_id = event_dict.get("yes_token_id")
+            else:
+                side_price = float(event_dict.get("no_price") or 0.5)
+                token_id = event_dict.get("no_token_id")
+
+            if not token_id:
+                logger.warning("Bot auto-order: no token_id for %s %s", event_id, side)
+                return
+
+            # Ask price for order (use best ask from order book if available)
+            if side == "up":
+                asks = (event_dict.get("order_book_yes") or {}).get("asks", [])
+            else:
+                asks = (event_dict.get("order_book_no") or {}).get("asks", [])
+            ask_price = side_price
+            if isinstance(asks, list) and asks:
+                raw = asks[0].get("price") if isinstance(asks[0], dict) else None
+                if raw is not None:
+                    try:
+                        ask_price = float(raw)
+                    except (TypeError, ValueError):
+                        pass
+
+            # Kelly sizing
+            quant_prob_raw = (
+                event_dict.get("quant_prob_up")
+                if side == "up"
+                else event_dict.get("quant_prob_down")
+            )
+            if not isinstance(quant_prob_raw, (int, float)):
+                return
+            quant_prob = float(quant_prob_raw)
+            kelly_enabled = bool(self.settings.get("kelly_enabled", True))
+            if kelly_enabled:
+                edge = quant_prob - ask_price
+                denom = max(0.0001, 1.0 - ask_price)
+                raw_kelly = max(0.0, edge / denom)
+                fraction = max(0.0, float(self.settings.get("kelly_fraction", 0.25)))
+                max_bet_pct = max(0.0, float(self.settings.get("kelly_max_bet_pct", 25.0))) / 100.0
+                max_event_pct = max(0.0, float(self.settings.get("kelly_max_event_exposure_pct", 25.0))) / 100.0
+                kelly_pct = min(raw_kelly * fraction, max_bet_pct, max_event_pct)
+                bankroll = max(1.0, float(self.settings.get("kelly_bankroll", 100.0)))
+                stake_usd = kelly_pct * bankroll
+            else:
+                stake_usd = max(0.0, float(self.settings.get("bot_order_notional_cap_usd", 5.0)))
+
+            hard_cap = max(0.0, float(self.settings.get("bot_order_notional_cap_usd", 0.0)))
+            if hard_cap > 0:
+                stake_usd = min(stake_usd, hard_cap)
+
+            if ask_price <= 0:
+                return
+            shares = stake_usd / ask_price
+            notional_usd = ask_price * shares
+            now_utc = datetime.now(tz=timezone.utc)
+
+            # Fetch live balance for risk guards
+            bankroll_usd: float | None = None
+            try:
+                bal = await asyncio.to_thread(client.get_balance)
+                if isinstance(bal, (int, float)) and bal > 0:
+                    bankroll_usd = float(bal)
+            except Exception:
+                pass
+
+            allowed, reason = self.validate_order_risk_guards(
+                event_id=event_id,
+                event=event_dict,
+                outcome=side,
+                shares=shares,
+                notional_usd=notional_usd,
+                now_utc=now_utc,
+                bankroll_usd=bankroll_usd,
+            )
+            if not allowed:
+                logger.info(
+                    "Bot auto-order blocked by risk guard: %s | event=%s side=%s",
+                    reason, event_id, side,
+                )
+                return
+
+            logger.info(
+                "Bot auto-order: placing BUY %s shares @ %.4f for %s %s (notional $%.2f)",
+                f"{shares:.4f}", ask_price, event_id, side, notional_usd,
+            )
+            result = await asyncio.to_thread(
+                client.place_order, token_id, "BUY", ask_price, shares
+            )
+
+            if result:
+                self.register_order_fill(
+                    event_id=event_id,
+                    event=event_dict,
+                    outcome=side,
+                    notional_usd=notional_usd,
+                    now_utc=now_utc,
+                )
+                order_id = (
+                    getattr(result, "id", None)
+                    or getattr(result, "orderID", None)
+                    or str(result)[:16]
+                )
+                logger.info("Bot auto-order placed: order_id=%s", order_id)
+                # Broadcast bot_order event to frontend
+                try:
+                    refreshed_balance = await asyncio.to_thread(client.get_balance)
+                except Exception:
+                    refreshed_balance = None
+                await manager.broadcast({
+                    "type": "bot_order_placed",
+                    "event_id": event_id,
+                    "data": {
+                        "side": side,
+                        "shares": round(shares, 4),
+                        "price": round(ask_price, 4),
+                        "notional_usd": round(notional_usd, 2),
+                        "order_id": str(order_id),
+                        "balance": float(refreshed_balance)
+                        if isinstance(refreshed_balance, (int, float))
+                        else None,
+                    },
+                })
+                if isinstance(refreshed_balance, (int, float)):
+                    await manager.broadcast({
+                        "type": "balance_update",
+                        "event_id": "",
+                        "data": {
+                            "balance": float(refreshed_balance),
+                            "source": "bot_auto_order",
+                        },
+                    })
+            else:
+                logger.error("Bot auto-order: place_order returned no result for %s %s", event_id, side)
+
+        except Exception as e:
+            logger.error("Bot auto-order error for %s %s: %s", event_id, side, e)
+        finally:
+            self._bot_pending_orders.discard(key)
+
     async def _update_live(self):
         """Update all live events (REST-based periodic update)."""
         client = get_client()
@@ -2172,6 +2346,12 @@ class EventManager:
             self._track_opportunities_for_event(
                 event_id, event_dict, datetime.now(tz=timezone.utc)
             )
+            # Bot auto-order: fire-and-forget for each gate side
+            if str(self.settings.get("trading_mode", "manual")).lower() == "bot":
+                for side in ("up", "down"):
+                    asyncio.create_task(
+                        self._bot_maybe_place_order(event_id, event_dict, side)
+                    )
             await manager.broadcast(
                 {
                     "type": "quant_metrics_update",

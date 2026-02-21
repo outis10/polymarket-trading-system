@@ -72,6 +72,18 @@ body {
     letter-spacing: 0.2px;
 }
 
+.claimable-chip {
+    background: rgba(251, 191, 36, 0.12);
+    border: 1px solid rgba(251, 191, 36, 0.4);
+    color: #fbbf24;
+    border-radius: 999px;
+    padding: 5px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    margin-left: 6px;
+    letter-spacing: 0.2px;
+}
+
 .bankroll-refresh-btn {
     background: none;
     border: none;
@@ -233,6 +245,32 @@ body {
     align-items: center;
     gap: 12px;
     margin-bottom: 15px;
+}
+
+.event-header-mode {
+    margin-left: auto;
+    flex-shrink: 0;
+}
+
+.trading-mode-badge {
+    display: inline-block;
+    border-radius: 6px;
+    padding: 3px 8px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+}
+
+.trading-mode-badge-bot {
+    background: rgba(251, 191, 36, 0.12);
+    border: 1px solid rgba(251, 191, 36, 0.45);
+    color: #fbbf24;
+}
+
+.trading-mode-badge-manual {
+    background: rgba(100, 116, 139, 0.12);
+    border: 1px solid rgba(100, 116, 139, 0.35);
+    color: #94a3b8;
 }
 
 .event-icon {

@@ -7,6 +7,8 @@ import os
 import time
 from datetime import datetime, timezone
 
+import requests as _requests
+
 from fastapi import APIRouter, HTTPException
 
 from ..models.schemas import OrderRequest, OrderResponse
@@ -450,6 +452,79 @@ async def get_balance():
             "error": str(e),
             "message": "Balance check failed - this usually means L2 API credentials are not configured",
         }
+
+
+_GAMMA_POSITIONS_URL = "https://gamma-api.polymarket.com/positions"
+_CLAIMABLE_CACHE: dict = {"ts": 0.0, "data": None}
+_CLAIMABLE_CACHE_TTL = 300.0  # 5 min — claimable changes only on market resolution
+
+
+def _fetch_claimable_sync(wallet: str) -> dict:
+    """Query Gamma API for resolved positions with redeemable value."""
+    try:
+        resp = _requests.get(
+            _GAMMA_POSITIONS_URL,
+            params={"user": wallet, "sizeThreshold": "0", "limit": "500"},
+            timeout=5,
+        )
+        resp.raise_for_status()
+        positions = resp.json()
+    except Exception as e:
+        return {"error": str(e), "claimable_usd": None}
+
+    if not isinstance(positions, list):
+        positions = positions.get("data", []) if isinstance(positions, dict) else []
+
+    claimable_usd = 0.0
+    claimable_positions = []
+    for pos in positions:
+        # redeemable: market resolved and position has value (outcome won)
+        redeemable = pos.get("redeemable") or pos.get("isRedeemable") or False
+        if not redeemable:
+            continue
+        size = float(pos.get("size", 0) or 0)
+        # resolved winning tokens are worth $1 each
+        value = float(pos.get("currentValue", size) or size)
+        if value <= 0:
+            continue
+        claimable_usd += value
+        claimable_positions.append({
+            "market": pos.get("market") or pos.get("conditionId", ""),
+            "title": pos.get("title") or pos.get("question", ""),
+            "outcome": pos.get("outcome", ""),
+            "size": round(size, 4),
+            "value_usd": round(value, 4),
+        })
+
+    return {
+        "claimable_usd": round(claimable_usd, 4),
+        "positions": claimable_positions,
+        "wallet": wallet,
+    }
+
+
+@router.get("/claimable")
+async def get_claimable():
+    """Get total redeemable USDC from resolved winning positions (via Gamma API)."""
+    if event_manager.mode == "demo":
+        return {"claimable_usd": 0.0, "positions": [], "message": "Demo mode"}
+
+    client = get_client()
+    if not client:
+        raise HTTPException(status_code=503, detail="Polymarket client unavailable")
+
+    wallet = getattr(client.config, "funder", None)
+    if not wallet:
+        raise HTTPException(status_code=500, detail="POLYMARKET_FUNDER not configured")
+
+    now = time.monotonic()
+    if _CLAIMABLE_CACHE["data"] is not None and (now - _CLAIMABLE_CACHE["ts"]) < _CLAIMABLE_CACHE_TTL:
+        return _CLAIMABLE_CACHE["data"]
+
+    result = await asyncio.to_thread(_fetch_claimable_sync, wallet)
+    _CLAIMABLE_CACHE["ts"] = now
+    _CLAIMABLE_CACHE["data"] = result
+    return result
 
 
 @router.get("/debug/client")

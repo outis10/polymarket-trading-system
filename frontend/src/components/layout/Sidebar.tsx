@@ -892,6 +892,25 @@ export default function Sidebar({ send }: SidebarProps) {
                         }
                     />
 
+                    <label
+                        className="field-label"
+                        title="Movimiento mínimo del precio actual vs price-to-beat, como porcentaje del PTB. 0 = desactivado. Se aplica en la ventana base (ni early ni late)."
+                    >
+                        Base Min Diff (%)
+                    </label>
+                    <input
+                        className="sidebar-number-input"
+                        type="number"
+                        min={0}
+                        step={0.1}
+                        value={settings.quant_gate_min_diff_pct ?? 0}
+                        onChange={(e) =>
+                            handleKellySettingChange({
+                                quant_gate_min_diff_pct: Number(e.target.value || 0),
+                            })
+                        }
+                    />
+
                     <label className="field-label">Min Edge (%)</label>
                     <input
                         className="sidebar-number-input"
