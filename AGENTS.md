@@ -411,7 +411,7 @@ Implementar modulo Kelly configurable desde Settings:
 - El sistema tiene 3 fuentes de configuración con la siguiente jerarquía (mayor prioridad al final):
   1. Defaults hardcodeados en `EventManager.__init__` — base de todos los settings del bot.
   2. `config/events.yaml` — controla discovery, pricing, demo events, UI. NO sobreescribe `self.settings`.
-  3. `backtest_output/runtime_settings.json` — **fuente de verdad operativa**. Se aplica al iniciar y se actualiza al guardar desde UI (REST o WS).
+  3. `config/runtime_settings.json` — **fuente de verdad operativa**. Se aplica al iniciar y se actualiza al guardar desde UI (REST o WS). Versionado en git.
 - Convención: si hay discrepancia entre JSON y código, el JSON gana en runtime. Para cambiar defaults permanentes, editar `__init__` de `EventManager` y `SettingsData` en `schemas.py`.
 
 ## Estado actualizado (2026-02-21, fix bot timeframe + double-check guards)
@@ -492,7 +492,7 @@ Implementar modulo Kelly configurable desde Settings:
 ## Estado actualizado (2026-02-19, persistencia runtime settings)
 
 - `mode` y `settings` de runtime ahora persisten en disco para continuidad sin frontend:
-  - archivo: `backtest_output/runtime_settings.json`.
+  - archivo: `config/runtime_settings.json` (versionado en git).
 - Backend carga ese estado al iniciar (`EventManager.start()`), antes de inicializar eventos/streams.
 - Backend guarda estado al:
   - `switch_mode`,

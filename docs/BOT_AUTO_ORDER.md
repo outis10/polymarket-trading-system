@@ -199,4 +199,4 @@ Si `kelly_enabled=false`, usa directamente `bot_order_notional_cap_usd` como sta
 | `frontend/src/hooks/useWebSocket.ts` | Handler `bot_order_placed` |
 | `frontend/src/components/EventCard.tsx` | Toast de resultado de orden bot |
 | `frontend/src/components/layout/Sidebar.tsx` | Control `trading_mode` (bot/manual) |
-| `backtest_output/runtime_settings.json` | Configuración en runtime (persiste entre reinicios) |
+| `config/runtime_settings.json` | Configuración en runtime (persiste entre reinicios, versionado en git) |

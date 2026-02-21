@@ -31,20 +31,26 @@ from .polymarket import PolymarketStreamer, fetch_real_prices, get_client
 
 logger = logging.getLogger(__name__)
 
-_BOT_ORDERS_LOG_PATH = os.path.normpath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "backtest_output", "bot_orders.csv")
+_BOT_ORDERS_LOG_DIR = os.path.normpath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "backtest_output")
 )
 _BOT_ORDERS_FIELDNAMES = [
     "placed_at_utc", "event_id", "ticker", "side", "token_id",
     "shares", "price", "notional_usd", "order_id",
-    "quant_prob", "edge_pct", "kelly_pct", "bankroll_usd", "status",
+    "quant_prob", "edge_pct", "kelly_pct", "bankroll_usd", "percentile_at_signal", "status",
 ]
 
 
+def _bot_orders_log_path() -> str:
+    date_str = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+    return os.path.join(_BOT_ORDERS_LOG_DIR, f"bot_orders_{date_str}.csv")
+
+
 def _append_bot_order_log(row: dict) -> None:
-    os.makedirs(os.path.dirname(_BOT_ORDERS_LOG_PATH), exist_ok=True)
-    file_exists = os.path.exists(_BOT_ORDERS_LOG_PATH)
-    with open(_BOT_ORDERS_LOG_PATH, "a", newline="") as f:
+    path = _bot_orders_log_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    file_exists = os.path.exists(path)
+    with open(path, "a", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=_BOT_ORDERS_FIELDNAMES)
         if not file_exists:
             writer.writeheader()
@@ -163,7 +169,9 @@ class EventManager:
             os.path.join(os.path.dirname(__file__), "..", "..", "backtest_output")
         )
         self._opportunity_tracker = OpportunityTracker(base_dir=tracker_dir)
-        self._runtime_settings_path = os.path.join(tracker_dir, "runtime_settings.json")
+        self._runtime_settings_path = os.path.normpath(
+            os.path.join(os.path.dirname(__file__), "..", "..", "config", "runtime_settings.json")
+        )
         self._persisted_setting_keys = set(self.settings.keys())
 
     def _load_runtime_settings(self) -> None:
@@ -2222,6 +2230,12 @@ class EventManager:
             if not isinstance(quant_prob_raw, (int, float)):
                 return
             quant_prob = float(quant_prob_raw)
+            histogram = event_dict.get("quant_range_histogram")
+            percentile_at_signal: float | None = None
+            if isinstance(histogram, dict):
+                raw_pct = histogram.get("current_percentile")
+                if isinstance(raw_pct, (float, int)):
+                    percentile_at_signal = round(float(raw_pct), 4)
             kelly_enabled = bool(self.settings.get("kelly_enabled", True))
             kelly_pct: float | None = None
             if kelly_enabled:
@@ -2307,6 +2321,7 @@ class EventManager:
                     "edge_pct": round((quant_prob - ask_price) * 100, 4),
                     "kelly_pct": round(kelly_pct * 100, 4) if kelly_pct is not None else "",
                     "bankroll_usd": round(bankroll_usd, 2) if bankroll_usd is not None else "",
+                    "percentile_at_signal": percentile_at_signal if percentile_at_signal is not None else "",
                     "status": "placed",
                 })
                 logger.info("Bot auto-order placed: order_id=%s", order_id)
@@ -2354,6 +2369,7 @@ class EventManager:
                     "edge_pct": round((quant_prob - ask_price) * 100, 4),
                     "kelly_pct": round(kelly_pct * 100, 4) if kelly_pct is not None else "",
                     "bankroll_usd": round(bankroll_usd, 2) if bankroll_usd is not None else "",
+                    "percentile_at_signal": percentile_at_signal if percentile_at_signal is not None else "",
                     "status": "failed",
                 })
 
