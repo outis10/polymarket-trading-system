@@ -746,3 +746,39 @@ async def get_positions(event_id: str):
     except Exception as e:
         logger.error("Error getting positions: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Bot order history
+# ---------------------------------------------------------------------------
+
+_BOT_ORDERS_LOG_PATH = os.path.normpath(
+    os.path.join(
+        os.path.dirname(__file__),
+        "..",
+        "..",
+        "backtest_output",
+        "bot_orders.csv",
+    )
+)
+
+
+@router.get("/bot/orders")
+async def get_bot_orders(limit: int = 200, ticker: str | None = None):
+    """Return bot auto-order history from CSV (most recent first)."""
+    if not os.path.exists(_BOT_ORDERS_LOG_PATH):
+        return {"count": 0, "rows": []}
+    rows: list[dict] = []
+    try:
+        with open(_BOT_ORDERS_LOG_PATH, newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if ticker and row.get("ticker", "").upper() != ticker.upper():
+                    continue
+                rows.append(row)
+    except Exception as e:
+        logger.error("Error reading bot orders log: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+    rows = rows[-limit:]
+    rows.reverse()
+    return {"count": len(rows), "rows": rows}

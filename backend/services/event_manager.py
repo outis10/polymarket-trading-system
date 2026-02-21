@@ -31,6 +31,25 @@ from .polymarket import PolymarketStreamer, fetch_real_prices, get_client
 
 logger = logging.getLogger(__name__)
 
+_BOT_ORDERS_LOG_PATH = os.path.normpath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "backtest_output", "bot_orders.csv")
+)
+_BOT_ORDERS_FIELDNAMES = [
+    "placed_at_utc", "event_id", "ticker", "side", "token_id",
+    "shares", "price", "notional_usd", "order_id",
+    "quant_prob", "edge_pct", "kelly_pct", "bankroll_usd", "status",
+]
+
+
+def _append_bot_order_log(row: dict) -> None:
+    os.makedirs(os.path.dirname(_BOT_ORDERS_LOG_PATH), exist_ok=True)
+    file_exists = os.path.exists(_BOT_ORDERS_LOG_PATH)
+    with open(_BOT_ORDERS_LOG_PATH, "a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=_BOT_ORDERS_FIELDNAMES)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow({k: row.get(k, "") for k in _BOT_ORDERS_FIELDNAMES})
+
 
 class EventManager:
     """Singleton that manages event state and data streams."""
@@ -2176,6 +2195,7 @@ class EventManager:
                 return
             quant_prob = float(quant_prob_raw)
             kelly_enabled = bool(self.settings.get("kelly_enabled", True))
+            kelly_pct: float | None = None
             if kelly_enabled:
                 edge = quant_prob - ask_price
                 denom = max(0.0001, 1.0 - ask_price)
@@ -2245,6 +2265,22 @@ class EventManager:
                     or getattr(result, "orderID", None)
                     or str(result)[:16]
                 )
+                _append_bot_order_log({
+                    "placed_at_utc": now_utc.isoformat(),
+                    "event_id": event_id,
+                    "ticker": self._extract_event_ticker(event_id, event_dict),
+                    "side": side,
+                    "token_id": token_id,
+                    "shares": round(shares, 6),
+                    "price": round(ask_price, 6),
+                    "notional_usd": round(notional_usd, 4),
+                    "order_id": str(order_id),
+                    "quant_prob": round(quant_prob, 6),
+                    "edge_pct": round((quant_prob - ask_price) * 100, 4),
+                    "kelly_pct": round(kelly_pct * 100, 4) if kelly_pct is not None else "",
+                    "bankroll_usd": round(bankroll_usd, 2) if bankroll_usd is not None else "",
+                    "status": "placed",
+                })
                 logger.info("Bot auto-order placed: order_id=%s", order_id)
                 # Broadcast bot_order event to frontend
                 try:
@@ -2276,6 +2312,22 @@ class EventManager:
                     })
             else:
                 logger.error("Bot auto-order: place_order returned no result for %s %s", event_id, side)
+                _append_bot_order_log({
+                    "placed_at_utc": now_utc.isoformat(),
+                    "event_id": event_id,
+                    "ticker": self._extract_event_ticker(event_id, event_dict),
+                    "side": side,
+                    "token_id": token_id,
+                    "shares": round(shares, 6),
+                    "price": round(ask_price, 6),
+                    "notional_usd": round(notional_usd, 4),
+                    "order_id": "",
+                    "quant_prob": round(quant_prob, 6),
+                    "edge_pct": round((quant_prob - ask_price) * 100, 4),
+                    "kelly_pct": round(kelly_pct * 100, 4) if kelly_pct is not None else "",
+                    "bankroll_usd": round(bankroll_usd, 2) if bankroll_usd is not None else "",
+                    "status": "failed",
+                })
 
         except Exception as e:
             logger.error("Bot auto-order error for %s %s: %s", event_id, side, e)
