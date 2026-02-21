@@ -837,10 +837,11 @@ export default function Sidebar({ send }: SidebarProps) {
                         min={0}
                         max={100}
                         step={1}
-                        value={Math.round(
+                        defaultValue={Math.round(
                             (settings.quant_gate_min_prob ?? 0) * 100,
                         )}
-                        onChange={(e) =>
+                        key={Math.round((settings.quant_gate_min_prob ?? 0) * 100)}
+                        onBlur={(e) =>
                             handleKellySettingChange({
                                 quant_gate_min_prob:
                                     Number(e.target.value || 0) / 100,
@@ -881,10 +882,11 @@ export default function Sidebar({ send }: SidebarProps) {
                         min={50}
                         max={100}
                         step={1}
-                        value={Math.round(
+                        defaultValue={Math.round(
                             (settings.quant_gate_strong_signal_threshold ?? 0.72) * 100,
                         )}
-                        onChange={(e) =>
+                        key={Math.round((settings.quant_gate_strong_signal_threshold ?? 0.72) * 100)}
+                        onBlur={(e) =>
                             handleKellySettingChange({
                                 quant_gate_strong_signal_threshold:
                                     Number(e.target.value || 72) / 100,

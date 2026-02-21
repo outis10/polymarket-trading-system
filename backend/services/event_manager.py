@@ -72,6 +72,7 @@ class EventManager:
             "quant_gate_enabled": True,
             "quant_gate_min_sample": 120,
             "quant_gate_min_edge_pct": 4.0,
+            "quant_gate_min_diff_pct": 0.0,
             "quant_gate_use_percentile": True,
             "quant_gate_percentile_low": 15.0,
             "quant_gate_percentile_high": 85.0,
@@ -1117,6 +1118,18 @@ class EventManager:
             last_side_at = max(r["at_utc"] for r in event_side_records)
             if (now_utc - last_side_at).total_seconds() < side_cooldown:
                 return False, "event_side_cooldown_active"
+
+        # Block buying opposite side if already bought this event today
+        opposite_side = "down" if side == "up" else "up"
+        opposite_records = [
+            r
+            for r in self._order_guard_records
+            if r.get("event_id") == event_id
+            and r.get("outcome") == opposite_side
+            and r.get("at_utc") >= start_day
+        ]
+        if opposite_records:
+            return False, f"already_bought_{opposite_side}_this_event"
 
         ticker = self._extract_event_ticker(event_id, event)
         hard_order_cap = max(

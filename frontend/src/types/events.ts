@@ -104,7 +104,10 @@ export interface SettingsData {
     kelly_max_event_exposure_pct?: number;
     quant_gate_enabled?: boolean;
     quant_gate_min_sample?: number;
+    quant_gate_min_sample_strong_signal?: number;
+    quant_gate_strong_signal_threshold?: number;
     quant_gate_min_edge_pct?: number;
+    quant_gate_min_diff_pct?: number;
     quant_gate_use_percentile?: boolean;
     quant_gate_percentile_low?: number;
     quant_gate_percentile_high?: number;
@@ -120,7 +123,7 @@ export interface SettingsData {
     early_quant_gate_edge_vs_ask_enabled?: boolean;
     early_quant_gate_min_edge_vs_ask_pct?: number;
     early_quant_gate_min_prob?: number;
-    early_quant_gate_min_abs_diff_usd?: number;
+    early_quant_gate_min_diff_pct?: number;
     late_window_enabled?: boolean;
     late_window_seconds?: number;
     late_quant_gate_min_sample?: number;
@@ -128,7 +131,7 @@ export interface SettingsData {
     late_quant_gate_edge_vs_ask_enabled?: boolean;
     late_quant_gate_min_edge_vs_ask_pct?: number;
     late_quant_gate_min_prob?: number;
-    late_quant_gate_min_abs_diff_usd?: number;
+    late_quant_gate_min_diff_pct?: number;
     monitored_tickers?: string[];
     bot_risk_enabled?: boolean;
     bot_max_buys_per_event_side?: number;
@@ -139,6 +142,9 @@ export interface SettingsData {
     bot_order_notional_cap_usd?: number;
     pm_min_shares?: number;
     pm_min_notional_usd?: number;
+    // Order book streaming controls
+    order_book_max_levels?: number;
+    order_book_min_broadcast_ms?: number;
     keyboard_shortcuts_enabled?: boolean;
 }
 

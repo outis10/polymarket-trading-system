@@ -156,3 +156,6 @@ class SettingsData(BaseModel):
     bot_order_notional_cap_usd: float = 5.0
     pm_min_shares: float = 5.0
     pm_min_notional_usd: float = 1.0
+    # Order book streaming controls
+    order_book_max_levels: int = 8
+    order_book_min_broadcast_ms: int = 120

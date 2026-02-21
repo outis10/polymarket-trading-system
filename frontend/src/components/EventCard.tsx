@@ -42,6 +42,27 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
         type: "success" | "error";
         message: string;
     } | null>(null);
+    // Derived from real positions so it persists across page reloads
+    const [boughtSide, setBoughtSide] = useState<"up" | "down" | "both" | null>(null);
+    useEffect(() => {
+        fetch(`/api/positions/${eventId}`)
+            .then((r) => r.ok ? r.json() : null)
+            .then((data) => {
+                const positions: Array<{ outcome: string }> = data?.positions ?? [];
+                const outcomes = positions.map((p) => p.outcome.toLowerCase());
+                const hasUp = outcomes.includes("up");
+                const hasDown = outcomes.includes("down");
+                if (hasUp && hasDown) {
+                    setBoughtSide("both");
+                } else if (hasUp) {
+                    setBoughtSide("up");
+                } else if (hasDown) {
+                    setBoughtSide("down");
+                }
+            })
+            .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [eventId]);
 
     // Show toast when backend bot places an order automatically
     const botLastOrder = (event as Record<string, unknown>)._bot_last_order as
@@ -51,14 +72,22 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
     useEffect(() => {
         if (!botLastOrder || botLastOrder === botLastOrderRef.current) return;
         botLastOrderRef.current = botLastOrder;
-        const side = String(botLastOrder.side ?? "").toUpperCase();
+        const side = String(botLastOrder.side ?? "").toLowerCase() as "up" | "down";
+        const sideUpper = side.toUpperCase();
         const shares = Number(botLastOrder.shares ?? 0).toFixed(2);
         const price = Number(botLastOrder.price ?? 0).toFixed(4);
         const notional = Number(botLastOrder.notional_usd ?? 0).toFixed(2);
         setBotTradeResult({
             type: "success",
-            message: `⚡ Bot: BUY ${side} ${shares} sh @ ${price} ($${notional})`,
+            message: `⚡ Bot: BUY ${sideUpper} ${shares} sh @ ${price} ($${notional})`,
         });
+        if (side === "up" || side === "down") {
+            setBoughtSide((prev) =>
+                prev === null ? side :
+                prev === side ? side :
+                "both"
+            );
+        }
         const t = setTimeout(() => setBotTradeResult(null), 6000);
         return () => clearTimeout(t);
     }, [botLastOrder]);
@@ -263,9 +292,16 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
         kellySharesUp >= minShares && effectiveStakeUpUsd >= minNotionalUsd;
     const minConstraintDownOk =
         kellySharesDown >= minShares && effectiveStakeDownUsd >= minNotionalUsd;
-    const canBuyUp = (gateUp ? gateUp.enabled : false) && minConstraintUpOk;
+    const canBuyUp =
+        (gateUp ? gateUp.enabled : false) &&
+        minConstraintUpOk &&
+        boughtSide !== "down" &&
+        boughtSide !== "both";
     const canBuyDown =
-        (gateDown ? gateDown.enabled : false) && minConstraintDownOk;
+        (gateDown ? gateDown.enabled : false) &&
+        minConstraintDownOk &&
+        boughtSide !== "up" &&
+        boughtSide !== "both";
     const localBlockReasonUp = !minConstraintUpOk
         ? `blocked by exchange min (${minShares} shares, $${minNotionalUsd})`
         : "";
@@ -349,6 +385,11 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
                         new CustomEvent("positions_refresh", {
                             detail: { eventId },
                         }),
+                    );
+                    setBoughtSide((prev) =>
+                        prev === null ? outcome :
+                        prev === outcome ? outcome :
+                        "both"
                     );
                     setBotTradeResult({
                         type: "success",
