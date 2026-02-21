@@ -159,3 +159,5 @@ class SettingsData(BaseModel):
     # Order book streaming controls
     order_book_max_levels: int = 8
     order_book_min_broadcast_ms: int = 120
+    # Bot order controls
+    bot_enforce_timeframe_filter: bool = True

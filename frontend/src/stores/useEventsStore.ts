@@ -66,6 +66,7 @@ export const useEventsStore = create<EventsState>((set) => ({
         pm_min_notional_usd: 1,
         order_book_max_levels: 8,
         order_book_min_broadcast_ms: 120,
+        bot_enforce_timeframe_filter: true,
         keyboard_shortcuts_enabled:
             localStorage.getItem("keyboard_shortcuts_enabled") === "true",
     },

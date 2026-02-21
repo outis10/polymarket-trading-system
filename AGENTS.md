@@ -395,6 +395,40 @@ Implementar modulo Kelly configurable desde Settings:
 - Nuevo motivo de bloqueo posible en gate:
   - `diff_abs<...` (diferencia absoluta `|current_price - price_to_beat|` por debajo del mínimo de ventana).
 
+## Estado actualizado (2026-02-21, tipado y documentación de settings)
+
+- Auditoria completa de settings: todos los campos que operan en runtime ahora tienen tipado en Pydantic y TypeScript.
+- Campos nuevos agregados a `SettingsData` (backend `schemas.py`) y `SettingsData` (frontend `types/events.ts`):
+  - `quant_gate_min_sample_strong_signal` (int, default 20) — ya existía en `__init__` pero faltaba en Pydantic/TS.
+  - `quant_gate_strong_signal_threshold` (float, default 0.72) — ídem.
+  - `order_book_max_levels` (int, default 8) — controla niveles de bids/asks emitidos por WS.
+  - `order_book_min_broadcast_ms` (int, default 120) — throttle de emisión de orderbook_update por evento/lado.
+  - `bot_enforce_timeframe_filter` (bool, default true) — ver sección siguiente.
+- Store frontend (`useEventsStore.ts`) actualizado con defaults para todos los campos anteriores.
+
+## Estado actualizado (2026-02-21, fuentes de configuración)
+
+- El sistema tiene 3 fuentes de configuración con la siguiente jerarquía (mayor prioridad al final):
+  1. Defaults hardcodeados en `EventManager.__init__` — base de todos los settings del bot.
+  2. `config/events.yaml` — controla discovery, pricing, demo events, UI. NO sobreescribe `self.settings`.
+  3. `backtest_output/runtime_settings.json` — **fuente de verdad operativa**. Se aplica al iniciar y se actualiza al guardar desde UI (REST o WS).
+- Convención: si hay discrepancia entre JSON y código, el JSON gana en runtime. Para cambiar defaults permanentes, editar `__init__` de `EventManager` y `SettingsData` en `schemas.py`.
+
+## Estado actualizado (2026-02-21, fix bot timeframe + double-check guards)
+
+### Bug fix: bot auto-order ejecutaba en eventos fuera del timeframe seleccionado
+- `_bot_maybe_place_order` en `event_manager.py` ahora verifica `timeframe_filter` vs `timeframe_minutes` del evento antes de ejecutar.
+- Si el timeframe no coincide, el bot hace `return` con log `INFO` (no error).
+- El check es **configurable**: nuevo setting `bot_enforce_timeframe_filter` (bool, default `true`).
+  - Expuesto en Sidebar: checkbox **"Enforce Timeframe Filter (Bot)"** en sección Bot Risk Guardrails.
+  - Si está `false`, el bot opera en eventos de cualquier timeframe (comportamiento anterior).
+
+### Double-check guards confirmados
+- **UP + DOWN en mismo evento**: cubierto a doble capa.
+  - Backend: `validate_order_risk_guards` bloquea con `already_bought_<side>_this_event` al detectar fill del lado opuesto en el día. Aplica tanto a órdenes manuales como al bot auto-order interno.
+  - Frontend: `boughtSide` deshabilita el botón del lado contrario en `EventCard`.
+- **Timeframe mismatch en órdenes manuales**: `POST /api/orders` ya tenía el check (línea ~197, `trading.py`). Ahora el bot interno también lo tiene.
+
 ## Estado actualizado (2026-02-17, Buy At ejecutable)
 
 - En `Bot Trade`, botones `Buy At` ahora ejecutan orden real vía `POST /api/orders`:

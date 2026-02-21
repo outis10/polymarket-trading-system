@@ -595,6 +595,22 @@ export default function Sidebar({ send }: SidebarProps) {
                         Enable Risk Guards
                     </label>
 
+                    <label
+                        className="chart-option"
+                        title="Si está activo, el bot solo ejecuta órdenes en eventos del timeframe seleccionado (5m, 15m, 1h)."
+                    >
+                        <input
+                            type="checkbox"
+                            checked={settings.bot_enforce_timeframe_filter ?? true}
+                            onChange={(e) =>
+                                handleKellySettingChange({
+                                    bot_enforce_timeframe_filter: e.target.checked,
+                                })
+                            }
+                        />
+                        Enforce Timeframe Filter (Bot)
+                    </label>
+
                     <label className="field-label">
                         Max Buys / Event-Side (day)
                     </label>

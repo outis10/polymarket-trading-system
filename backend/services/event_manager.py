@@ -111,6 +111,7 @@ class EventManager:
             "pm_min_notional_usd": 1.0,
             "order_book_max_levels": 8,
             "order_book_min_broadcast_ms": 120,
+            "bot_enforce_timeframe_filter": True,
         }
         self._config: dict = {}
         self._task: Optional[asyncio.Task] = None
@@ -2167,6 +2168,20 @@ class EventManager:
 
         self._bot_pending_orders.add(key)
         try:
+            # Check timeframe filter before placing order
+            if bool(self.settings.get("bot_enforce_timeframe_filter", True)):
+                tf_raw = self.settings.get("timeframe_filter", "5m")
+                tf_map = {"5m": 5, "15m": 15, "1h": 60}
+                selected_tf = tf_map.get(str(tf_raw).strip().lower())
+                event_tf = int(event_dict.get("timeframe_minutes", 15) or 15)
+                if selected_tf is not None and event_tf != selected_tf:
+                    logger.info(
+                        "Bot auto-order skipped: timeframe mismatch "
+                        "(selected=%sm, event=%sm) for %s %s",
+                        selected_tf, event_tf, event_id, side,
+                    )
+                    return
+
             client = get_client()
             if not client:
                 logger.warning("Bot auto-order: Polymarket client unavailable")
