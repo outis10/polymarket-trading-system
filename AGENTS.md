@@ -518,3 +518,37 @@ Implementar modulo Kelly configurable desde Settings:
 - `EventCard` respeta ambos toggles para ocultar/mostrar:
   - panel `Order Flow`,
   - panel `Positions`.
+
+## Estado actualizado (2026-02-21, logs y bitácora)
+
+### Rotación de bot_orders.csv por fecha
+- `_BOT_ORDERS_LOG_PATH` reemplazado por función `_bot_orders_log_path()` en `event_manager.py`.
+- El archivo ahora rota automáticamente por día UTC: `backtest_output/bot_orders_YYYY-MM-DD.csv`.
+- El rollover es automático al cruzar medianoche — no requiere reiniciar el bot.
+
+### Campo percentile_at_signal en bot_orders
+- `_BOT_ORDERS_FIELDNAMES` agrega `percentile_at_signal` (entre `bankroll_usd` y `status`).
+- Se extrae de `event_dict["quant_range_histogram"]["current_percentile"]` al momento de ejecutar la orden.
+- Aplica tanto a órdenes `placed` como `failed`.
+
+### runtime_settings.json movido a config/
+- Antes: `backtest_output/runtime_settings.json` (ignorado por git).
+- Ahora: `config/runtime_settings.json` (versionado en git).
+- `_runtime_settings_path` en `EventManager.__init__` actualizado.
+- Docs `AGENTS.md` y `docs/BOT_AUTO_ORDER.md` actualizados.
+
+### Script de bitácora
+- Nuevo script: `scripts/bitacora.py`.
+- Genera `backtest_output/bitacora_trades.csv` cruzando:
+  - `bot_orders_*.csv` — órdenes ejecutadas (placed/failed).
+  - `opportunity_outcomes.csv` — resultados (won, pnl, close_price, ...).
+  - `opportunities_log.csv` — todas las señales detectadas.
+  - `opportunity_blocked.csv` — señales bloqueadas por quant gate.
+  - `order_blocked_log.csv` — órdenes bloqueadas por risk guard.
+- Imprime resumen: hit rate, PnL, funnel de señales, hit rate por percentil.
+- Uso:
+  ```bash
+  python3 scripts/bitacora.py                    # todos los logs disponibles
+  python3 scripts/bitacora.py --date 2026-02-21  # filtra por fecha UTC
+  python3 scripts/bitacora.py --dir /ruta/logs   # directorio personalizado
+  ```
