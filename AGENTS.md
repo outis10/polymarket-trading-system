@@ -5,6 +5,16 @@
 Este archivo guarda contexto operativo para futuras conversaciones.
 Actualízalo cuando cambien decisiones, scripts o flujos importantes.
 
+## Pendientes para próxima sesión
+
+### Seguridad backend ↔ frontend (implementar antes de pasar a producción)
+Implementar como un bloque completo en este orden:
+1. **API Key middleware** en FastAPI — valida header `X-API-Key` en todos los endpoints REST y WebSocket. Key en `.env` del backend.
+2. **CORS restringido** — cambiar `allow_origins=["*"]` a origins específicos (dominio o IP del frontend).
+3. **Frontend** — agregar header `X-API-Key` en todos los `fetch()` y en la URL de conexión WebSocket. Key en `.env` de Vite (`VITE_API_KEY`).
+4. **HTTPS + Nginx** — configurar reverse proxy con Certbot (Let's Encrypt) en el servidor de producción.
+- No se necesita JWT ni OAuth — sistema de un solo usuario, API key es suficiente.
+
 ## Estado actual (2026-02-13)
 
 - Script de agregación vigente: `aggregate_pm_15m_ranges.py`.
