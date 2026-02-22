@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { apiFetch } from "../auth/apiFetch";
 import type { Position } from "../types/events";
 
 interface PositionDisplayProps {
@@ -12,7 +13,7 @@ export default function PositionDisplay({ eventId }: PositionDisplayProps) {
 
     const fetchPositions = useCallback(async () => {
         try {
-            const res = await fetch(`/api/positions/${eventId}`);
+            const res = await apiFetch(`/api/positions/${eventId}`);
             if (!res.ok) {
                 throw new Error("Failed to fetch positions");
             }

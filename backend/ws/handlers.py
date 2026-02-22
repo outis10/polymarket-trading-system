@@ -5,6 +5,7 @@ import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from ..middleware.auth import verify_ws_api_key
 from ..services.event_manager import event_manager
 from .manager import manager
 
@@ -16,6 +17,9 @@ router = APIRouter()
 @router.websocket("/ws/events")
 async def websocket_events(websocket: WebSocket):
     """WebSocket endpoint for real-time event data streaming."""
+    if not verify_ws_api_key(websocket):
+        await websocket.close(code=4401, reason="Invalid or missing API key")
+        return
     await manager.connect(websocket)
 
     # Send initial snapshot immediately

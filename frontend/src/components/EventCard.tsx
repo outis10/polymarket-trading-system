@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { apiFetch } from "../auth/apiFetch";
 import type { EventData, OrderResponse } from "../types/events";
 import { useEventsStore } from "../stores/useEventsStore";
 import { useAccountStore } from "../stores/useAccountStore";
@@ -45,7 +46,7 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
     // Derived from real positions so it persists across page reloads
     const [boughtSide, setBoughtSide] = useState<"up" | "down" | "both" | null>(null);
     useEffect(() => {
-        fetch(`/api/positions/${eventId}`)
+        apiFetch(`/api/positions/${eventId}`)
             .then((r) => r.ok ? r.json() : null)
             .then((data) => {
                 const positions: Array<{ outcome: string }> = data?.positions ?? [];
@@ -345,7 +346,7 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
             setBotOrderSubmitting(true);
             setBotTradeResult(null);
             try {
-                const res = await fetch("/api/orders", {
+                const res = await apiFetch("/api/orders", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
@@ -367,7 +368,7 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
 
                 if (res.ok) {
                     try {
-                        const balanceRes = await fetch("/api/balance");
+                        const balanceRes = await apiFetch("/api/balance");
                         const balanceData = await balanceRes.json();
                         const rawBalance = (
                             balanceData as { balance?: unknown }

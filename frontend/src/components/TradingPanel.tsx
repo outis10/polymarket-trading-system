@@ -1,4 +1,5 @@
 import { useState, useCallback, useMemo } from "react";
+import { apiFetch } from "../auth/apiFetch";
 import type { EventData, OrderRequest, OrderResponse } from "../types/events";
 
 interface TradingPanelProps {
@@ -48,7 +49,7 @@ export default function TradingPanel({ eventId, event }: TradingPanelProps) {
             };
 
             try {
-                const res = await fetch("/api/orders", {
+                const res = await apiFetch("/api/orders", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify(order),
