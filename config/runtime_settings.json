@@ -2,6 +2,7 @@
   "mode": "live",
   "settings": {
     "bot_cooldown_seconds_per_event_side": 20,
+    "bot_enforce_timeframe_filter": true,
     "bot_global_min_seconds_between_orders": 2,
     "bot_max_buys_per_event_side": 1,
     "bot_max_event_exposure_pct": 15,
@@ -13,8 +14,8 @@
       "hide_order_book_card"
     ],
     "early_quant_gate_edge_vs_ask_enabled": false,
-    "early_quant_gate_min_diff_pct": 0,
-    "early_quant_gate_min_edge_pct": 12,
+    "early_quant_gate_min_diff_pct": 1,
+    "early_quant_gate_min_edge_pct": 8,
     "early_quant_gate_min_edge_vs_ask_pct": 2,
     "early_quant_gate_min_prob": 0,
     "early_quant_gate_min_sample": 30,
@@ -27,8 +28,8 @@
     "kelly_max_event_exposure_pct": 25,
     "kelly_min_edge_pct": 0.5,
     "late_quant_gate_edge_vs_ask_enabled": false,
-    "late_quant_gate_min_diff_pct": 0,
-    "late_quant_gate_min_edge_pct": 12,
+    "late_quant_gate_min_diff_pct": 1,
+    "late_quant_gate_min_edge_pct": 6,
     "late_quant_gate_min_edge_vs_ask_pct": 1,
     "late_quant_gate_min_prob": 0,
     "late_quant_gate_min_sample": 20,
@@ -36,8 +37,7 @@
     "late_window_seconds": 120,
     "mode": "live",
     "monitored_tickers": [
-      "BTC",
-      "ETH"
+      "BTC"
     ],
     "order_book_max_levels": 8,
     "order_book_min_broadcast_ms": 120,
@@ -46,11 +46,11 @@
     "quant_gate_edge_vs_ask_enabled": true,
     "quant_gate_enabled": true,
     "quant_gate_max_price_c": 90,
-    "quant_gate_min_diff_pct": 3,
+    "quant_gate_min_diff_pct": 1,
     "quant_gate_min_edge_pct": 4,
     "quant_gate_min_edge_vs_ask_pct": 4,
     "quant_gate_min_price_c": 10,
-    "quant_gate_min_prob": 0.45,
+    "quant_gate_min_prob": 0.57,
     "quant_gate_min_sample": 80,
     "quant_gate_min_sample_strong_signal": 20,
     "quant_gate_percentile_high": 85,
@@ -61,5 +61,5 @@
     "timeframe_filter": "5m",
     "trading_mode": "bot"
   },
-  "updated_at_utc": "2026-02-21T07:14:29.272112+00:00"
+  "updated_at_utc": "2026-02-22T09:22:06.672738+00:00"
 }

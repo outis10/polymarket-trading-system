@@ -772,9 +772,7 @@ class EventManager:
                             )
                         ),
                         "min_prob": float(
-                            settings.get(
-                                "early_quant_gate_min_prob", params["min_prob"]
-                            )
+                            settings.get("early_quant_gate_min_prob") or params["min_prob"]
                         ),
                         "min_diff_pct": float(
                             settings.get("early_quant_gate_min_diff_pct", 0.0)
@@ -814,7 +812,7 @@ class EventManager:
                             )
                         ),
                         "min_prob": float(
-                            settings.get("late_quant_gate_min_prob", params["min_prob"])
+                            settings.get("late_quant_gate_min_prob") or params["min_prob"]
                         ),
                         "min_diff_pct": float(
                             settings.get("late_quant_gate_min_diff_pct", 0.0)

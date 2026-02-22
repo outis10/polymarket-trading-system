@@ -653,108 +653,114 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
                 <div className="compact-panel">
                     <div className="compact-panel-title">
                         {tradingMode === "bot" ? "Bot Trade" : "Manual Trade"}
+                        {tradingMode === "manual" && (
+                            <span
+                                className="trading-mode-badge trading-mode-badge-manual"
+                                style={{ marginLeft: 8, fontSize: "0.7rem" }}
+                                title="Modo manual — los botones ejecutan órdenes, el bot automático está desactivado"
+                            >
+                                manual
+                            </span>
+                        )}
                     </div>
-                    {tradingMode === "bot" ? (
-                        <div className="bot-trade-subcards">
-                            <div className="bot-trade-subcard bot-trade-subcard-up">
-                                <div className="bot-trade-subcard-head">
-                                    <div className="bot-trade-subcard-title">
-                                        <span className="bot-trade-side-label">
-                                            UP
-                                        </span>
-                                        <span
-                                            className={`bot-trade-side-pct ${
-                                                quantEdgeVsAskUpPct === null
-                                                    ? ""
-                                                    : quantEdgeVsAskUpPct >= 0
-                                                      ? "bot-trade-qe-positive"
-                                                      : "bot-trade-qe-negative"
-                                            }`}
-                                            title="QE = QuantProb - BestAsk del lado"
-                                        >
-                                            {qeUpLabel}
-                                        </span>
-                                    </div>
-                                    <div className="bot-trade-ks-inline">
-                                        <span
-                                            title={ksTooltip(kellyUp.edgePct)}
-                                        >
-                                            KS {kellyUp.pct.toFixed(2)}%
-                                        </span>
-                                        <span className="bot-trade-ks-amount">
-                                            (${formatUsd(effectiveStakeUpUsd)} -
-                                            sh {kellySharesUp.toFixed(2)})
-                                        </span>
-                                    </div>
+                    {/* Bot Trade card — visible en modo bot Y en modo manual */}
+                    <div className="bot-trade-subcards">
+                        <div className="bot-trade-subcard bot-trade-subcard-up">
+                            <div className="bot-trade-subcard-head">
+                                <div className="bot-trade-subcard-title">
+                                    <span className="bot-trade-side-label">
+                                        UP
+                                    </span>
+                                    <span
+                                        className={`bot-trade-side-pct ${
+                                            quantEdgeVsAskUpPct === null
+                                                ? ""
+                                                : quantEdgeVsAskUpPct >= 0
+                                                  ? "bot-trade-qe-positive"
+                                                  : "bot-trade-qe-negative"
+                                        }`}
+                                        title="QE = QuantProb - BestAsk del lado"
+                                    >
+                                        {qeUpLabel}
+                                    </span>
                                 </div>
-                                <button
-                                    type="button"
-                                    className="bot-trade-buy-btn bot-trade-buy-btn-up"
-                                    disabled={!canBuyUp || botOrderSubmitting}
-                                    title={`${gateTooltip(gateUp)} | price source: ${bestAskUp !== null ? "orderbook ask" : "fallback mid-price (no book)"}${askUpIsProxy ? " | QE* = edge vs mid (ask unavailable)" : ""}${localBlockReasonUp ? ` | ${localBlockReasonUp}` : ""}`}
-                                    onClick={() => submitBotBuy("up")}
-                                >
-                                    {botOrderSubmitting
-                                        ? "Submitting..."
-                                        : `Buy At ${formatCents(buyPriceUp)}`}
-                                </button>
+                                <div className="bot-trade-ks-inline">
+                                    <span
+                                        title={ksTooltip(kellyUp.edgePct)}
+                                    >
+                                        KS {kellyUp.pct.toFixed(2)}%
+                                    </span>
+                                    <span className="bot-trade-ks-amount">
+                                        (${formatUsd(effectiveStakeUpUsd)} -
+                                        sh {kellySharesUp.toFixed(2)})
+                                    </span>
+                                </div>
                             </div>
-                            <div className="bot-trade-subcard bot-trade-subcard-down">
-                                <div className="bot-trade-subcard-head">
-                                    <div className="bot-trade-subcard-title">
-                                        <span className="bot-trade-side-label">
-                                            DOWN
-                                        </span>
-                                        <span
-                                            className={`bot-trade-side-pct ${
-                                                quantEdgeVsAskDownPct === null
-                                                    ? ""
-                                                    : quantEdgeVsAskDownPct >= 0
-                                                      ? "bot-trade-qe-positive"
-                                                      : "bot-trade-qe-negative"
-                                            }`}
-                                            title="QE = QuantProb - BestAsk del lado"
-                                        >
-                                            {qeDownLabel}
-                                        </span>
-                                    </div>
-                                    <div className="bot-trade-ks-inline">
-                                        <span
-                                            title={ksTooltip(kellyDown.edgePct)}
-                                        >
-                                            KS {kellyDown.pct.toFixed(2)}%
-                                        </span>
-                                        <span className="bot-trade-ks-amount">
-                                            (${formatUsd(effectiveStakeDownUsd)}{" "}
-                                            - sh {kellySharesDown.toFixed(2)})
-                                        </span>
-                                    </div>
-                                </div>
-                                <button
-                                    type="button"
-                                    className="bot-trade-buy-btn bot-trade-buy-btn-down"
-                                    disabled={!canBuyDown || botOrderSubmitting}
-                                    title={`${gateTooltip(gateDown)} | price source: ${bestAskDown !== null ? "orderbook ask" : "fallback mid-price (no book)"}${askDownIsProxy ? " | QE* = edge vs mid (ask unavailable)" : ""}${localBlockReasonDown ? ` | ${localBlockReasonDown}` : ""}`}
-                                    onClick={() => submitBotBuy("down")}
-                                >
-                                    {botOrderSubmitting
-                                        ? "Submitting..."
-                                        : `Buy At ${formatCents(buyPriceDown)}`}
-                                </button>
-                            </div>
-                            {botTradeResult && (
-                                <div
-                                    className={`trade-toast trade-toast-${botTradeResult.type}`}
-                                >
-                                    {botTradeResult.message}
-                                </div>
-                            )}
+                            <button
+                                type="button"
+                                className="bot-trade-buy-btn bot-trade-buy-btn-up"
+                                disabled={!canBuyUp || botOrderSubmitting}
+                                title={`${gateTooltip(gateUp)} | price source: ${bestAskUp !== null ? "orderbook ask" : "fallback mid-price (no book)"}${askUpIsProxy ? " | QE* = edge vs mid (ask unavailable)" : ""}${localBlockReasonUp ? ` | ${localBlockReasonUp}` : ""}`}
+                                onClick={() => submitBotBuy("up")}
+                            >
+                                {botOrderSubmitting
+                                    ? "Submitting..."
+                                    : `Buy At ${formatCents(buyPriceUp)}`}
+                            </button>
                         </div>
-                    ) : (
-                        // TODO: TradingPanel = modo manual con limit/market order
-                        // Pendiente de revisar/retomar cuando se necesite trading manual
-                        <TradingPanel eventId={eventId} event={event} />
-                    )}
+                        <div className="bot-trade-subcard bot-trade-subcard-down">
+                            <div className="bot-trade-subcard-head">
+                                <div className="bot-trade-subcard-title">
+                                    <span className="bot-trade-side-label">
+                                        DOWN
+                                    </span>
+                                    <span
+                                        className={`bot-trade-side-pct ${
+                                            quantEdgeVsAskDownPct === null
+                                                ? ""
+                                                : quantEdgeVsAskDownPct >= 0
+                                                  ? "bot-trade-qe-positive"
+                                                  : "bot-trade-qe-negative"
+                                        }`}
+                                        title="QE = QuantProb - BestAsk del lado"
+                                    >
+                                        {qeDownLabel}
+                                    </span>
+                                </div>
+                                <div className="bot-trade-ks-inline">
+                                    <span
+                                        title={ksTooltip(kellyDown.edgePct)}
+                                    >
+                                        KS {kellyDown.pct.toFixed(2)}%
+                                    </span>
+                                    <span className="bot-trade-ks-amount">
+                                        (${formatUsd(effectiveStakeDownUsd)}{" "}
+                                        - sh {kellySharesDown.toFixed(2)})
+                                    </span>
+                                </div>
+                            </div>
+                            <button
+                                type="button"
+                                className="bot-trade-buy-btn bot-trade-buy-btn-down"
+                                disabled={!canBuyDown || botOrderSubmitting}
+                                title={`${gateTooltip(gateDown)} | price source: ${bestAskDown !== null ? "orderbook ask" : "fallback mid-price (no book)"}${askDownIsProxy ? " | QE* = edge vs mid (ask unavailable)" : ""}${localBlockReasonDown ? ` | ${localBlockReasonDown}` : ""}`}
+                                onClick={() => submitBotBuy("down")}
+                            >
+                                {botOrderSubmitting
+                                    ? "Submitting..."
+                                    : `Buy At ${formatCents(buyPriceDown)}`}
+                            </button>
+                        </div>
+                        {botTradeResult && (
+                            <div
+                                className={`trade-toast trade-toast-${botTradeResult.type}`}
+                            >
+                                {botTradeResult.message}
+                            </div>
+                        )}
+                    </div>
+                    {/* Manual Trade Old — oculto, disponible para referencia */}
+                    {false && <TradingPanel eventId={eventId} event={event} />}
                 </div>
 
                 {showOrderBookCard && (

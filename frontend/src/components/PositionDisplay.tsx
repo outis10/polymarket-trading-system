@@ -82,7 +82,7 @@ export default function PositionDisplay({ eventId }: PositionDisplayProps) {
                         <tr>
                             <th>OUTCOME</th>
                             <th>QTY</th>
-                            <th>AVG</th>
+                            <th>PRICE</th>
                             <th>VALUE</th>
                             <th>RETURN</th>
                             <th></th>
@@ -100,7 +100,7 @@ export default function PositionDisplay({ eventId }: PositionDisplayProps) {
                                 </td>
                                 <td className="position-qty">{pos.qty}</td>
                                 <td className="position-avg">
-                                    {Math.round(pos.avg_price * 100)}&cent;
+                                    {pos.avg_price.toFixed(3)}
                                 </td>
                                 <td className="position-value">
                                     <div>${pos.value.toFixed(2)}</div>
