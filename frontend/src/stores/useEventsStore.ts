@@ -1,17 +1,27 @@
 import { create } from "zustand";
 import type { EventData, SettingsData } from "../types/events";
 
+export interface SystemToast {
+    message: string;
+    type: "success" | "warning" | "error";
+    id: number;
+}
+
 interface EventsState {
     events: Record<string, EventData>;
     settings: SettingsData;
+    systemToast: SystemToast | null;
     setEvents: (events: Record<string, EventData>) => void;
     updateEvent: (eventId: string, data: Partial<EventData>) => void;
     setSettings: (settings: SettingsData) => void;
     updateSettings: (partial: Partial<SettingsData>) => void;
+    showSystemToast: (message: string, type: SystemToast["type"]) => void;
+    clearSystemToast: () => void;
 }
 
 export const useEventsStore = create<EventsState>((set) => ({
     events: {},
+    systemToast: null,
     settings: {
         mode: "live",
         refresh_rate: 1,
@@ -39,7 +49,8 @@ export const useEventsStore = create<EventsState>((set) => ({
         quant_gate_min_edge_vs_ask_pct: 2,
         quant_gate_min_prob: 0.0,
         early_window_enabled: true,
-        early_window_seconds: 50,
+        early_window_start: 20,
+        early_window_end: 120,
         early_quant_gate_min_sample: 90,
         early_quant_gate_min_edge_pct: 4,
         early_quant_gate_edge_vs_ask_enabled: false,
@@ -47,7 +58,8 @@ export const useEventsStore = create<EventsState>((set) => ({
         early_quant_gate_min_prob: 0,
         early_quant_gate_min_diff_pct: 0,
         late_window_enabled: true,
-        late_window_seconds: 120,
+        late_window_start: 180,
+        late_window_end: 280,
         late_quant_gate_min_sample: 70,
         late_quant_gate_min_edge_pct: 3,
         late_quant_gate_edge_vs_ask_enabled: false,
@@ -95,4 +107,9 @@ export const useEventsStore = create<EventsState>((set) => ({
         set((state) => ({
             settings: { ...state.settings, ...partial },
         })),
+
+    showSystemToast: (message, type) =>
+        set({ systemToast: { message, type, id: Date.now() } }),
+
+    clearSystemToast: () => set({ systemToast: null }),
 }));

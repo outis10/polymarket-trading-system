@@ -6,6 +6,7 @@ import Header from "./components/layout/Header";
 import Sidebar from "./components/layout/Sidebar";
 import EventCard from "./components/EventCard";
 import OpportunitiesDashboard from "./components/analytics/OpportunitiesDashboard";
+import SystemToastBanner from "./components/SystemToastBanner";
 import { inferTicker } from "./utils/ticker";
 
 type AppRoute = "live" | "analytics";
@@ -114,6 +115,7 @@ export default function App() {
         <>
             <Header route={route} onNavigate={handleNavigate} />
             <Sidebar send={send} />
+            <SystemToastBanner />
 
             {route === "analytics" ? (
                 <OpportunitiesDashboard />

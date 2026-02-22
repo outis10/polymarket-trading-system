@@ -90,7 +90,8 @@ class EventManager:
             "quant_gate_min_sample_strong_signal": 20,
             "quant_gate_strong_signal_threshold": 0.72,
             "early_window_enabled": True,
-            "early_window_seconds": 50,
+            "early_window_start": 20,
+            "early_window_end": 120,
             "early_quant_gate_min_sample": 90,
             "early_quant_gate_min_edge_pct": 4.0,
             "early_quant_gate_edge_vs_ask_enabled": False,
@@ -98,7 +99,8 @@ class EventManager:
             "early_quant_gate_min_prob": 0.0,
             "early_quant_gate_min_diff_pct": 0.0,
             "late_window_enabled": True,
-            "late_window_seconds": 120,
+            "late_window_start": 180,
+            "late_window_end": 280,
             "late_quant_gate_min_sample": 70,
             "late_quant_gate_min_edge_pct": 3.0,
             "late_quant_gate_edge_vs_ask_enabled": False,
@@ -314,6 +316,29 @@ class EventManager:
             list(table.keys()),
         )
         return table
+
+    def reload_quant_ranges(self) -> dict:
+        """Hot-reload both PM range tables from disk. Safe to call while running."""
+        try:
+            new_ranges = self._load_pm_ranges()
+            new_5m = self._load_pm_5m_slot_ranges()
+            self._pm_ranges = new_ranges
+            self._pm_5m_slot_ranges = new_5m
+            tickers_ranges = list(new_ranges.keys())
+            tickers_5m = list(new_5m.keys())
+            logger.info(
+                "Quant ranges hot-reloaded: ranges=%s 5m_slots=%s",
+                tickers_ranges,
+                tickers_5m,
+            )
+            return {
+                "ok": True,
+                "ranges_tickers": tickers_ranges,
+                "slot_ranges_tickers": tickers_5m,
+            }
+        except Exception as exc:
+            logger.exception("Failed to hot-reload quant ranges: %s", exc)
+            return {"ok": False, "error": str(exc)}
 
     def _lookup_quant_probs(
         self, ticker: str, minute: int, price_diff: float
@@ -741,35 +766,27 @@ class EventManager:
         if end_dt is not None:
             time_left_seconds = max(0, int((end_dt - now_utc).total_seconds()))
 
-        if (
-            bool(settings.get("early_window_enabled", False))
-            and elapsed_seconds is not None
-        ):
-            early_seconds = max(1, int(settings.get("early_window_seconds", 50)))
-            if elapsed_seconds <= early_seconds:
+        # ── Early window ──────────────────────────────────────────────────────
+        if bool(settings.get("early_window_enabled", False)) and elapsed_seconds is not None:
+            early_start = int(settings.get("early_window_start", 20))
+            early_end = int(settings.get("early_window_end", 120))
+            if elapsed_seconds < early_start:
+                # Too early — block gate entirely
+                return "blocked_early", {**params, "gate_enabled": False}
+            if elapsed_seconds <= early_end:
                 params.update(
                     {
                         "min_sample": int(
-                            settings.get(
-                                "early_quant_gate_min_sample", params["min_sample"]
-                            )
+                            settings.get("early_quant_gate_min_sample", params["min_sample"])
                         ),
                         "min_edge_pct": float(
-                            settings.get(
-                                "early_quant_gate_min_edge_pct", params["min_edge_pct"]
-                            )
+                            settings.get("early_quant_gate_min_edge_pct", params["min_edge_pct"])
                         ),
                         "edge_vs_ask_enabled": bool(
-                            settings.get(
-                                "early_quant_gate_edge_vs_ask_enabled",
-                                params["edge_vs_ask_enabled"],
-                            )
+                            settings.get("early_quant_gate_edge_vs_ask_enabled", params["edge_vs_ask_enabled"])
                         ),
                         "min_edge_vs_ask_pct": float(
-                            settings.get(
-                                "early_quant_gate_min_edge_vs_ask_pct",
-                                params["min_edge_vs_ask_pct"],
-                            )
+                            settings.get("early_quant_gate_min_edge_vs_ask_pct", params["min_edge_vs_ask_pct"])
                         ),
                         "min_prob": float(
                             settings.get("early_quant_gate_min_prob") or params["min_prob"]
@@ -781,35 +798,27 @@ class EventManager:
                 )
                 return "early", params
 
-        if (
-            bool(settings.get("late_window_enabled", False))
-            and time_left_seconds is not None
-        ):
-            late_seconds = max(1, int(settings.get("late_window_seconds", 120)))
-            if time_left_seconds <= late_seconds:
+        # ── Late window ───────────────────────────────────────────────────────
+        if bool(settings.get("late_window_enabled", False)) and elapsed_seconds is not None:
+            late_start = int(settings.get("late_window_start", 180))
+            late_end = int(settings.get("late_window_end", 280))
+            if elapsed_seconds > late_end:
+                # Too late — block gate entirely
+                return "blocked_late", {**params, "gate_enabled": False}
+            if elapsed_seconds >= late_start:
                 params.update(
                     {
                         "min_sample": int(
-                            settings.get(
-                                "late_quant_gate_min_sample", params["min_sample"]
-                            )
+                            settings.get("late_quant_gate_min_sample", params["min_sample"])
                         ),
                         "min_edge_pct": float(
-                            settings.get(
-                                "late_quant_gate_min_edge_pct", params["min_edge_pct"]
-                            )
+                            settings.get("late_quant_gate_min_edge_pct", params["min_edge_pct"])
                         ),
                         "edge_vs_ask_enabled": bool(
-                            settings.get(
-                                "late_quant_gate_edge_vs_ask_enabled",
-                                params["edge_vs_ask_enabled"],
-                            )
+                            settings.get("late_quant_gate_edge_vs_ask_enabled", params["edge_vs_ask_enabled"])
                         ),
                         "min_edge_vs_ask_pct": float(
-                            settings.get(
-                                "late_quant_gate_min_edge_vs_ask_pct",
-                                params["min_edge_vs_ask_pct"],
-                            )
+                            settings.get("late_quant_gate_min_edge_vs_ask_pct", params["min_edge_vs_ask_pct"])
                         ),
                         "min_prob": float(
                             settings.get("late_quant_gate_min_prob") or params["min_prob"]

@@ -61,6 +61,32 @@ VITE_API_KEY=<misma key que el backend>
 ### Pendiente
 - HTTPS + Nginx en producción (ver sección arriba)
 
+## Actualización Quant diaria (2026-02-22)
+
+### Flujo
+Al finalizar cada día de trading correr el pipeline para regenerar el CSV de rangos
+con los datos más frescos de Binance (últimos 7 días).
+
+### Comando rápido
+```bash
+cd /home/narciso/dev/projects/polymarket-trading-system
+bash scripts/update_quant.sh
+```
+
+El script hace:
+1. Corre `run_pm_pipeline_4cryptos_5m_10s.py` con lookback 7 días
+2. Llama a `POST /api/quant/reload` — hot-reload sin reiniciar el backend
+
+### Variables opcionales
+```bash
+LOOKBACK_DAYS=14 bash scripts/update_quant.sh   # más historial
+API_KEY=<tu-key> bash scripts/update_quant.sh   # si la seguridad está activa
+```
+
+### Endpoint de reload
+`POST /api/quant/reload` — recarga `merged_pm_5m_slot_ranges_4cryptos.csv` en caliente.
+Implementado en `backend/routers/events.py` + `event_manager.reload_quant_ranges()`.
+
 ## Estado actual (2026-02-13)
 
 - Script de agregación vigente: `aggregate_pm_15m_ranges.py`.

@@ -1101,6 +1101,41 @@ body {
     color: #f85149;
 }
 
+/* System toast — banner flotante global (quant reload, etc.) */
+.system-toast {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 12px 24px;
+    border-radius: 10px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    z-index: 9999;
+    white-space: nowrap;
+    animation: fadeIn 0.3s ease;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+.system-toast-success {
+    background: rgba(46, 160, 67, 0.25);
+    border: 1px solid rgba(46, 160, 67, 0.5);
+    color: #3fb950;
+}
+
+.system-toast-warning {
+    background: rgba(210, 153, 34, 0.25);
+    border: 1px solid rgba(210, 153, 34, 0.5);
+    color: #d29922;
+}
+
+.system-toast-error {
+    background: rgba(248, 81, 73, 0.25);
+    border: 1px solid rgba(248, 81, 73, 0.5);
+    color: #f85149;
+}
+
 @keyframes fadeIn {
     from {
         opacity: 0;

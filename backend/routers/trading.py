@@ -638,7 +638,7 @@ async def get_positions(event_id: str):
     """Get positions for a specific event, calculated from trades."""
     event = event_manager.events.get(event_id)
     if not event:
-        raise HTTPException(status_code=404, detail=f"Event '{event_id}' not found")
+        return {"positions": [], "message": "Event not found or not yet active"}
 
     if event_manager.mode == "demo":
         # Demo positions

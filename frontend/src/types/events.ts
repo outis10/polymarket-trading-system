@@ -117,7 +117,8 @@ export interface SettingsData {
     quant_gate_min_edge_vs_ask_pct?: number;
     quant_gate_min_prob?: number;
     early_window_enabled?: boolean;
-    early_window_seconds?: number;
+    early_window_start?: number;
+    early_window_end?: number;
     early_quant_gate_min_sample?: number;
     early_quant_gate_min_edge_pct?: number;
     early_quant_gate_edge_vs_ask_enabled?: boolean;
@@ -125,7 +126,8 @@ export interface SettingsData {
     early_quant_gate_min_prob?: number;
     early_quant_gate_min_diff_pct?: number;
     late_window_enabled?: boolean;
-    late_window_seconds?: number;
+    late_window_start?: number;
+    late_window_end?: number;
     late_quant_gate_min_sample?: number;
     late_quant_gate_min_edge_pct?: number;
     late_quant_gate_edge_vs_ask_enabled?: boolean;

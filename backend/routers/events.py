@@ -110,6 +110,18 @@ async def refresh_live_events(force: bool = True):
     return result
 
 
+@router.post("/quant/reload")
+async def reload_quant_ranges():
+    """Hot-reload the merged PM 5m slot ranges CSV without restarting the backend."""
+    result = event_manager.reload_quant_ranges()
+    await manager.broadcast({
+        "type": "quant_reload",
+        "event_id": "",
+        "data": result,
+    })
+    return result
+
+
 @router.get("/stats/opportunities")
 async def get_opportunity_stats(days: int = 7, ticker: str | None = None):
     """Return per-ticker opportunity outcomes summary."""
