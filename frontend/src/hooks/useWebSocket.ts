@@ -1,11 +1,16 @@
 import { useEffect, useRef, useCallback } from "react";
+import { API_KEY } from "../auth/useAuth";
 import { useEventsStore } from "../stores/useEventsStore";
 import { useAccountStore } from "../stores/useAccountStore";
 import type { WSMessage, EventData, SettingsData } from "../types/events";
 
-const WS_URL = import.meta.env.DEV
-    ? "ws://localhost:8000/ws/events"
-    : `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/events`;
+function buildWsUrl(): string {
+    const base = import.meta.env.DEV
+        ? "ws://localhost:8000/ws/events"
+        : `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/events`;
+    return API_KEY ? `${base}?api_key=${encodeURIComponent(API_KEY)}` : base;
+}
+const WS_URL = buildWsUrl();
 const RECONNECT_DELAY = 2000;
 
 export function useWebSocket() {

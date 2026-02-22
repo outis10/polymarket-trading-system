@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { apiFetch } from "./auth/apiFetch";
 import { useWebSocket } from "./hooks/useWebSocket";
 import { useEventsStore } from "./stores/useEventsStore";
 import Header from "./components/layout/Header";
@@ -104,7 +105,7 @@ export default function App() {
         // Throttle auto-discovery refresh when UI is empty between event windows.
         if (now - lastAutoRefreshAtRef.current < 20000) return;
         lastAutoRefreshAtRef.current = now;
-        fetch("/api/events/refresh-live", { method: "POST" }).catch(() => {
+        apiFetch("/api/events/refresh-live", { method: "POST" }).catch(() => {
             // no-op: UI already displays empty state
         });
     }, [route, settings.mode, visibleEvents.length]);

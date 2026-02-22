@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { apiFetch } from "../../auth/apiFetch";
 
 type Ticker = "ALL" | "BTC" | "ETH" | "SOL" | "XRP";
 type RegimeFilter = "all" | "weekday" | "weekend";
@@ -104,16 +105,16 @@ export default function OpportunitiesDashboard() {
         try {
             const [summaryRes, rawRes, signalsRes, blockedRes] =
                 await Promise.all([
-                    fetch(
+                    apiFetch(
                         `/api/stats/opportunities?days=${days}${tickerQuery}`,
                     ),
-                    fetch(
+                    apiFetch(
                         `/api/stats/opportunities/raw?limit=5000${tickerQuery}`,
                     ),
-                    fetch(
+                    apiFetch(
                         `/api/stats/opportunities/signals/raw?limit=5000${tickerQuery}`,
                     ),
-                    fetch(
+                    apiFetch(
                         `/api/stats/opportunities/blocked/raw?limit=5000${tickerQuery}`,
                     ),
                 ]);

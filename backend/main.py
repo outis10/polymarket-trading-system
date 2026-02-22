@@ -1,12 +1,14 @@
 """FastAPI application entry point."""
 
 import logging
+import os
 from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from .middleware.auth import APIKeyMiddleware
 from .routers import events, trading
 from .services.event_manager import event_manager
 from .ws.handlers import router as ws_router
@@ -27,14 +29,23 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Polymarket Monitor API", lifespan=lifespan)
 
-# CORS for frontend dev server
+# CORS — origins from env (comma-separated) or localhost defaults for dev
+_cors_origins_env = os.getenv("ALLOWED_ORIGINS", "")
+_cors_origins = (
+    [o.strip() for o in _cors_origins_env.split(",") if o.strip()]
+    if _cors_origins_env
+    else ["http://localhost:5173", "http://localhost:3000"]
+)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*", "X-API-Key"],
 )
+
+# API Key middleware — validates X-API-Key header on all REST requests
+app.add_middleware(APIKeyMiddleware)
 
 # REST routers
 app.include_router(events.router)

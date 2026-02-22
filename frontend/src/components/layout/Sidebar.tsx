@@ -1,6 +1,7 @@
 import { useSettingsStore } from "../../stores/useSettingsStore";
 import { useEventsStore } from "../../stores/useEventsStore";
 import { useState } from "react";
+import { apiFetch } from "../../auth/apiFetch";
 import { inferTicker } from "../../utils/ticker";
 
 interface SidebarProps {
@@ -208,7 +209,7 @@ export default function Sidebar({ send }: SidebarProps) {
         setRefreshingLiveEvents(true);
         setRefreshLiveMessage("");
         try {
-            const res = await fetch("/api/events/refresh-live", {
+            const res = await apiFetch("/api/events/refresh-live", {
                 method: "POST",
             });
             let data: Record<string, unknown> = {};
@@ -237,7 +238,7 @@ export default function Sidebar({ send }: SidebarProps) {
     const handleSaveSettings = async () => {
         const { mode, ...persistable } = settings;
         try {
-            const res = await fetch("/api/settings", {
+            const res = await apiFetch("/api/settings", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ settings: persistable }),

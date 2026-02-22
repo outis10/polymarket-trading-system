@@ -7,13 +7,59 @@ Actualízalo cuando cambien decisiones, scripts o flujos importantes.
 
 ## Pendientes para próxima sesión
 
-### Seguridad backend ↔ frontend (implementar antes de pasar a producción)
-Implementar como un bloque completo en este orden:
-1. **API Key middleware** en FastAPI — valida header `X-API-Key` en todos los endpoints REST y WebSocket. Key en `.env` del backend.
-2. **CORS restringido** — cambiar `allow_origins=["*"]` a origins específicos (dominio o IP del frontend).
-3. **Frontend** — agregar header `X-API-Key` en todos los `fetch()` y en la URL de conexión WebSocket. Key en `.env` de Vite (`VITE_API_KEY`).
-4. **HTTPS + Nginx** — configurar reverse proxy con Certbot (Let's Encrypt) en el servidor de producción.
-- No se necesita JWT ni OAuth — sistema de un solo usuario, API key es suficiente.
+### HTTPS + Nginx (pendiente para cuando se pase a servidor)
+- Configurar reverse proxy con Certbot (Let's Encrypt) en EC2/VPS.
+- Con HTTPS activo, cambiar WS URL de `ws://` a `wss://` (ya está automático en el código).
+
+## Seguridad implementada (2026-02-22)
+
+### Arquitectura de seguridad
+Dos capas independientes:
+1. **Login de password** — protege el frontend (UI). Cualquiera con la URL ve un login, no la app.
+2. **API Key** — protege el backend. Sin la key, ningún REST ni WebSocket funciona.
+
+### Archivos nuevos
+- `backend/middleware/auth.py` — `APIKeyMiddleware` (REST) + `verify_ws_api_key()` (WebSocket)
+- `frontend/src/auth/useAuth.ts` — `isAuthenticated()`, `login()`, `logout()`, exporta `API_KEY`
+- `frontend/src/auth/LoginScreen.tsx` — pantalla de login con password
+- `frontend/src/auth/apiFetch.ts` — wrapper de `fetch()` que inyecta `X-API-Key` automáticamente
+- `frontend/.env.example` — documenta `VITE_APP_PASSWORD` y `VITE_API_KEY`
+
+### Archivos modificados
+- `backend/main.py` — registra `APIKeyMiddleware`, CORS desde `ALLOWED_ORIGINS` en `.env`
+- `backend/ws/handlers.py` — WebSocket cierra con código 4401 si key inválida
+- `frontend/src/main.tsx` — muestra `LoginScreen` si no autenticado
+- `frontend/src/hooks/useWebSocket.ts` — URL del WS incluye `?api_key=...`
+- 7 archivos con `fetch()` → reemplazados por `apiFetch()`:
+  `Header.tsx`, `Sidebar.tsx`, `EventCard.tsx`, `PositionDisplay.tsx`,
+  `TradingPanel.tsx`, `App.tsx`, `OpportunitiesDashboard.tsx`
+
+### Configuración requerida
+
+**Generar API Key:**
+```bash
+python3 -c "import secrets; print(secrets.token_hex(32))"
+```
+
+**Backend — `.env`:**
+```
+API_KEY=<key generada>
+ALLOWED_ORIGINS=https://mi-dominio.com  # o http://localhost:5173 en dev
+```
+
+**Frontend — `frontend/.env.local`** (NO commitear):
+```
+VITE_APP_PASSWORD=<password de acceso a la UI>
+VITE_API_KEY=<misma key que el backend>
+```
+
+### Comportamiento en dev (sin variables configuradas)
+- Sin `VITE_APP_PASSWORD` → no muestra login, acceso directo
+- Sin `API_KEY` en backend → no valida headers, acepta todo
+- Sin `VITE_API_KEY` → no manda header, funciona igual que antes
+
+### Pendiente
+- HTTPS + Nginx en producción (ver sección arriba)
 
 ## Estado actual (2026-02-13)
 

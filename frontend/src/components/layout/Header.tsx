@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
+import { apiFetch } from "../../auth/apiFetch";
 import { useSettingsStore } from "../../stores/useSettingsStore";
 import { useEventsStore } from "../../stores/useEventsStore";
 import { useAccountStore } from "../../stores/useAccountStore";
@@ -25,7 +26,7 @@ export default function Header({ route, onNavigate }: HeaderProps) {
 
     const loadBalance = useCallback(async () => {
         try {
-            const res = await fetch("/api/balance");
+            const res = await apiFetch("/api/balance");
             const data = await res.json();
             const balance =
                 toFiniteNumber(data?.balance) ??
@@ -44,7 +45,7 @@ export default function Header({ route, onNavigate }: HeaderProps) {
 
     const loadClaimable = useCallback(async () => {
         try {
-            const res = await fetch("/api/claimable");
+            const res = await apiFetch("/api/claimable");
             const data = await res.json();
             const v = toFiniteNumber(data?.claimable_usd);
             setClaimableUsd(v !== null && v > 0 ? v : null);
@@ -65,7 +66,7 @@ export default function Header({ route, onNavigate }: HeaderProps) {
 
         const load = async () => {
             try {
-                const res = await fetch("/api/balance");
+                const res = await apiFetch("/api/balance");
                 const data = await res.json();
                 if (!mounted) return;
                 const balance =
