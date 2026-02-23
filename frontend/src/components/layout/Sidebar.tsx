@@ -613,6 +613,22 @@ export default function Sidebar({ send }: SidebarProps) {
                     </label>
 
                     <label
+                        className="chart-option"
+                        title="Si está activo, bloquea comprar el lado contrario si ya compraste UP o DOWN en ese evento hoy."
+                    >
+                        <input
+                            type="checkbox"
+                            checked={settings.bot_block_opposite_side ?? true}
+                            onChange={(e) =>
+                                handleKellySettingChange({
+                                    bot_block_opposite_side: e.target.checked,
+                                })
+                            }
+                        />
+                        Block Opposite Side (Bot)
+                    </label>
+
+                    <label
                         className="field-label"
                         title="Bloquea compras cuando quedan menos de N segundos para que termine el evento. 0 = desactivado."
                     >

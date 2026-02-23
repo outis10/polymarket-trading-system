@@ -1178,17 +1178,18 @@ class EventManager:
             if (now_utc - last_side_at).total_seconds() < side_cooldown:
                 return False, "event_side_cooldown_active"
 
-        # Block buying opposite side if already bought this event today
-        opposite_side = "down" if side == "up" else "up"
-        opposite_records = [
-            r
-            for r in self._order_guard_records
-            if r.get("event_id") == event_id
-            and r.get("outcome") == opposite_side
-            and r.get("at_utc") >= start_day
-        ]
-        if opposite_records:
-            return False, f"already_bought_{opposite_side}_this_event"
+        # Block buying opposite side if already bought this event today (configurable)
+        if bool(self.settings.get("bot_block_opposite_side", True)):
+            opposite_side = "down" if side == "up" else "up"
+            opposite_records = [
+                r
+                for r in self._order_guard_records
+                if r.get("event_id") == event_id
+                and r.get("outcome") == opposite_side
+                and r.get("at_utc") >= start_day
+            ]
+            if opposite_records:
+                return False, f"already_bought_{opposite_side}_this_event"
 
         ticker = self._extract_event_ticker(event_id, event)
         hard_order_cap = max(

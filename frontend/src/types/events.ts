@@ -150,6 +150,7 @@ export interface SettingsData {
     // Bot order controls
     bot_enforce_timeframe_filter?: boolean;
     bot_min_seconds_before_end?: number;
+    bot_block_opposite_side?: boolean;
     keyboard_shortcuts_enabled?: boolean;
 }
 

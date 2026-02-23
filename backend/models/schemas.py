@@ -162,3 +162,4 @@ class SettingsData(BaseModel):
     # Bot order controls
     bot_enforce_timeframe_filter: bool = True
     bot_min_seconds_before_end: int = 30
+    bot_block_opposite_side: bool = True
