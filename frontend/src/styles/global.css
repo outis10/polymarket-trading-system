@@ -1271,9 +1271,14 @@ body {
     transition: all 0.15s;
 }
 
-.position-sell-btn:hover {
+.position-sell-btn:hover:not(:disabled) {
     background: #21262d;
     border-color: #8b949e;
+}
+
+.position-sell-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
 }
 
 /* Responsive */

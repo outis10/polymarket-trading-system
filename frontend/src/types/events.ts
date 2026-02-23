@@ -149,6 +149,7 @@ export interface SettingsData {
     order_book_min_broadcast_ms?: number;
     // Bot order controls
     bot_enforce_timeframe_filter?: boolean;
+    bot_min_seconds_before_end?: number;
     keyboard_shortcuts_enabled?: boolean;
 }
 

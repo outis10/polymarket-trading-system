@@ -612,6 +612,27 @@ export default function Sidebar({ send }: SidebarProps) {
                         Enforce Timeframe Filter (Bot)
                     </label>
 
+                    <label
+                        className="field-label"
+                        title="Bloquea compras cuando quedan menos de N segundos para que termine el evento. 0 = desactivado."
+                    >
+                        Min Seconds Before End
+                    </label>
+                    <input
+                        className="sidebar-number-input"
+                        type="number"
+                        min={0}
+                        step={5}
+                        value={settings.bot_min_seconds_before_end ?? 30}
+                        onChange={(e) =>
+                            handleKellySettingChange({
+                                bot_min_seconds_before_end: Number(
+                                    e.target.value || 0,
+                                ),
+                            })
+                        }
+                    />
+
                     <label className="field-label">
                         Max Buys / Event-Side (day)
                     </label>

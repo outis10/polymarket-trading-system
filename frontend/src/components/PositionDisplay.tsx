@@ -10,6 +10,11 @@ export default function PositionDisplay({ eventId }: PositionDisplayProps) {
     const [positions, setPositions] = useState<Position[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    const [sellSubmitting, setSellSubmitting] = useState<string | null>(null);
+    const [sellResult, setSellResult] = useState<{
+        type: "success" | "error";
+        message: string;
+    } | null>(null);
 
     const fetchPositions = useCallback(async () => {
         try {
@@ -46,6 +51,74 @@ export default function PositionDisplay({ eventId }: PositionDisplayProps) {
             clearInterval(interval);
         };
     }, [fetchPositions]);
+
+    const submitSell = useCallback(
+        async (pos: Position) => {
+            const outcome = pos.outcome.toLowerCase() as "up" | "down";
+            if (sellSubmitting === outcome) return;
+            if (pos.qty <= 0) return;
+
+            setSellSubmitting(outcome);
+            setSellResult(null);
+            try {
+                const res = await apiFetch("/api/orders", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        event_id: eventId,
+                        side: "Sell",
+                        outcome,
+                        order_type: "market",
+                        price: pos.current_price,
+                        shares: pos.qty,
+                    }),
+                });
+
+                let data: { detail?: string; message?: string } = {};
+                try {
+                    data = await res.json();
+                } catch {
+                    data = {};
+                }
+
+                if (res.ok) {
+                    setSellResult({
+                        type: "success",
+                        message:
+                            data.message ||
+                            `Sell sent (${pos.outcome} ${pos.qty} sh)`,
+                    });
+                    setTimeout(() => {
+                        fetchPositions();
+                        window.dispatchEvent(
+                            new CustomEvent("positions_refresh", {
+                                detail: { eventId },
+                            }),
+                        );
+                    }, 1500);
+                } else {
+                    setSellResult({
+                        type: "error",
+                        message:
+                            data.detail ||
+                            data.message ||
+                            `Sell failed (${res.status})`,
+                    });
+                }
+            } catch {
+                setSellResult({ type: "error", message: "Network error" });
+            } finally {
+                setSellSubmitting(null);
+            }
+        },
+        [eventId, sellSubmitting, fetchPositions],
+    );
+
+    useEffect(() => {
+        if (!sellResult) return;
+        const t = setTimeout(() => setSellResult(null), 5000);
+        return () => clearTimeout(t);
+    }, [sellResult]);
 
     if (loading) {
         return (
@@ -90,45 +163,64 @@ export default function PositionDisplay({ eventId }: PositionDisplayProps) {
                         </tr>
                     </thead>
                     <tbody>
-                        {positions.map((pos) => (
-                            <tr key={pos.outcome}>
-                                <td>
-                                    <span
-                                        className={`position-outcome ${pos.outcome === "Up" ? "outcome-up-text" : "outcome-down-text"}`}
+                        {positions.map((pos) => {
+                            const outcome = pos.outcome.toLowerCase() as
+                                | "up"
+                                | "down";
+                            const isSelling = sellSubmitting === outcome;
+                            return (
+                                <tr key={pos.outcome}>
+                                    <td>
+                                        <span
+                                            className={`position-outcome ${pos.outcome === "Up" ? "outcome-up-text" : "outcome-down-text"}`}
+                                        >
+                                            {pos.outcome}
+                                        </span>
+                                    </td>
+                                    <td className="position-qty">{pos.qty}</td>
+                                    <td className="position-avg">
+                                        {pos.avg_price.toFixed(3)}
+                                    </td>
+                                    <td className="position-value">
+                                        <div>${pos.value.toFixed(2)}</div>
+                                        <div className="position-cost">
+                                            Cost ${pos.cost.toFixed(2)}
+                                        </div>
+                                    </td>
+                                    <td
+                                        className={`position-return ${pos.return_value >= 0 ? "return-positive" : "return-negative"}`}
                                     >
-                                        {pos.outcome}
-                                    </span>
-                                </td>
-                                <td className="position-qty">{pos.qty}</td>
-                                <td className="position-avg">
-                                    {pos.avg_price.toFixed(3)}
-                                </td>
-                                <td className="position-value">
-                                    <div>${pos.value.toFixed(2)}</div>
-                                    <div className="position-cost">
-                                        Cost ${pos.cost.toFixed(2)}
-                                    </div>
-                                </td>
-                                <td
-                                    className={`position-return ${pos.return_value >= 0 ? "return-positive" : "return-negative"}`}
-                                >
-                                    {pos.return_value >= 0 ? "+" : ""}$
-                                    {pos.return_value.toFixed(2)}
-                                    <span className="return-pct">
-                                        {" "}
-                                        ({pos.return_pct.toFixed(2)}%)
-                                    </span>
-                                </td>
-                                <td>
-                                    <button className="position-sell-btn">
-                                        Sell
-                                    </button>
-                                </td>
-                            </tr>
-                        ))}
+                                        {pos.return_value >= 0 ? "+" : ""}$
+                                        {pos.return_value.toFixed(2)}
+                                        <span className="return-pct">
+                                            {" "}
+                                            ({pos.return_pct.toFixed(2)}%)
+                                        </span>
+                                    </td>
+                                    <td>
+                                        <button
+                                            className="position-sell-btn"
+                                            disabled={isSelling}
+                                            title={`Market sell ${pos.qty} ${pos.outcome} shares`}
+                                            onClick={() => submitSell(pos)}
+                                        >
+                                            {isSelling ? "..." : "Sell"}
+                                        </button>
+                                    </td>
+                                </tr>
+                            );
+                        })}
                     </tbody>
                 </table>
             </div>
+
+            {sellResult && (
+                <div
+                    className={`trade-toast trade-toast-${sellResult.type}`}
+                >
+                    {sellResult.message}
+                </div>
+            )}
         </div>
     );
 }

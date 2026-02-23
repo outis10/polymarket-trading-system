@@ -162,7 +162,7 @@ class EventManager:
         }
         self._last_discovery_refresh: datetime | None = None
         self._running = False
-        self._order_guard_records: list[dict] = []
+        self._order_guard_records: list[dict] = self._load_order_guard_records_from_csv()
         self._last_order_at_utc: datetime | None = None
         # Bot auto-order: track previous gate state to detect disabled→enabled transitions
         self._bot_prev_gate_enabled: dict[tuple[str, str], bool] = {}
@@ -175,6 +175,40 @@ class EventManager:
             os.path.join(os.path.dirname(__file__), "..", "..", "config", "runtime_settings.json")
         )
         self._persisted_setting_keys = set(self.settings.keys())
+
+    def _load_order_guard_records_from_csv(self) -> list[dict]:
+        """Seed _order_guard_records from today's bot_orders CSV so guards survive restarts."""
+        records = []
+        try:
+            today_str = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+            csv_path = os.path.normpath(
+                os.path.join(
+                    os.path.dirname(__file__), "..", "..", "backtest_output",
+                    f"bot_orders_{today_str}.csv",
+                )
+            )
+            if not os.path.exists(csv_path):
+                return records
+            with open(csv_path, newline="") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    if row.get("status") != "placed":
+                        continue
+                    try:
+                        at_utc = datetime.fromisoformat(row["placed_at_utc"])
+                        records.append({
+                            "at_utc": at_utc,
+                            "event_id": row.get("event_id", ""),
+                            "ticker": row.get("ticker", ""),
+                            "outcome": row.get("side", "").lower(),
+                            "notional_usd": float(row.get("notional_usd", 0) or 0),
+                        })
+                    except Exception:
+                        continue
+            logger.info("Loaded %d order guard records from %s", len(records), csv_path)
+        except Exception as e:
+            logger.warning("Could not load order guard records from CSV: %s", e)
+        return records
 
     def _load_runtime_settings(self) -> None:
         """Load persisted runtime mode/settings from disk, if available."""
@@ -352,15 +386,16 @@ class EventManager:
             return None
         idx = bisect.bisect_right([r[0] for r in ranges], price_diff) - 1
         if idx < 0:
-            # price_diff below all known ranges → use first bin
-            idx = 0
-        elif idx >= len(ranges):
+            # price_diff below all known ranges → clamp to first bin
+            inf_r, sup_r, prob_up, prob_down, count = ranges[0]
+            return (prob_up, prob_down, count)
+        if idx >= len(ranges):
             idx = len(ranges) - 1
         inf_r, sup_r, prob_up, prob_down, count = ranges[idx]
         if inf_r <= price_diff < sup_r:
             return (prob_up, prob_down, count)
-        # price_diff above all known ranges → use last bin
-        if price_diff >= sup_r and idx == len(ranges) - 1:
+        # price_diff above all known ranges → clamp to last bin
+        if idx == len(ranges) - 1:
             return (prob_up, prob_down, count)
         return None
 
@@ -378,15 +413,16 @@ class EventManager:
             return None
         idx = bisect.bisect_right([r[0] for r in ranges], price_diff) - 1
         if idx < 0:
-            # price_diff below all known ranges → use first bin
-            idx = 0
-        elif idx >= len(ranges):
+            # price_diff below all known ranges → clamp to first bin
+            inf_r, sup_r, prob_up, prob_down, count = ranges[0]
+            return (prob_up, prob_down, count)
+        if idx >= len(ranges):
             idx = len(ranges) - 1
         inf_r, sup_r, prob_up, prob_down, count = ranges[idx]
         if inf_r <= price_diff < sup_r:
             return (prob_up, prob_down, count)
-        # price_diff above all known ranges → use last bin
-        if price_diff >= sup_r and idx == len(ranges) - 1:
+        # price_diff above all known ranges → clamp to last bin
+        if idx == len(ranges) - 1:
             return (prob_up, prob_down, count)
         return None
 
@@ -765,6 +801,13 @@ class EventManager:
             elapsed_seconds = max(0, int((now_utc - start_dt).total_seconds()))
         if end_dt is not None:
             time_left_seconds = max(0, int((end_dt - now_utc).total_seconds()))
+
+        # ── Min seconds before end ────────────────────────────────────────────
+        min_secs_before_end = max(
+            0, int(settings.get("bot_min_seconds_before_end", 30))
+        )
+        if time_left_seconds is not None and time_left_seconds < min_secs_before_end:
+            return "blocked_end", {**params, "gate_enabled": False}
 
         # ── Early window ──────────────────────────────────────────────────────
         if bool(settings.get("early_window_enabled", False)) and elapsed_seconds is not None:
@@ -2228,6 +2271,19 @@ class EventManager:
                     except (TypeError, ValueError):
                         pass
 
+            # Hard price cap check — revalidate ask_price at order time since the
+            # gate may have been computed one or more ticks ago when price was lower.
+            max_price_c = float(self.settings.get("quant_gate_max_price_c", 90.0))
+            min_price_c = float(self.settings.get("quant_gate_min_price_c", 10.0))
+            ask_price_c = ask_price * 100
+            if ask_price_c > max_price_c or ask_price_c < min_price_c:
+                logger.info(
+                    "Bot auto-order skipped: ask price %.0f¢ outside allowed range [%.0f¢, %.0f¢] "
+                    "for %s %s",
+                    ask_price_c, min_price_c, max_price_c, event_id, side,
+                )
+                return
+
             # Kelly sizing
             quant_prob_raw = (
                 event_dict.get("quant_prob_up")
@@ -2294,14 +2350,20 @@ class EventManager:
                 return
 
             logger.info(
-                "Bot auto-order: placing BUY %s shares @ %.4f for %s %s (notional $%.2f)",
-                f"{shares:.4f}", ask_price, event_id, side, notional_usd,
+                "Bot auto-order: placing FOK BUY $%.2f for %s %s (ask=%.4f shares=%.4f)",
+                notional_usd, event_id, side, ask_price, shares,
             )
             result = await asyncio.to_thread(
-                client.place_order, token_id, "BUY", ask_price, shares
+                client.place_fok_order, token_id, "BUY", notional_usd
             )
 
             if result:
+                # Lazy import to avoid circular dependency; invalidate stale cache
+                try:
+                    from ..routers.trading import invalidate_positions_cache
+                    invalidate_positions_cache(event_id)
+                except Exception:
+                    pass
                 self.register_order_fill(
                     event_id=event_id,
                     event=event_dict,
@@ -2309,6 +2371,9 @@ class EventManager:
                     notional_usd=notional_usd,
                     now_utc=now_utc,
                 )
+                # Lock gate for this key so a re-enable in the next tick
+                # doesn't trigger a second order for the same event/side.
+                self._bot_prev_gate_enabled[key] = True
                 order_id = (
                     getattr(result, "id", None)
                     or getattr(result, "orderID", None)
@@ -2520,7 +2585,7 @@ class EventManager:
             if not self._is_trackable_crypto_event(event_id, event_dict):
                 continue
 
-            pr = fetch_real_prices(client, ecfg)
+            pr = await asyncio.to_thread(fetch_real_prices, client, ecfg)
             if pr:
                 event_dict["yes_price"] = pr["yes_price"]
                 event_dict["no_price"] = pr["no_price"]

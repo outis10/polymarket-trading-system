@@ -4,7 +4,13 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import AssetType, BalanceAllowanceParams, OrderArgs
+from py_clob_client.clob_types import (
+    AssetType,
+    BalanceAllowanceParams,
+    MarketOrderArgs,
+    OrderArgs,
+    OrderType,
+)
 
 from config.settings import PolymarketConfig
 
@@ -233,7 +239,47 @@ class PolymarketClient:
 
         except Exception as e:
             self.logger.error(f"Error placing order: {e}")
-            return None
+            raise
+
+    # NOTE: nombrado place_fok_order por compatibilidad con event_manager.py,
+    # pero usa FAK (Fill-and-Kill) en lugar de FOK (Fill-or-Kill).
+    # FAK llena lo que puede al mejor precio y cancela el resto — más seguro para
+    # órdenes pequeñas donde puede no haber liquidez exacta para el notional completo.
+    def place_fok_order(
+        self,
+        token_id: str,
+        side: str,
+        amount_usd: float,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Place a Fill-and-Kill (FAK) market order.
+        Fills as much as possible at best available prices, cancels any unfilled remainder.
+
+        Args:
+            token_id: The token ID to trade
+            side: 'BUY' or 'SELL'
+            amount_usd: Notional amount in USDC to spend/receive
+
+        Returns:
+            Order result or None if rejected
+        """
+        try:
+            self.logger.info(
+                f"Placing FAK order: {side} ${amount_usd:.2f} for token {token_id[:8]}..."
+            )
+            order_args = MarketOrderArgs(
+                token_id=token_id,
+                amount=amount_usd,
+                side=side.upper(),
+                order_type=OrderType.FAK,
+            )
+            signed_order = self.client.create_market_order(order_args)
+            result = self.client.post_order(signed_order, OrderType.FAK)
+            self.logger.info(f"FAK order result: {result}")
+            return result
+        except Exception as e:
+            self.logger.error(f"Error placing FAK order: {e}")
+            raise
 
     def place_market_order(
         self, token_id: str, side: str, size: float

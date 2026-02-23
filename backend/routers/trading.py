@@ -21,6 +21,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["trading"])
 _POSITIONS_CACHE_TTL_SECONDS = 10.0
 _positions_cache: dict[str, dict] = {}
+
+
+def invalidate_positions_cache(event_id: str) -> None:
+    """Remove cached positions for an event so the next request fetches fresh data."""
+    _positions_cache.pop(event_id, None)
 _ORDER_BLOCKED_LOG_PATH = os.path.normpath(
     os.path.join(
         os.path.dirname(__file__),
@@ -146,6 +151,7 @@ async def place_order(order: OrderRequest):
             status_code=403,
             detail="Trading disabled for this event ticker by monitored_tickers setting",
         )
+    is_sell = order.side.strip().upper() == "SELL"
     outcome_side = "up" if order.outcome == "up" else "down"
     reference_price = (
         float(event.get("yes_price") or 0.5)
@@ -162,8 +168,10 @@ async def place_order(order: OrderRequest):
     )
     effective_shares = requested_shares
     cap_applied = False
+    # Notional cap only applies to buys — sells should exit the full position
     if (
-        hard_cap_usd > 0
+        not is_sell
+        and hard_cap_usd > 0
         and requested_notional_usd > hard_cap_usd
         and order_price_ref > 0
     ):
@@ -198,7 +206,7 @@ async def place_order(order: OrderRequest):
         event_manager.settings.get("timeframe_filter", "5m")
     )
     event_tf = int(event.get("timeframe_minutes", 15) or 15)
-    if selected_tf is not None and event_tf != selected_tf:
+    if not is_sell and selected_tf is not None and event_tf != selected_tf:
         raise _blocked(
             detail=(
                 f"Timeframe mismatch: selected={selected_tf}m, "
@@ -207,49 +215,73 @@ async def place_order(order: OrderRequest):
             reason="timeframe_mismatch",
         )
 
-    quant_gate = event.get("quant_buy_gate")
-    if isinstance(quant_gate, dict):
-        gate_side = quant_gate.get(outcome_side)
-        if isinstance(gate_side, dict) and not bool(gate_side.get("enabled", False)):
-            reasons = gate_side.get("reasons", [])
-            reasons_list = reasons if isinstance(reasons, list) else [reasons]
-            ask_proxy_flag = " (proxy=mid)" if quant_debug.get("ask_is_proxy_at_check") else ""
-            detail = (
-                f"Quant gate blocked: {_quant_gate_reason_text(reasons_list)}"
-                f" | quant_prob={quant_debug.get('quant_prob_at_check')}"
-                f" ask={quant_debug.get('ask_price_at_check')}{ask_proxy_flag}"
-                f" market_prob={quant_debug.get('market_prob_at_check')}"
-                f" edge_pct={quant_debug.get('edge_pct_at_check')}"
-                f" edge_vs_ask_pct={quant_debug.get('edge_vs_ask_pct_at_check')}"
-                f" sample={quant_debug.get('sample_size_at_check')}"
-                f" percentile={quant_debug.get('percentile_at_check')}"
-            )
-            raise _blocked(detail=detail, reason="quant_gate_blocked")
+    if not is_sell:
+        min_secs_before_end = max(
+            0, int(event_manager.settings.get("bot_min_seconds_before_end", 30))
+        )
+        end_raw = event.get("event_end_utc")
+        if min_secs_before_end > 0 and end_raw:
+            try:
+                end_dt = datetime.fromisoformat(end_raw)
+                secs_remaining = (end_dt - datetime.now(tz=timezone.utc)).total_seconds()
+                if secs_remaining < min_secs_before_end:
+                    raise _blocked(
+                        detail=(
+                            f"Too close to event end: {int(secs_remaining)}s remaining, "
+                            f"min required={min_secs_before_end}s"
+                        ),
+                        reason="too_close_to_end",
+                    )
+            except HTTPException:
+                raise
+            except Exception:
+                pass
+
+    if not is_sell:
+        quant_gate = event.get("quant_buy_gate")
+        if isinstance(quant_gate, dict):
+            gate_side = quant_gate.get(outcome_side)
+            if isinstance(gate_side, dict) and not bool(gate_side.get("enabled", False)):
+                reasons = gate_side.get("reasons", [])
+                reasons_list = reasons if isinstance(reasons, list) else [reasons]
+                ask_proxy_flag = " (proxy=mid)" if quant_debug.get("ask_is_proxy_at_check") else ""
+                detail = (
+                    f"Quant gate blocked: {_quant_gate_reason_text(reasons_list)}"
+                    f" | quant_prob={quant_debug.get('quant_prob_at_check')}"
+                    f" ask={quant_debug.get('ask_price_at_check')}{ask_proxy_flag}"
+                    f" market_prob={quant_debug.get('market_prob_at_check')}"
+                    f" edge_pct={quant_debug.get('edge_pct_at_check')}"
+                    f" edge_vs_ask_pct={quant_debug.get('edge_vs_ask_pct_at_check')}"
+                    f" sample={quant_debug.get('sample_size_at_check')}"
+                    f" percentile={quant_debug.get('percentile_at_check')}"
+                )
+                raise _blocked(detail=detail, reason="quant_gate_blocked")
 
     # Demo mode: simulate
     if event_manager.mode == "demo":
-        allowed, reason = event_manager.validate_order_risk_guards(
-            event_id=order.event_id,
-            event=event,
-            outcome=outcome_side,
-            shares=float(effective_shares),
-            notional_usd=notional_usd,
-            now_utc=datetime.now(tz=timezone.utc),
-            bankroll_usd=bankroll_usd,
-        )
-        if not allowed:
-            detailed = event_manager.format_risk_guard_block_reason(
-                reason=reason,
+        if not is_sell:
+            allowed, reason = event_manager.validate_order_risk_guards(
                 event_id=order.event_id,
                 event=event,
+                outcome=outcome_side,
+                shares=float(effective_shares),
                 notional_usd=notional_usd,
                 now_utc=datetime.now(tz=timezone.utc),
                 bankroll_usd=bankroll_usd,
             )
-            raise _blocked(
-                detail=f"Risk guard blocked: {detailed}",
-                reason="risk_guard_blocked",
-            )
+            if not allowed:
+                detailed = event_manager.format_risk_guard_block_reason(
+                    reason=reason,
+                    event_id=order.event_id,
+                    event=event,
+                    notional_usd=notional_usd,
+                    now_utc=datetime.now(tz=timezone.utc),
+                    bankroll_usd=bankroll_usd,
+                )
+                raise _blocked(
+                    detail=f"Risk guard blocked: {detailed}",
+                    reason="risk_guard_blocked",
+                )
         event_manager.register_order_fill(
             event_id=order.event_id,
             event=event,
@@ -296,28 +328,29 @@ async def place_order(order: OrderRequest):
     except Exception:
         bankroll_usd = None
 
-    allowed, reason = event_manager.validate_order_risk_guards(
-        event_id=order.event_id,
-        event=event,
-        outcome=outcome_side,
-        shares=float(effective_shares),
-        notional_usd=notional_usd,
-        now_utc=datetime.now(tz=timezone.utc),
-        bankroll_usd=bankroll_usd,
-    )
-    if not allowed:
-        detailed = event_manager.format_risk_guard_block_reason(
-            reason=reason,
+    if not is_sell:
+        allowed, reason = event_manager.validate_order_risk_guards(
             event_id=order.event_id,
             event=event,
+            outcome=outcome_side,
+            shares=float(effective_shares),
             notional_usd=notional_usd,
             now_utc=datetime.now(tz=timezone.utc),
             bankroll_usd=bankroll_usd,
         )
-        raise _blocked(
-            detail=f"Risk guard blocked: {detailed}",
-            reason="risk_guard_blocked",
-        )
+        if not allowed:
+            detailed = event_manager.format_risk_guard_block_reason(
+                reason=reason,
+                event_id=order.event_id,
+                event=event,
+                notional_usd=notional_usd,
+                now_utc=datetime.now(tz=timezone.utc),
+                bankroll_usd=bankroll_usd,
+            )
+            raise _blocked(
+                detail=f"Risk guard blocked: {detailed}",
+                reason="risk_guard_blocked",
+            )
 
     token_id = (
         event.get("yes_token_id") if order.outcome == "up" else event.get("no_token_id")
@@ -329,19 +362,76 @@ async def place_order(order: OrderRequest):
 
     try:
         side = order.side.upper()
-        if order.order_type == "market":
+        logger.info(
+            "[ORDER] event_id=%s outcome=%s side=%s order_type=%s "
+            "requested_shares=%.4f effective_shares=%.4f order_price=%.4f "
+            "token_id=%s",
+            order.event_id, outcome_side, side, order.order_type,
+            requested_shares, effective_shares, order_price_ref, token_id,
+        )
+        if is_sell:
+            # Ensure the CLOB has allowance to move conditional tokens (shares) from wallet.
+            # Without this, sells fail with "not enough balance / allowance".
+            try:
+                from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
+                cond_params = BalanceAllowanceParams(
+                    asset_type=AssetType.CONDITIONAL,
+                    token_id=token_id,
+                    signature_type=client.config.signature_type,
+                )
+                client.client.update_balance_allowance(cond_params)
+                logger.info("[SELL] conditional allowance updated for token=%s", token_id)
+            except Exception as e:
+                logger.warning("[SELL] could not update conditional allowance: %s", e)
+
+        if order.order_type == "market" and is_sell:
+            # For sell market orders, derive the best bid from the in-memory order book
+            # (already fetched by the price poller). Falls back to mid-price then the
+            # caller-supplied price so we never send a None price to the CLOB.
+            ob_key = "order_book_yes" if outcome_side == "up" else "order_book_no"
+            ob = event.get(ob_key) or {}
+            bids = ob.get("bids") or []
+            asks = ob.get("asks") or []
+            if bids and isinstance(bids[0], dict):
+                sell_price = float(bids[0]["price"])
+                price_source = "best_bid"
+            else:
+                # Fallback: mid-price from event, then caller-supplied price
+                mid_key = "yes_price" if outcome_side == "up" else "no_price"
+                sell_price = float(event.get(mid_key) or order.price or 0.50)
+                price_source = "mid_price_fallback"
+            logger.info(
+                "[SELL] token=%s price=%.4f shares=%.4f price_source=%s "
+                "bids_top3=%s asks_top3=%s yes_price=%.4f no_price=%.4f",
+                token_id, sell_price, effective_shares, price_source,
+                [b.get("price") for b in bids[:3]] if bids else "none",
+                [a.get("price") for a in asks[:3]] if asks else "none",
+                float(event.get("yes_price") or 0),
+                float(event.get("no_price") or 0),
+            )
+            result = client.place_order(token_id, side, sell_price, effective_shares)
+        elif order.order_type == "market":
             result = client.place_market_order(token_id, side, effective_shares)
         else:
             result = client.place_order(token_id, side, order.price, effective_shares)
+
+        logger.info("Raw CLOB result type=%s value=%s", type(result).__name__, repr(result)[:200])
+
+        # Detect CLOB error responses (dict with errorCode/error key)
+        if isinstance(result, dict) and (result.get("errorCode") or result.get("error")):
+            err_msg = result.get("error") or result.get("errorCode") or str(result)
+            logger.error("CLOB returned error for %s %s: %s", side, outcome_side, err_msg)
+            raise HTTPException(status_code=500, detail=f"CLOB error: {err_msg}")
 
         if result:
             # SignedOrder object - access attributes directly
             order_id = (
                 getattr(result, "id", None)
                 or getattr(result, "orderID", None)
+                or (result.get("orderID") if isinstance(result, dict) else None)
                 or str(result)[:16]
             )
-            status = getattr(result, "status", "OPEN")
+            status = getattr(result, "status", None) or (result.get("status") if isinstance(result, dict) else None) or "OPEN"
             event_manager.register_order_fill(
                 event_id=order.event_id,
                 event=event,
@@ -387,7 +477,12 @@ async def place_order(order: OrderRequest):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("Error placing order: %s", e)
+        logger.error(
+            "[ORDER ERROR] event_id=%s outcome=%s side=%s order_type=%s "
+            "token_id=%s effective_shares=%.4f error=%s",
+            order.event_id, outcome_side, order.side.upper(), order.order_type,
+            token_id, effective_shares, e,
+        )
         raise HTTPException(status_code=500, detail=str(e))
 
 

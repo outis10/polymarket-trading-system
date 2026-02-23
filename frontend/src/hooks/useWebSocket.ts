@@ -102,6 +102,15 @@ export function useWebSocket() {
                         }
                         if (msg.event_id) {
                             updateEvent(msg.event_id, { _bot_last_order: d } as Partial<EventData>);
+                            // Delay refresh to give CLOB time to register the trade
+                            const eid = msg.event_id;
+                            setTimeout(() => {
+                                window.dispatchEvent(
+                                    new CustomEvent("positions_refresh", {
+                                        detail: { eventId: eid },
+                                    })
+                                );
+                            }, 3000);
                         }
                         break;
                     }
