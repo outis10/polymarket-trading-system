@@ -293,16 +293,15 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
         kellySharesUp >= minShares && effectiveStakeUpUsd >= minNotionalUsd;
     const minConstraintDownOk =
         kellySharesDown >= minShares && effectiveStakeDownUsd >= minNotionalUsd;
+    const blockOppositeSide = settings.bot_block_opposite_side ?? true;
     const canBuyUp =
         (gateUp ? gateUp.enabled : false) &&
         minConstraintUpOk &&
-        boughtSide !== "down" &&
-        boughtSide !== "both";
+        (!blockOppositeSide || (boughtSide !== "down" && boughtSide !== "both"));
     const canBuyDown =
         (gateDown ? gateDown.enabled : false) &&
         minConstraintDownOk &&
-        boughtSide !== "up" &&
-        boughtSide !== "both";
+        (!blockOppositeSide || (boughtSide !== "up" && boughtSide !== "both"));
     const localBlockReasonUp = !minConstraintUpOk
         ? `blocked by exchange min (${minShares} shares, $${minNotionalUsd})`
         : "";

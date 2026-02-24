@@ -172,6 +172,9 @@ class EventManager:
         # Bot auto-order: track previous gate state to detect disabled→enabled transitions
         self._bot_prev_gate_enabled: dict[tuple[str, str], bool] = {}
         self._bot_pending_orders: set[tuple[str, str]] = set()
+        # Position tracker: fuente de verdad para shares compradas por evento
+        # {event_id: {"up": {"shares": float, "avg_price": float, "token_id": str, "placed_at_utc": str}, ...}}
+        self._position_tracker: dict[str, dict] = {}
         tracker_dir = os.path.normpath(
             os.path.join(os.path.dirname(__file__), "..", "..", "backtest_output")
         )
@@ -1322,6 +1325,74 @@ class EventManager:
         )
         self._last_order_at_utc = now_utc
 
+    # ------------------------------------------------------------------
+    # Position Tracker — fuente de verdad para shares por evento
+    # ------------------------------------------------------------------
+
+    def record_position_buy(
+        self,
+        *,
+        event_id: str,
+        outcome: str,
+        token_id: str,
+        shares: float,
+        price: float,
+        placed_at_utc: str,
+    ) -> None:
+        """Registra una compra en el tracker. Promedia si ya hay posición."""
+        outcome = outcome.lower()
+        if event_id not in self._position_tracker:
+            self._position_tracker[event_id] = {}
+        existing = self._position_tracker[event_id].get(outcome)
+        if existing:
+            total_shares = existing["shares"] + shares
+            avg_price = (
+                (existing["shares"] * existing["avg_price"] + shares * price) / total_shares
+            )
+            self._position_tracker[event_id][outcome] = {
+                "shares": round(total_shares, 6),
+                "avg_price": round(avg_price, 6),
+                "token_id": token_id,
+                "placed_at_utc": existing["placed_at_utc"],
+            }
+        else:
+            self._position_tracker[event_id][outcome] = {
+                "shares": round(shares, 6),
+                "avg_price": round(price, 6),
+                "token_id": token_id,
+                "placed_at_utc": placed_at_utc,
+            }
+        logger.info(
+            "[POSITION_TRACKER] buy event_id=%s outcome=%s shares=%.6f price=%.6f",
+            event_id, outcome, shares, price,
+        )
+
+    def record_position_sell(
+        self,
+        *,
+        event_id: str,
+        outcome: str,
+        shares_sold: float,
+    ) -> None:
+        """Reduce o elimina la posición trackeada tras una venta."""
+        outcome = outcome.lower()
+        pos = self._position_tracker.get(event_id, {}).get(outcome)
+        if not pos:
+            return
+        remaining = max(0.0, round(pos["shares"] - shares_sold, 6))
+        if remaining == 0.0:
+            self._position_tracker.get(event_id, {}).pop(outcome, None)
+        else:
+            self._position_tracker[event_id][outcome]["shares"] = remaining
+        logger.info(
+            "[POSITION_TRACKER] sell event_id=%s outcome=%s sold=%.6f remaining=%.6f",
+            event_id, outcome, shares_sold, remaining,
+        )
+
+    def get_tracked_positions(self, event_id: str) -> dict:
+        """Retorna las posiciones trackeadas para un evento."""
+        return self._position_tracker.get(event_id, {})
+
     def is_event_trading_enabled(
         self, event_id: str, event_dict: dict | None = None
     ) -> bool:
@@ -2445,6 +2516,14 @@ class EventManager:
                     "status": "placed",
                 })
                 logger.info("Bot auto-order placed: order_id=%s", order_id)
+                self.record_position_buy(
+                    event_id=event_id,
+                    outcome=side,
+                    token_id=token_id,
+                    shares=shares,
+                    price=ask_price,
+                    placed_at_utc=now_utc.isoformat(),
+                )
                 # Broadcast bot_order event to frontend
                 try:
                     refreshed_balance = await asyncio.to_thread(client.get_balance)

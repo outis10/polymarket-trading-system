@@ -432,13 +432,32 @@ async def place_order(order: OrderRequest):
                 or str(result)[:16]
             )
             status = getattr(result, "status", None) or (result.get("status") if isinstance(result, dict) else None) or "OPEN"
-            event_manager.register_order_fill(
-                event_id=order.event_id,
-                event=event,
-                outcome=outcome_side,
-                notional_usd=notional_usd,
-                now_utc=datetime.now(tz=timezone.utc),
-            )
+            now_fill = datetime.now(tz=timezone.utc)
+            if not is_sell:
+                event_manager.register_order_fill(
+                    event_id=order.event_id,
+                    event=event,
+                    outcome=outcome_side,
+                    notional_usd=notional_usd,
+                    now_utc=now_fill,
+                )
+                # Extraer shares reales del resultado (takingAmount del CLOB)
+                taking_amount = result.get("takingAmount") if isinstance(result, dict) else None
+                real_shares = float(taking_amount) if taking_amount else effective_shares
+                event_manager.record_position_buy(
+                    event_id=order.event_id,
+                    outcome=outcome_side,
+                    token_id=token_id,
+                    shares=real_shares,
+                    price=order_price_ref,
+                    placed_at_utc=now_fill.isoformat(),
+                )
+            else:
+                event_manager.record_position_sell(
+                    event_id=order.event_id,
+                    outcome=outcome_side,
+                    shares_sold=effective_shares,
+                )
             try:
                 refreshed_balance = client.get_balance()
             except Exception:
@@ -730,13 +749,12 @@ async def reset_polymarket_client():
 
 @router.get("/positions/{event_id}")
 async def get_positions(event_id: str):
-    """Get positions for a specific event, calculated from trades."""
+    """Get positions for a specific event. Uses in-memory tracker as source of truth."""
     event = event_manager.events.get(event_id)
     if not event:
         return {"positions": [], "message": "Event not found or not yet active"}
 
     if event_manager.mode == "demo":
-        # Demo positions
         return {
             "positions": [
                 {
@@ -756,91 +774,38 @@ async def get_positions(event_id: str):
             "message": "Demo mode - simulated positions",
         }
 
-    client = get_client()
-    if not client:
-        raise HTTPException(status_code=503, detail="Polymarket client unavailable")
-
-    try:
-        yes_token = event.get("yes_token_id")
-        no_token = event.get("no_token_id")
-
-        if not yes_token or not no_token:
-            return {
-                "positions": [],
-                "message": "Token IDs not configured for this event",
-            }
-
-        now_ts = time.time()
-        cached = _positions_cache.get(event_id)
-        if (
-            cached
-            and (now_ts - float(cached.get("ts", 0.0))) < _POSITIONS_CACHE_TTL_SECONDS
-        ):
-            return cached["payload"]
-
-        # Get all trades
-        trades = await asyncio.to_thread(client.get_trades)
-
-        # Calculate positions per token
+    # --- Tracker path (fuente de verdad) ---
+    tracked = event_manager.get_tracked_positions(event_id)
+    if tracked:
         positions = []
+        for outcome_key, pos in tracked.items():
+            outcome_label = "Up" if outcome_key == "up" else "Down"
+            current_price = float(
+                event.get("yes_price", pos["avg_price"]) if outcome_key == "up"
+                else event.get("no_price", pos["avg_price"])
+            )
+            qty = pos["shares"]
+            avg_price = pos["avg_price"]
+            cost = round(qty * avg_price, 2)
+            value = round(qty * current_price, 2)
+            return_value = round(value - cost, 2)
+            return_pct = round((return_value / cost * 100) if cost > 0 else 0, 2)
+            positions.append({
+                "outcome": outcome_label,
+                "qty": round(qty, 4),
+                "avg_price": round(avg_price, 4),
+                "current_price": round(current_price, 4),
+                "cost": cost,
+                "value": value,
+                "return_value": return_value,
+                "return_pct": return_pct,
+                "token_id": pos.get("token_id", ""),
+                "placed_at_utc": pos.get("placed_at_utc", ""),
+            })
+        return {"positions": positions, "source": "tracker"}
 
-        for outcome, token_id in [("Up", yes_token), ("Down", no_token)]:
-            # Filter trades for this token
-            token_trades = [t for t in trades if t.get("asset_id") == token_id]
-
-            if not token_trades:
-                continue
-
-            # Calculate net position
-            total_qty = 0
-            total_cost = 0
-
-            for trade in token_trades:
-                side = trade.get("side", "").upper()
-                size = float(trade.get("size", 0))
-                price = float(trade.get("price", 0))
-
-                if side == "BUY":
-                    total_qty += size
-                    total_cost += size * price
-                elif side == "SELL":
-                    total_qty -= size
-                    total_cost -= size * price
-
-            if total_qty > 0:
-                avg_price = total_cost / total_qty if total_qty > 0 else 0
-                current_price = (
-                    event.get("yes_price", 0.5)
-                    if outcome == "Up"
-                    else event.get("no_price", 0.5)
-                )
-                value = total_qty * current_price
-                return_value = value - total_cost
-                return_pct = (return_value / total_cost * 100) if total_cost > 0 else 0
-
-                positions.append(
-                    {
-                        "outcome": outcome,
-                        "qty": round(total_qty, 2),
-                        "avg_price": round(avg_price, 4),
-                        "current_price": round(current_price, 4),
-                        "cost": round(total_cost, 2),
-                        "value": round(value, 2),
-                        "return_value": round(return_value, 2),
-                        "return_pct": round(return_pct, 2),
-                    }
-                )
-
-        payload = {
-            "positions": positions,
-            "cached_for_seconds": _POSITIONS_CACHE_TTL_SECONDS,
-        }
-        _positions_cache[event_id] = {"ts": now_ts, "payload": payload}
-        return payload
-
-    except Exception as e:
-        logger.error("Error getting positions: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+    # Sin posiciones trackeadas para este evento
+    return {"positions": [], "source": "tracker"}
 
 
 # ---------------------------------------------------------------------------
