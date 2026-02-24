@@ -120,6 +120,8 @@ class EventManager:
             "order_book_max_levels": 8,
             "order_book_min_broadcast_ms": 120,
             "bot_enforce_timeframe_filter": True,
+            "bot_block_opposite_side": True,
+            "bot_min_seconds_before_end": 30,
         }
         self._config: dict = {}
         self._task: Optional[asyncio.Task] = None
@@ -1491,6 +1493,7 @@ class EventManager:
                     await self._broadcast_full_snapshot()
                 else:
                     self._maybe_refresh_live_events()
+                    await self._watchdog_price_streams()
                     await self._update_live()
                     self._tick_counter += 1
                     # Live mode uses incremental WS updates; send full snapshots less often.
@@ -1503,6 +1506,38 @@ class EventManager:
             except Exception as e:
                 logger.error("Update loop error: %s", e)
                 await asyncio.sleep(5)
+
+    async def _watchdog_price_streams(self) -> None:
+        """Restart any price stream tasks that have died unexpectedly."""
+        # Chainlink tasks
+        dead_chainlink: list[int] = []
+        for i, task in enumerate(self._chainlink_stream_tasks):
+            if task.done():
+                exc = task.exception() if not task.cancelled() else None
+                logger.warning(
+                    "Chainlink stream task[%d] died (cancelled=%s, exc=%s) — restarting",
+                    i, task.cancelled(), exc,
+                )
+                dead_chainlink.append(i)
+        for i in reversed(dead_chainlink):
+            streamer = self._chainlink_streamers[i]
+            streamer._running = True
+            self._chainlink_stream_tasks[i] = asyncio.create_task(streamer.start())
+
+        # Binance tasks
+        dead_binance: list[int] = []
+        for i, task in enumerate(self._binance_stream_tasks):
+            if task.done():
+                exc = task.exception() if not task.cancelled() else None
+                logger.warning(
+                    "Binance stream task[%d] died (cancelled=%s, exc=%s) — restarting",
+                    i, task.cancelled(), exc,
+                )
+                dead_binance.append(i)
+        for i in reversed(dead_binance):
+            streamer = self._binance_streamers[i]
+            streamer._running = True
+            self._binance_stream_tasks[i] = asyncio.create_task(streamer.start())
 
     def _update_demo(self):
         """Update all demo events with simulated data."""
