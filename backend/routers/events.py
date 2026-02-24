@@ -63,6 +63,30 @@ async def save_settings(payload: dict[str, Any]):
     return {"ok": True, "updated_keys": updated, "settings": event_manager.settings}
 
 
+@router.get("/debug/streams")
+async def debug_streams():
+    """Diagnose price streamer health."""
+    from datetime import datetime, timezone
+    now = datetime.now(tz=timezone.utc)
+    last_tick = event_manager._last_price_tick_at
+    seconds_since_tick = (now - last_tick).total_seconds() if last_tick else None
+    return {
+        "binance_streamers": len(event_manager._binance_streamers),
+        "chainlink_streamers": len(event_manager._chainlink_streamers),
+        "binance_tasks": [
+            {"index": i, "done": t.done(), "cancelled": t.cancelled()}
+            for i, t in enumerate(event_manager._binance_stream_tasks)
+        ],
+        "chainlink_tasks": [
+            {"index": i, "done": t.done(), "cancelled": t.cancelled()}
+            for i, t in enumerate(event_manager._chainlink_stream_tasks)
+        ],
+        "last_price_tick_at": last_tick.isoformat() if last_tick else None,
+        "seconds_since_last_tick": round(seconds_since_tick, 1) if seconds_since_tick is not None else None,
+        "streamer_stalled": seconds_since_tick is not None and seconds_since_tick > 10,
+    }
+
+
 @router.get("/pm-ranges/{ticker}")
 async def get_pm_ranges(ticker: str):
     """Return the quantitative PM probability table for a given ticker."""

@@ -650,7 +650,7 @@ export default function Sidebar({ send }: SidebarProps) {
                     />
 
                     <label className="field-label">
-                        Max Buys / Event-Side (day)
+                        Max Buys / Event (day)
                     </label>
                     <input
                         className="sidebar-number-input"
@@ -668,7 +668,7 @@ export default function Sidebar({ send }: SidebarProps) {
                     />
 
                     <label className="field-label">
-                        Cooldown Event-Side (s)
+                        Cooldown Event (s)
                     </label>
                     <input
                         className="sidebar-number-input"

@@ -21,7 +21,13 @@ export default function App() {
     const events = useEventsStore((s) => s.events);
     const settings = useEventsStore((s) => s.settings);
     const [route, setRoute] = useState<AppRoute>(getRouteFromPath());
+    const [nowMs, setNowMs] = useState(() => Date.now());
     const lastAutoRefreshAtRef = useRef(0);
+
+    useEffect(() => {
+        const timer = setInterval(() => setNowMs(Date.now()), 1000);
+        return () => clearInterval(timer);
+    }, []);
 
     useEffect(() => {
         const onPopState = () => setRoute(getRouteFromPath());
@@ -37,7 +43,6 @@ export default function App() {
         }
         setRoute(nextRoute);
     };
-    const nowMs = Date.now();
     const rawTimeframe =
         typeof settings.timeframe_filter === "string"
             ? settings.timeframe_filter

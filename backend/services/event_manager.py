@@ -164,6 +164,9 @@ class EventManager:
         }
         self._last_discovery_refresh: datetime | None = None
         self._running = False
+        self._last_price_tick_at: datetime | None = None  # last time _on_reference_price fired
+        self._streamer_stall_logged_at: datetime | None = None  # throttle stall warning logs
+        self._price_broadcast_last_ms: dict[str, int] = {}  # throttle price broadcasts per event
         self._order_guard_records: list[dict] = self._load_order_guard_records_from_csv()
         self._last_order_at_utc: datetime | None = None
         # Bot auto-order: track previous gate state to detect disabled→enabled transitions
@@ -1159,26 +1162,26 @@ class EventManager:
             return False, "global_order_cooldown_active"
 
         side = "up" if str(outcome).lower() == "up" else "down"
-        per_event_side_limit = max(
+        per_event_limit = max(
             0, int(self.settings.get("bot_max_buys_per_event_side", 1))
         )
-        side_cooldown = max(
+        event_cooldown = max(
             0.0, float(self.settings.get("bot_cooldown_seconds_per_event_side", 60))
         )
         start_day = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
-        event_side_records = [
+        # Max buys and cooldown apply per event (any side), not per event+side
+        event_records = [
             r
             for r in self._order_guard_records
             if r.get("event_id") == event_id
-            and r.get("outcome") == side
             and r.get("at_utc") >= start_day
         ]
-        if per_event_side_limit > 0 and len(event_side_records) >= per_event_side_limit:
-            return False, "max_buys_per_event_side_reached"
-        if event_side_records and side_cooldown > 0:
-            last_side_at = max(r["at_utc"] for r in event_side_records)
-            if (now_utc - last_side_at).total_seconds() < side_cooldown:
-                return False, "event_side_cooldown_active"
+        if per_event_limit > 0 and len(event_records) >= per_event_limit:
+            return False, "max_buys_per_event_reached"
+        if event_records and event_cooldown > 0:
+            last_event_at = max(r["at_utc"] for r in event_records)
+            if (now_utc - last_event_at).total_seconds() < event_cooldown:
+                return False, "event_cooldown_active"
 
         # Block buying opposite side if already bought this event today (configurable)
         if bool(self.settings.get("bot_block_opposite_side", True)):
@@ -2148,7 +2151,8 @@ class EventManager:
         """Apply tick to all matching events and broadcast incremental update."""
         if self.mode != "live":
             return
-        now_iso = datetime.now(tz=timezone.utc).isoformat()
+        self._last_price_tick_at = datetime.now(tz=timezone.utc)
+        now_iso = self._last_price_tick_at.isoformat()
 
         for event_id, event_dict in self.events.items():
             ecfg = self._live_event_configs.get(event_id)
@@ -2175,11 +2179,19 @@ class EventManager:
 
             event_dict["last_update"] = now_iso
 
+            # Always run state + bot logic on every tick
             self._apply_quant_metrics(event_dict, ecfg, datetime.now(tz=timezone.utc))
             self._apply_quant_buy_gates(event_dict)
             self._track_opportunities_for_event(
                 event_id, event_dict, datetime.now(tz=timezone.utc)
             )
+
+            # Throttle only the broadcast to frontend (max 1/s per event)
+            now_ms = int(self._last_price_tick_at.timestamp() * 1000)
+            last_broadcast_ms = self._price_broadcast_last_ms.get(event_id, 0)
+            if now_ms - last_broadcast_ms < 1000:
+                continue
+            self._price_broadcast_last_ms[event_id] = now_ms
 
             await manager.broadcast(
                 {
@@ -2503,9 +2515,26 @@ class EventManager:
             )
             if ref:
                 symbols.append(ref)
+        # Use polling if no streamers exist, OR if streamer hasn't sent a tick in >10s (stall)
+        streamer_stalled = (
+            (self._binance_streamers or self._chainlink_streamers)
+            and self._last_price_tick_at is not None
+            and (datetime.now(tz=timezone.utc) - self._last_price_tick_at).total_seconds() > 10
+        )
         use_polling_prices = (
             not self._binance_streamers and not self._chainlink_streamers
-        )
+        ) or streamer_stalled
+        if streamer_stalled:
+            now_check = datetime.now(tz=timezone.utc)
+            if (
+                self._streamer_stall_logged_at is None
+                or (now_check - self._streamer_stall_logged_at).total_seconds() > 30
+            ):
+                logger.warning("Price streamer stalled (no tick >10s), falling back to REST polling")
+                self._streamer_stall_logged_at = now_check
+        elif self._streamer_stall_logged_at is not None:
+            logger.info("Price streamer recovered — resuming WS ticks")
+            self._streamer_stall_logged_at = None
         market_symbols = [f"{s}USDT" for s in symbols]
         prices_by_symbol = (
             fetch_binance_prices(market_symbols) if use_polling_prices else {}
