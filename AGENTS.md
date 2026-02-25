@@ -11,6 +11,47 @@ Actualízalo cuando cambien decisiones, scripts o flujos importantes.
 - Configurar reverse proxy con Certbot (Let's Encrypt) en EC2/VPS.
 - Con HTTPS activo, cambiar WS URL de `ws://` a `wss://` (ya está automático en el código).
 
+### Analytics KPI pendiente (paper vs live sizing)
+- Agregar KPI en Analytics para comparar sizing entre modos:
+  - `avg stake paper` (desde `paper_trades.csv`)
+  - `avg stake live fallback` (estimado por settings/órdenes)
+- Objetivo: detectar divergencias de stake entre simulación paper y ejecución live fallback.
+
+### TODO técnico (deuda de compatibilidad bankroll)
+- Evaluar remover fallback legado `kelly_bankroll` después de validar que:
+  - `kelly_live_bankroll_usd` y `kelly_paper_bankroll_usd` ya están presentes en runtime/settings,
+  - no hay clientes/UI antiguos enviando solo `kelly_bankroll`.
+
+### TODO Analytics (Out-of-Sample / Walk-Forward) — pendiente
+- Objetivo: validar si hay negocio real del modelo quant sin sesgo in-sample.
+- Alcance:
+  1. Agregar endpoint backend para curva `pipeline_oos` (walk-forward).
+  2. Calcular `train/test` por ventanas temporales usando solo CSV del pipeline.
+  3. Exponer en frontend chart separado de `Pipeline EV Curve (In-Sample)`.
+- Reglas mínimas propuestas:
+  - `train_days=14`, `test_days=1`, rolling diario.
+  - Entrenar solo con pasado, evaluar solo en bloque futuro inmediato.
+  - Unir todos los bloques test y graficar equity/drawdown OOS.
+- Input esperado:
+  - `backtest_output/merged_pm_5m_slot_ranges_4cryptos.csv`
+- Criterios de aceptación:
+  - El chart OOS no reutiliza filas del mismo bloque para entrenar y evaluar.
+  - UI muestra claramente etiqueta `Out-of-Sample (Walk-Forward)`.
+  - Incluye KPIs: `final_equity`, `max_drawdown`, `avg_ev_per_trade`.
+
+### TODO discusión mañana (métrica EV de pipeline) — pendiente
+- Aclaración: la curva `Pipeline EV Curve (In-Sample)` actual (con `2*p-1`) no representa EV de trading real contra mercado.
+- Propuesta para discutir/implementar:
+  1. Renombrar curva actual a `Model Confidence Curve (In-Sample)`.
+  2. Nueva curva `Market-Anchored EV` usando precio de mercado `q`:
+     - `EV_yes = p_up - q_yes`
+     - `EV_no = (1 - p_up) - q_no`
+     - operar solo si `max(EV_yes, EV_no) > 0`.
+  3. Backtest real por trade con payoff de precio:
+     - YES: `+(1-q_yes)` / `-q_yes`
+     - NO:  `+(1-q_no)` / `-q_no`
+- Bloqueo actual: el CSV del pipeline no trae `q`; hay que definir fuente de `marketProb` (logs/snapshots/ask histórico por evento-slot).
+
 ## Seguridad implementada (2026-02-22)
 
 ### Arquitectura de seguridad
@@ -619,6 +660,35 @@ Implementar modulo Kelly configurable desde Settings:
 - `_runtime_settings_path` en `EventManager.__init__` actualizado.
 - Docs `AGENTS.md` y `docs/BOT_AUTO_ORDER.md` actualizados.
 
+## Estado actualizado (2026-02-25, trazabilidad de precio real en bot orders)
+
+- `backtest_output/bot_orders_YYYY-MM-DD.csv` ahora agrega columnas:
+  - `price_source_at_send` (`best_ask` o `proxy_mid`),
+  - `fill_price_real` (si viene en response de exchange),
+  - `edge_at_fill_pct` (`quant_prob - fill_price_real` en %).
+- `edge_pct` existente se mantiene como referencia de envío (`quant_prob - ask_price_at_send`).
+- Se agregó extracción robusta de fill price desde respuesta de orden (`fills[]`, `avg_price`, `filled_price`, etc.).
+- Compatibilidad de logs:
+  - si existe archivo diario con header viejo, el backend migra automáticamente al nuevo schema antes de append.
+
+## Estado actualizado (2026-02-25, paper mode bot + bitácora de decisiones)
+
+- Nuevo setting runtime: `bot_paper_mode` (default `false`).
+  - Cuando `true` y `trading_mode=bot`, el bot NO envía orden real a exchange.
+  - En su lugar registra decisión simulada y mantiene guardrails/gating del flujo real.
+- Nuevo log:
+  - `backtest_output/paper_trades.csv`
+  - Campos principales:
+    - `decision_time`, `slot`, `range`, `prob_up`, `marketProb_at_decision`,
+      `QuantumEdge`, `side_taken`, `event_outcome_real`, `pnl_simulated`
+    - + metadatos (`event_id`, `ticker`, `stake_usd`, `status`, etc.)
+- Reconciliación automática:
+  - al cierre del evento, backend completa `event_outcome_real` y `pnl_simulated`
+    sobre filas `pending` en `paper_trades.csv`.
+  - `close_price` usa `current_price` al cierre (con cache de fallback).
+- Endpoint nuevo:
+  - `GET /api/stats/paper/raw?limit=500&ticker=BTC` para leer filas de paper mode.
+
 ### Script de bitácora
 - Nuevo script: `scripts/bitacora.py`.
 - Genera `backtest_output/bitacora_trades.csv` cruzando:
@@ -633,6 +703,34 @@ Implementar modulo Kelly configurable desde Settings:
   python3 scripts/bitacora.py                    # todos los logs disponibles
   python3 scripts/bitacora.py --date 2026-02-21  # filtra por fecha UTC
   python3 scripts/bitacora.py --dir /ruta/logs   # directorio personalizado
+  ```
+
+## Estado actualizado (2026-02-25, split de bankroll live/paper)
+
+- Se separó el bankroll manual en dos settings:
+  - `kelly_live_bankroll_usd`: sizing manual en live (fallback cuando no hay balance API).
+  - `kelly_paper_bankroll_usd`: sizing para `bot_paper_mode`.
+- Compatibilidad:
+  - `kelly_bankroll` se mantiene como campo legado y fallback.
+  - Si `runtime_settings.json` viejo solo trae `kelly_bankroll`, backend migra ese valor en memoria a los dos nuevos campos.
+- UI Sidebar:
+  - `Kelly Settings` ahora muestra `Live Manual Bankroll ($)` y `Paper Bankroll ($)`.
+
+## Estado actualizado (2026-02-25, script reset de logs para paper)
+
+- Nuevo script: `scripts/reset_logs_for_paper.sh`
+- Objetivo: arrancar una corrida paper con logs limpios sin tocar config ni CSV del pipeline.
+- Hace backup previo en `backtest_output/archive_YYYY-MM-DD_HHMMSS/` y luego limpia:
+  - `paper_trades.csv`
+  - `opportunities_log.csv`
+  - `opportunity_outcomes.csv`
+  - `opportunity_blocked.csv`
+  - `order_blocked_log.csv`
+  - `bot_orders_YYYY-MM-DD.csv` (del día actual)
+- Uso:
+  ```bash
+  bash scripts/reset_logs_for_paper.sh
+  bash scripts/reset_logs_for_paper.sh --include-backend-log
   ```
 
 ## Estado actualizado (2026-02-25, fix label event_outcome con exclude-last-slot)

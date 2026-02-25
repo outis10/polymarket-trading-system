@@ -87,6 +87,14 @@ async def websocket_events(websocket: WebSocket):
                         event_manager.settings["kelly_bankroll"] = float(
                             settings["kelly_bankroll"]
                         )
+                    if "kelly_live_bankroll_usd" in settings:
+                        event_manager.settings["kelly_live_bankroll_usd"] = float(
+                            settings["kelly_live_bankroll_usd"]
+                        )
+                    if "kelly_paper_bankroll_usd" in settings:
+                        event_manager.settings["kelly_paper_bankroll_usd"] = float(
+                            settings["kelly_paper_bankroll_usd"]
+                        )
                     if "kelly_min_edge_pct" in settings:
                         event_manager.settings["kelly_min_edge_pct"] = float(
                             settings["kelly_min_edge_pct"]
@@ -242,6 +250,10 @@ async def websocket_events(websocket: WebSocket):
                     if "bot_order_notional_cap_usd" in settings:
                         event_manager.settings["bot_order_notional_cap_usd"] = float(
                             settings["bot_order_notional_cap_usd"]
+                        )
+                    if "bot_paper_mode" in settings:
+                        event_manager.settings["bot_paper_mode"] = bool(
+                            settings["bot_paper_mode"]
                         )
                     if "pm_min_shares" in settings:
                         event_manager.settings["pm_min_shares"] = float(

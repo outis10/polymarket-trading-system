@@ -154,24 +154,45 @@ def main() -> None:
 
     # Keep full 5m data for event outcome labels (includes final slot).
     df_all = df
-    slot_stats = df_all.groupby("_block_key", sort=False)["slot"].agg(["count", "max"])
-    incomplete_blocks = slot_stats[slot_stats["count"] != max_slot]
-    if not incomplete_blocks.empty:
-        sample_keys = incomplete_blocks.index.astype(str).tolist()[:5]
-        raise ValueError(
-            "Detected incomplete/duplicated 5m blocks before aggregation: "
-            f"expected {max_slot} rows per block, got mismatches in "
-            f"{len(incomplete_blocks)} block(s). Sample block keys: {sample_keys}"
-        )
-    if not args.exclude_last_slot:
-        missing_last_slot = slot_stats[slot_stats["max"] != max_slot]
-        if not missing_last_slot.empty:
-            sample_keys = missing_last_slot.index.astype(str).tolist()[:5]
-            raise ValueError(
-                "Detected block(s) without final slot while --exclude-last-slot is off: "
-                f"expected slot {max_slot} in every block. "
-                f"Sample block keys: {sample_keys}"
+    slot_stats = df_all.groupby("_block_key", sort=False)["slot"].agg(
+        count="size", nunique="nunique", min="min", max="max"
+    )
+    invalid_blocks = slot_stats[
+        (slot_stats["count"] != max_slot)
+        | (slot_stats["nunique"] != max_slot)
+        | (slot_stats["min"] != 1)
+        | (slot_stats["max"] != max_slot)
+    ]
+    if not invalid_blocks.empty:
+        # Real-time exports can include the currently open 5m block at the end.
+        # Drop only that trailing incomplete block; keep strict validation otherwise.
+        last_block_key = int(df_all["_block_key"].max())
+        trailing_incomplete = invalid_blocks[
+            (invalid_blocks.index == last_block_key)
+            & (
+                (invalid_blocks["count"] < max_slot)
+                | (invalid_blocks["nunique"] < max_slot)
+                | (invalid_blocks["max"] < max_slot)
             )
+        ]
+        if not trailing_incomplete.empty:
+            df_all = df_all[df_all["_block_key"] != last_block_key].copy()
+            slot_stats = df_all.groupby("_block_key", sort=False)["slot"].agg(
+                count="size", nunique="nunique", min="min", max="max"
+            )
+            invalid_blocks = slot_stats[
+                (slot_stats["count"] != max_slot)
+                | (slot_stats["nunique"] != max_slot)
+                | (slot_stats["min"] != 1)
+                | (slot_stats["max"] != max_slot)
+            ]
+    if not invalid_blocks.empty:
+        sample_keys = invalid_blocks.index.astype(str).tolist()[:5]
+        raise ValueError(
+            "Detected invalid 5m blocks before aggregation: "
+            f"expected unique slots 1..{max_slot} in every block, got mismatches in "
+            f"{len(invalid_blocks)} block(s). Sample block keys: {sample_keys}"
+        )
 
     ref_price_all = df_all.groupby("_block_key", sort=False)["open"].transform("first")
     final_close_all = df_all.groupby("_block_key", sort=False)["close"].transform(

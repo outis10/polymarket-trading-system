@@ -84,6 +84,18 @@ body {
     letter-spacing: 0.2px;
 }
 
+.paper-mode-chip {
+    background: rgba(248, 81, 73, 0.15);
+    border: 1px solid rgba(248, 81, 73, 0.55);
+    color: #ff938d;
+    border-radius: 999px;
+    padding: 5px 10px;
+    font-size: 12px;
+    font-weight: 700;
+    margin-left: 6px;
+    letter-spacing: 0.4px;
+}
+
 .bankroll-refresh-btn {
     background: none;
     border: none;
@@ -94,7 +106,9 @@ body {
     margin-left: 4px;
     cursor: pointer;
     opacity: 0.6;
-    transition: opacity 0.15s, transform 0.15s;
+    transition:
+        opacity 0.15s,
+        transform 0.15s;
     border-radius: 4px;
 }
 
@@ -107,8 +121,12 @@ body {
 }
 
 @keyframes spin-balance {
-    from { transform: rotate(0deg); }
-    to   { transform: rotate(360deg); }
+    from {
+        transform: rotate(0deg);
+    }
+    to {
+        transform: rotate(360deg);
+    }
 }
 
 .bankroll-refresh-btn--spinning {
@@ -1996,6 +2014,119 @@ body {
     margin-bottom: 8px;
 }
 
+.analytics-charts-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+}
+
+.analytics-panel-wide {
+    grid-column: 1 / -1;
+}
+
+.analytics-chart-help {
+    background: #101720;
+    border: 1px solid #273444;
+    border-radius: 10px;
+    padding: 10px;
+    margin-bottom: 10px;
+    color: #a8b7c8;
+    font-size: 12px;
+}
+
+.analytics-chart-help > div {
+    color: #e6edf3;
+    font-weight: 700;
+    margin-bottom: 6px;
+}
+
+.analytics-chart-help ul {
+    padding-left: 18px;
+    margin: 0;
+    display: grid;
+    gap: 4px;
+}
+
+.analytics-mini-kpis {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 10px;
+}
+
+.analytics-mini-kpis span {
+    display: inline-flex;
+    align-items: center;
+    background: #0f1720;
+    border: 1px solid #2b3542;
+    border-radius: 999px;
+    padding: 5px 10px;
+    color: #c6d6e5;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.analytics-chart-canvas {
+    height: 320px;
+}
+
+.analytics-empty {
+    font-size: 12px;
+    color: #8b949e;
+}
+
+.analytics-calibration-list {
+    display: grid;
+    gap: 8px;
+}
+
+.cal-row {
+    display: grid;
+    grid-template-columns: 96px minmax(0, 1fr) 100px;
+    align-items: center;
+    gap: 8px;
+}
+
+.cal-meta {
+    display: flex;
+    flex-direction: column;
+    font-size: 11px;
+    color: #97a8bb;
+}
+
+.cal-bars {
+    position: relative;
+    height: 18px;
+    border-radius: 6px;
+    background: #0f1720;
+    border: 1px solid #273444;
+    overflow: hidden;
+}
+
+.cal-bar {
+    position: absolute;
+    left: 0;
+    top: 0;
+    height: 100%;
+}
+
+.cal-bar-expected {
+    background: rgba(88, 166, 255, 0.36);
+}
+
+.cal-bar-actual {
+    background: rgba(63, 185, 80, 0.75);
+}
+
+.cal-values {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    font-size: 11px;
+    color: #c4d4e2;
+    gap: 2px;
+}
+
 .analytics-table {
     width: 100%;
     border-collapse: collapse;
@@ -2029,6 +2160,10 @@ body {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
+    .analytics-charts-grid {
+        grid-template-columns: 1fr;
+    }
+
     .analytics-panels {
         grid-template-columns: 1fr;
     }
@@ -2045,6 +2180,17 @@ body {
 
     .analytics-kpis {
         grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .cal-row {
+        grid-template-columns: 70px minmax(0, 1fr);
+    }
+
+    .cal-values {
+        grid-column: 1 / -1;
+        align-items: flex-start;
+        flex-direction: row;
+        gap: 8px;
     }
 }
 
@@ -2073,6 +2219,11 @@ body {
     .bankroll-chip {
         font-size: 11px;
         padding: 5px 9px;
+    }
+
+    .paper-mode-chip {
+        font-size: 10px;
+        padding: 4px 7px;
     }
 
     .settings-btn {

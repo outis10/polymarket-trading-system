@@ -18,6 +18,8 @@ function toFiniteNumber(value: unknown): number | null {
 export default function Header({ route, onNavigate }: HeaderProps) {
     const toggleSidebar = useSettingsStore((s) => s.toggleSidebar);
     const mode = useEventsStore((s) => s.settings.mode);
+    const tradingMode = useEventsStore((s) => s.settings.trading_mode);
+    const paperMode = useEventsStore((s) => s.settings.bot_paper_mode);
     const bankrollReal = useAccountStore((s) => s.bankrollReal);
     const setBankrollReal = useAccountStore((s) => s.setBankrollReal);
     const [balanceText, setBalanceText] = useState("Bankroll: unavailable");
@@ -86,7 +88,9 @@ export default function Header({ route, onNavigate }: HeaderProps) {
 
         load();
         // Defer claimable fetch so it doesn't block initial page render
-        const claimableDelay = setTimeout(() => { if (mounted) loadClaimable(); }, 3000);
+        const claimableDelay = setTimeout(() => {
+            if (mounted) loadClaimable();
+        }, 3000);
         // Fallback reconciliation only: primary updates come from order fills / WS.
         const interval = setInterval(load, 90000);
         const claimableInterval = setInterval(loadClaimable, 300000);
@@ -113,6 +117,8 @@ export default function Header({ route, onNavigate }: HeaderProps) {
         );
     }, [bankrollReal, mode]);
 
+    const showPaperBadge = tradingMode === "bot" && paperMode === true;
+
     return (
         <header className="app-header">
             <div className="app-header-left">
@@ -123,9 +129,25 @@ export default function Header({ route, onNavigate }: HeaderProps) {
             </div>
             <div className="app-header-center">
                 <span className="bankroll-chip">{balanceText}</span>
+                {showPaperBadge && (
+                    <span
+                        className="paper-mode-chip"
+                        title="Bot is running in paper mode (no real orders)"
+                    >
+                        PAPER MODE
+                    </span>
+                )}
                 {claimableUsd !== null && (
-                    <span className="claimable-chip" title="Redeemable from resolved markets">
-                        +${claimableUsd.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} claimable
+                    <span
+                        className="claimable-chip"
+                        title="Redeemable from resolved markets"
+                    >
+                        +$
+                        {claimableUsd.toLocaleString("en-US", {
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 2,
+                        })}{" "}
+                        claimable
                     </span>
                 )}
                 <button

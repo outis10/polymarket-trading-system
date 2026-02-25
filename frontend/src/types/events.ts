@@ -99,6 +99,8 @@ export interface SettingsData {
     kelly_enabled?: boolean;
     kelly_fraction?: number;
     kelly_bankroll?: number;
+    kelly_live_bankroll_usd?: number;
+    kelly_paper_bankroll_usd?: number;
     kelly_min_edge_pct?: number;
     kelly_max_bet_pct?: number;
     kelly_max_event_exposure_pct?: number;
@@ -142,6 +144,7 @@ export interface SettingsData {
     bot_max_event_exposure_pct?: number;
     bot_max_ticker_exposure_pct?: number;
     bot_order_notional_cap_usd?: number;
+    bot_paper_mode?: boolean;
     pm_min_shares?: number;
     pm_min_notional_usd?: number;
     // Order book streaming controls

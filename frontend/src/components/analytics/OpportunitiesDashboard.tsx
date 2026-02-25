@@ -1,24 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { apiFetch } from "../../auth/apiFetch";
+import EquityDrawdownChart, {
+    EquityDrawdownPoint,
+} from "./EquityDrawdownChart";
 
 type Ticker = "ALL" | "BTC" | "ETH" | "SOL" | "XRP";
 type RegimeFilter = "all" | "weekday" | "weekend";
-
-interface SummaryRow {
-    ticker: string;
-    signals: number;
-    wins: number;
-    hit_rate_pct: number;
-    total_pnl_usd: number;
-    avg_edge_pct: number;
-    avg_minutes_to_close: number;
-}
-
-interface SummaryResponse {
-    days: number;
-    ticker_filter: string | null;
-    summary: SummaryRow[];
-}
+type ChartScope = "selected" | "all";
 
 interface RawOutcome {
     signal_id: string;
@@ -29,9 +17,8 @@ interface RawOutcome {
     side: "up" | "down";
     won: string;
     pnl_usd: string;
-    entry_side_price: string;
-    actual_outcome: "up" | "down";
     percentile_at_signal?: string;
+    edge_pct_at_signal?: string;
 }
 
 interface RawResponse {
@@ -48,6 +35,9 @@ interface RawSignal {
     timeframe_minutes: string;
     side: "up" | "down";
     stake_usd: string;
+    quant_prob_side?: string;
+    edge_pct?: string;
+    sample_size?: string;
 }
 
 interface RawSignalResponse {
@@ -73,6 +63,69 @@ interface RawBlockedResponse {
     rows: RawBlocked[];
 }
 
+interface RawPaperTrade {
+    decision_id: string;
+    decision_time: string;
+    event_id: string;
+    ticker: string;
+    event_end_utc: string;
+    slot: string;
+    range: string;
+    prob_up: string;
+    marketProb_at_decision: string;
+    QuantumEdge: string;
+    side_taken: "up" | "down";
+    event_outcome_real: "up" | "down" | "";
+    pnl_simulated: string;
+    status: "pending" | "resolved";
+}
+
+interface RawPaperTradeResponse {
+    count: number;
+    ticker_filter: string | null;
+    rows: RawPaperTrade[];
+}
+
+interface PipelineEvPoint {
+    idx: number;
+    ticker: string;
+    slot: number;
+    inf_range: number;
+    sup_range: number;
+    count: number;
+    ev_per_trade_pct: number;
+    cumulative_ev: number;
+    drawdown_pct: number;
+}
+
+interface PipelineEvResponse {
+    source: string;
+    ticker_filter: string | null;
+    min_count: number;
+    points_count: number;
+    total_samples: number;
+    avg_ev_per_trade_pct: number;
+    final_cumulative_ev: number;
+    max_drawdown_pct: number;
+    points: PipelineEvPoint[];
+}
+
+interface CalibrationBucket {
+    key: string;
+    rangeLabel: string;
+    n: number;
+    expectedPct: number;
+    actualPct: number;
+}
+
+interface EdgeBucket {
+    key: string;
+    label: string;
+    n: number;
+    wins: number;
+    pnl: number;
+}
+
 const DAYS_OPTIONS = [1, 3, 7, 14, 30];
 const TICKERS: Ticker[] = ["ALL", "BTC", "ETH", "SOL", "XRP"];
 const REGIME_OPTIONS: Array<{ value: RegimeFilter; label: string }> = [
@@ -80,61 +133,91 @@ const REGIME_OPTIONS: Array<{ value: RegimeFilter; label: string }> = [
     { value: "weekday", label: "Weekday" },
     { value: "weekend", label: "Weekend" },
 ];
+const CHART_SCOPE_OPTIONS: Array<{ value: ChartScope; label: string }> = [
+    { value: "selected", label: "Selected Ticker" },
+    { value: "all", label: "All Tickers" },
+];
 
 const asNumber = (value: unknown) => {
     const n = Number(value);
     return Number.isFinite(n) ? n : 0;
 };
 
+const isWeekendUtc = (timestamp: string) => {
+    const dt = new Date(timestamp);
+    const day = dt.getUTCDay();
+    return day === 0 || day === 6;
+};
+
+const inLastDays = (timestamp: string, days: number) => {
+    const ts = new Date(timestamp).getTime();
+    if (!Number.isFinite(ts)) return false;
+    const now = Date.now();
+    const horizonMs = Math.max(1, days) * 24 * 60 * 60 * 1000;
+    return ts >= now - horizonMs;
+};
+
+const calibrationRangeLabel = (idx: number) => {
+    const low = idx * 10;
+    const high = (idx + 1) * 10;
+    return `${low}-${high}%`;
+};
+
+const EDGE_BUCKETS: Array<{
+    key: string;
+    label: string;
+    min: number;
+    max: number;
+}> = [
+    { key: "lt0", label: "< 0%", min: Number.NEGATIVE_INFINITY, max: 0 },
+    { key: "0_2", label: "0% - 2%", min: 0, max: 2 },
+    { key: "2_5", label: "2% - 5%", min: 2, max: 5 },
+    { key: "5_10", label: "5% - 10%", min: 5, max: 10 },
+    { key: "gte10", label: ">= 10%", min: 10, max: Number.POSITIVE_INFINITY },
+];
+
 export default function OpportunitiesDashboard() {
     const [days, setDays] = useState(7);
     const [ticker, setTicker] = useState<Ticker>("ALL");
     const [regimeFilter, setRegimeFilter] = useState<RegimeFilter>("all");
+    const [chartScope, setChartScope] = useState<ChartScope>("selected");
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
-    const [summary, setSummary] = useState<SummaryRow[]>([]);
     const [rawRows, setRawRows] = useState<RawOutcome[]>([]);
     const [signalRows, setSignalRows] = useState<RawSignal[]>([]);
     const [blockedRows, setBlockedRows] = useState<RawBlocked[]>([]);
-
-    const tickerQuery = ticker === "ALL" ? "" : `&ticker=${ticker}`;
+    const [paperRows, setPaperRows] = useState<RawPaperTrade[]>([]);
+    const [pipelineEv, setPipelineEv] = useState<PipelineEvResponse | null>(
+        null,
+    );
+    const [pipelineError, setPipelineError] = useState("");
 
     const loadData = async () => {
         setLoading(true);
         setError("");
         try {
-            const [summaryRes, rawRes, signalsRes, blockedRes] =
+            const [rawRes, signalsRes, blockedRes, paperRes] =
                 await Promise.all([
-                    apiFetch(
-                        `/api/stats/opportunities?days=${days}${tickerQuery}`,
-                    ),
-                    apiFetch(
-                        `/api/stats/opportunities/raw?limit=5000${tickerQuery}`,
-                    ),
-                    apiFetch(
-                        `/api/stats/opportunities/signals/raw?limit=5000${tickerQuery}`,
-                    ),
-                    apiFetch(
-                        `/api/stats/opportunities/blocked/raw?limit=5000${tickerQuery}`,
-                    ),
+                    apiFetch(`/api/stats/opportunities/raw?limit=5000`),
+                    apiFetch(`/api/stats/opportunities/signals/raw?limit=5000`),
+                    apiFetch(`/api/stats/opportunities/blocked/raw?limit=5000`),
+                    apiFetch(`/api/stats/paper/raw?limit=5000`),
                 ]);
             if (
-                !summaryRes.ok ||
                 !rawRes.ok ||
                 !signalsRes.ok ||
-                !blockedRes.ok
+                !blockedRes.ok ||
+                !paperRes.ok
             ) {
                 throw new Error(
-                    `Failed to load analytics (${summaryRes.status}/${rawRes.status}/${signalsRes.status}/${blockedRes.status})`,
+                    `Failed to load analytics (${rawRes.status}/${signalsRes.status}/${blockedRes.status}/${paperRes.status})`,
                 );
             }
-            const summaryJson = (await summaryRes.json()) as SummaryResponse;
+
             const rawJson = (await rawRes.json()) as RawResponse;
             const signalJson = (await signalsRes.json()) as RawSignalResponse;
             const blockedJson = (await blockedRes.json()) as RawBlockedResponse;
-            setSummary(
-                Array.isArray(summaryJson.summary) ? summaryJson.summary : [],
-            );
+            const paperJson = (await paperRes.json()) as RawPaperTradeResponse;
             setRawRows(Array.isArray(rawJson.rows) ? rawJson.rows : []);
             setSignalRows(
                 Array.isArray(signalJson.rows) ? signalJson.rows : [],
@@ -142,6 +225,7 @@ export default function OpportunitiesDashboard() {
             setBlockedRows(
                 Array.isArray(blockedJson.rows) ? blockedJson.rows : [],
             );
+            setPaperRows(Array.isArray(paperJson.rows) ? paperJson.rows : []);
         } catch (e) {
             setError(
                 e instanceof Error ? e.message : "Failed to load analytics",
@@ -151,40 +235,150 @@ export default function OpportunitiesDashboard() {
         }
     };
 
+    const loadPipelineEv = async () => {
+        setPipelineError("");
+        try {
+            const tickerFilter =
+                chartScope === "all" || ticker === "ALL"
+                    ? ""
+                    : `&ticker=${ticker}`;
+            const res = await apiFetch(
+                `/api/stats/pipeline/ev-curve?min_count=20${tickerFilter}`,
+            );
+            if (!res.ok) {
+                throw new Error(
+                    `Failed to load pipeline curve (${res.status})`,
+                );
+            }
+            const json = (await res.json()) as PipelineEvResponse;
+            setPipelineEv(json);
+        } catch (e) {
+            setPipelineError(
+                e instanceof Error
+                    ? e.message
+                    : "Failed to load pipeline curve",
+            );
+            setPipelineEv(null);
+        }
+    };
+
     useEffect(() => {
         loadData();
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [days, ticker]);
+    }, [days]);
+
+    useEffect(() => {
+        loadPipelineEv();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [ticker, chartScope]);
+
+    const rowsInWindow = useMemo(() => {
+        return rawRows.filter((row) => {
+            if (!inLastDays(row.closed_at_utc, days)) return false;
+            if (regimeFilter === "weekday" && isWeekendUtc(row.closed_at_utc)) {
+                return false;
+            }
+            if (
+                regimeFilter === "weekend" &&
+                !isWeekendUtc(row.closed_at_utc)
+            ) {
+                return false;
+            }
+            return true;
+        });
+    }, [rawRows, days, regimeFilter]);
+
+    const signalRowsInWindow = useMemo(() => {
+        return signalRows.filter((row) => {
+            if (!inLastDays(row.detected_at_utc, days)) return false;
+            if (
+                regimeFilter === "weekday" &&
+                isWeekendUtc(row.detected_at_utc)
+            ) {
+                return false;
+            }
+            if (
+                regimeFilter === "weekend" &&
+                !isWeekendUtc(row.detected_at_utc)
+            ) {
+                return false;
+            }
+            return true;
+        });
+    }, [signalRows, days, regimeFilter]);
+
+    const blockedRowsInWindow = useMemo(() => {
+        return blockedRows.filter((row) => {
+            if (!inLastDays(row.detected_at_utc, days)) return false;
+            if (
+                regimeFilter === "weekday" &&
+                isWeekendUtc(row.detected_at_utc)
+            ) {
+                return false;
+            }
+            if (
+                regimeFilter === "weekend" &&
+                !isWeekendUtc(row.detected_at_utc)
+            ) {
+                return false;
+            }
+            return true;
+        });
+    }, [blockedRows, days, regimeFilter]);
 
     const filteredRows = useMemo(() => {
-        if (regimeFilter === "all") return rawRows;
-        return rawRows.filter((row) => {
-            const dt = new Date(row.closed_at_utc);
-            const day = dt.getUTCDay();
-            const regime = day === 0 || day === 6 ? "weekend" : "weekday";
-            return regime === regimeFilter;
-        });
-    }, [rawRows, regimeFilter]);
-
-    const filteredBlockedRows = useMemo(() => {
-        if (regimeFilter === "all") return blockedRows;
-        return blockedRows.filter((row) => {
-            const dt = new Date(row.detected_at_utc);
-            const day = dt.getUTCDay();
-            const regime = day === 0 || day === 6 ? "weekend" : "weekday";
-            return regime === regimeFilter;
-        });
-    }, [blockedRows, regimeFilter]);
+        if (ticker === "ALL") return rowsInWindow;
+        return rowsInWindow.filter(
+            (row) => String(row.ticker || "").toUpperCase() === ticker,
+        );
+    }, [rowsInWindow, ticker]);
 
     const filteredSignalRows = useMemo(() => {
-        if (regimeFilter === "all") return signalRows;
-        return signalRows.filter((row) => {
-            const dt = new Date(row.detected_at_utc);
-            const day = dt.getUTCDay();
-            const regime = day === 0 || day === 6 ? "weekend" : "weekday";
-            return regime === regimeFilter;
+        if (ticker === "ALL") return signalRowsInWindow;
+        return signalRowsInWindow.filter(
+            (row) => String(row.ticker || "").toUpperCase() === ticker,
+        );
+    }, [signalRowsInWindow, ticker]);
+
+    const filteredBlockedRows = useMemo(() => {
+        if (ticker === "ALL") return blockedRowsInWindow;
+        return blockedRowsInWindow.filter(
+            (row) => String(row.ticker || "").toUpperCase() === ticker,
+        );
+    }, [blockedRowsInWindow, ticker]);
+
+    const paperRowsInWindow = useMemo(() => {
+        return paperRows.filter((row) => {
+            if (!inLastDays(row.decision_time, days)) return false;
+            if (regimeFilter === "weekday" && isWeekendUtc(row.decision_time)) {
+                return false;
+            }
+            if (
+                regimeFilter === "weekend" &&
+                !isWeekendUtc(row.decision_time)
+            ) {
+                return false;
+            }
+            return true;
         });
-    }, [signalRows, regimeFilter]);
+    }, [paperRows, days, regimeFilter]);
+
+    const filteredPaperRows = useMemo(() => {
+        if (ticker === "ALL") return paperRowsInWindow;
+        return paperRowsInWindow.filter(
+            (row) => String(row.ticker || "").toUpperCase() === ticker,
+        );
+    }, [paperRowsInWindow, ticker]);
+
+    const chartRows = useMemo(() => {
+        if (chartScope === "all") return rowsInWindow;
+        return filteredRows;
+    }, [chartScope, rowsInWindow, filteredRows]);
+
+    const chartSignalRows = useMemo(() => {
+        if (chartScope === "all") return signalRowsInWindow;
+        return filteredSignalRows;
+    }, [chartScope, signalRowsInWindow, filteredSignalRows]);
 
     const totals = useMemo(() => {
         let signals = 0;
@@ -213,7 +407,6 @@ export default function OpportunitiesDashboard() {
     }, [filteredSignalRows, filteredBlockedRows]);
 
     const summaryForView = useMemo(() => {
-        if (regimeFilter === "all") return summary;
         const acc: Record<
             string,
             { ticker: string; signals: number; wins: number; pnl: number }
@@ -234,14 +427,12 @@ export default function OpportunitiesDashboard() {
                 wins: r.wins,
                 hit_rate_pct: r.signals > 0 ? (r.wins / r.signals) * 100 : 0,
                 total_pnl_usd: r.pnl,
-                avg_edge_pct: 0,
-                avg_minutes_to_close: 0,
             }))
             .sort(
                 (a, b) =>
                     b.signals - a.signals || a.ticker.localeCompare(b.ticker),
             );
-    }, [summary, filteredRows, regimeFilter]);
+    }, [filteredRows]);
 
     const bySide = useMemo(() => {
         const acc: Record<string, { n: number; wins: number; pnl: number }> = {
@@ -278,16 +469,200 @@ export default function OpportunitiesDashboard() {
             weekday: { n: 0, wins: 0, pnl: 0 },
             weekend: { n: 0, wins: 0, pnl: 0 },
         };
-        for (const row of rawRows) {
-            const dt = new Date(row.closed_at_utc);
-            const day = dt.getUTCDay();
-            const regime = day === 0 || day === 6 ? "weekend" : "weekday";
+        for (const row of filteredRows) {
+            const regime = isWeekendUtc(row.closed_at_utc)
+                ? "weekend"
+                : "weekday";
             acc[regime].n += 1;
             acc[regime].wins += asNumber(row.won);
             acc[regime].pnl += asNumber(row.pnl_usd);
         }
         return acc;
-    }, [rawRows]);
+    }, [filteredRows]);
+
+    const signalProbById = useMemo(() => {
+        const map = new Map<string, number>();
+        for (const row of chartSignalRows) {
+            const prob = asNumber(row.quant_prob_side);
+            if (prob >= 0 && prob <= 1) {
+                map.set(row.signal_id, prob);
+            }
+        }
+        return map;
+    }, [chartSignalRows]);
+
+    const calibrationBuckets = useMemo(() => {
+        const buckets = Array.from({ length: 10 }, (_, idx) => ({
+            key: `bucket-${idx}`,
+            rangeLabel: calibrationRangeLabel(idx),
+            n: 0,
+            wins: 0,
+            probSum: 0,
+        }));
+        for (const row of chartRows) {
+            const prob = signalProbById.get(row.signal_id);
+            if (typeof prob !== "number" || !Number.isFinite(prob)) continue;
+            const idx = Math.min(9, Math.floor(prob * 10));
+            const bucket = buckets[idx];
+            bucket.n += 1;
+            bucket.wins += asNumber(row.won);
+            bucket.probSum += prob;
+        }
+        return buckets
+            .filter((b) => b.n > 0)
+            .map(
+                (b): CalibrationBucket => ({
+                    key: b.key,
+                    rangeLabel: b.rangeLabel,
+                    n: b.n,
+                    expectedPct: (b.probSum / b.n) * 100,
+                    actualPct: (b.wins / b.n) * 100,
+                }),
+            );
+    }, [chartRows, signalProbById]);
+
+    const calibrationMae = useMemo(() => {
+        if (!calibrationBuckets.length) return 0;
+        const weightedError = calibrationBuckets.reduce(
+            (acc, b) => acc + Math.abs(b.actualPct - b.expectedPct) * b.n,
+            0,
+        );
+        const totalN = calibrationBuckets.reduce((acc, b) => acc + b.n, 0);
+        return totalN > 0 ? weightedError / totalN : 0;
+    }, [calibrationBuckets]);
+
+    const edgeBuckets = useMemo(() => {
+        const rows: EdgeBucket[] = EDGE_BUCKETS.map((b) => ({
+            key: b.key,
+            label: b.label,
+            n: 0,
+            wins: 0,
+            pnl: 0,
+        }));
+        for (const row of chartRows) {
+            const edge = asNumber(row.edge_pct_at_signal);
+            const idx = EDGE_BUCKETS.findIndex(
+                (b) => edge >= b.min && edge < b.max,
+            );
+            if (idx < 0) continue;
+            rows[idx].n += 1;
+            rows[idx].wins += asNumber(row.won);
+            rows[idx].pnl += asNumber(row.pnl_usd);
+        }
+        return rows;
+    }, [chartRows]);
+
+    const equityPoints = useMemo(() => {
+        const rows = chartRows
+            .slice()
+            .sort(
+                (a, b) =>
+                    new Date(a.closed_at_utc).getTime() -
+                    new Date(b.closed_at_utc).getTime(),
+            );
+
+        let equity = 0;
+        let peak = 0;
+        const points: EquityDrawdownPoint[] = [];
+        for (const row of rows) {
+            equity += asNumber(row.pnl_usd);
+            peak = Math.max(peak, equity);
+            const drawdownPct = peak > 0 ? ((equity - peak) / peak) * 100 : 0;
+            points.push({
+                ts: row.closed_at_utc,
+                equity,
+                drawdownPct,
+            });
+        }
+        return points;
+    }, [chartRows]);
+
+    const equityMetrics = useMemo(() => {
+        const last = equityPoints[equityPoints.length - 1];
+        const maxDd = equityPoints.reduce(
+            (acc, p) => Math.min(acc, p.drawdownPct),
+            0,
+        );
+        return {
+            finalEquity: last?.equity ?? 0,
+            maxDrawdownPct: maxDd,
+        };
+    }, [equityPoints]);
+
+    const pipelineEvPoints = useMemo<EquityDrawdownPoint[]>(() => {
+        const rows = pipelineEv?.points || [];
+        const base = Date.UTC(2020, 0, 1, 0, 0, 0);
+        return rows.map((row, idx) => ({
+            ts: new Date(base + idx * 1000).toISOString(),
+            equity: asNumber(row.cumulative_ev),
+            drawdownPct: asNumber(row.drawdown_pct),
+        }));
+    }, [pipelineEv]);
+
+    const paperMetrics = useMemo(() => {
+        const resolved = filteredPaperRows.filter(
+            (r) => r.status === "resolved",
+        );
+        const pending = filteredPaperRows.length - resolved.length;
+        const totalPnl = resolved.reduce(
+            (acc, r) => acc + asNumber(r.pnl_simulated),
+            0,
+        );
+        const avgQe = filteredPaperRows.length
+            ? filteredPaperRows.reduce(
+                  (acc, r) => acc + asNumber(r.QuantumEdge),
+                  0,
+              ) / filteredPaperRows.length
+            : 0;
+        return {
+            total: filteredPaperRows.length,
+            resolved: resolved.length,
+            pending,
+            totalPnl,
+            avgQePct: avgQe * 100,
+        };
+    }, [filteredPaperRows]);
+
+    const paperEquityPoints = useMemo<EquityDrawdownPoint[]>(() => {
+        const rows = filteredPaperRows
+            .filter((r) => r.status === "resolved")
+            .slice()
+            .sort(
+                (a, b) =>
+                    new Date(a.decision_time).getTime() -
+                    new Date(b.decision_time).getTime(),
+            );
+
+        let equity = 0;
+        let peak = 0;
+        let lastTsMs = Number.NEGATIVE_INFINITY;
+        return rows.map((row) => {
+            equity += asNumber(row.pnl_simulated);
+            peak = Math.max(peak, equity);
+            const drawdownPct = peak > 0 ? ((equity - peak) / peak) * 100 : 0;
+            let tsMs = new Date(row.decision_time).getTime();
+            if (!Number.isFinite(tsMs)) tsMs = Date.now();
+            if (tsMs <= lastTsMs) tsMs = lastTsMs + 1;
+            lastTsMs = tsMs;
+            return {
+                ts: new Date(tsMs).toISOString(),
+                equity,
+                drawdownPct,
+            };
+        });
+    }, [filteredPaperRows]);
+
+    const paperEquityMetrics = useMemo(() => {
+        const last = paperEquityPoints[paperEquityPoints.length - 1];
+        const maxDd = paperEquityPoints.reduce(
+            (acc, p) => Math.min(acc, p.drawdownPct),
+            0,
+        );
+        return {
+            finalEquity: last?.equity ?? 0,
+            maxDrawdownPct: maxDd,
+        };
+    }, [paperEquityPoints]);
 
     return (
         <main className="analytics-page">
@@ -333,12 +708,36 @@ export default function OpportunitiesDashboard() {
                         ))}
                     </select>
                 </label>
-                <button onClick={loadData} disabled={loading}>
+                <label>
+                    Charts
+                    <select
+                        value={chartScope}
+                        onChange={(e) =>
+                            setChartScope(e.target.value as ChartScope)
+                        }
+                    >
+                        {CHART_SCOPE_OPTIONS.map((value) => (
+                            <option key={value.value} value={value.value}>
+                                {value.label}
+                            </option>
+                        ))}
+                    </select>
+                </label>
+                <button
+                    onClick={() => {
+                        void loadData();
+                        void loadPipelineEv();
+                    }}
+                    disabled={loading}
+                >
                     {loading ? "Refreshing..." : "Refresh"}
                 </button>
             </section>
 
             {error && <div className="analytics-error">{error}</div>}
+            {pipelineError && (
+                <div className="analytics-error">{pipelineError}</div>
+            )}
 
             <section className="analytics-kpis">
                 <article className="analytics-kpi-card">
@@ -383,6 +782,230 @@ export default function OpportunitiesDashboard() {
                     <div className="kpi-value">
                         {opportunityFunnel.executablePct.toFixed(2)}%
                     </div>
+                </article>
+            </section>
+
+            <section className="analytics-charts-grid">
+                <article className="analytics-panel">
+                    <h3>Calibration (Predicted vs Real)</h3>
+                    <div className="analytics-chart-help">
+                        <div>How to read</div>
+                        <ul>
+                            <li>
+                                If real win rate is near predicted, the model is
+                                calibrated.
+                            </li>
+                            <li>
+                                Large gap means probabilities are
+                                over/under-estimated.
+                            </li>
+                            <li>Bins with very low n are weak evidence.</li>
+                        </ul>
+                    </div>
+                    <div className="analytics-mini-kpis">
+                        <span>Bins: {calibrationBuckets.length}</span>
+                        <span>
+                            Weighted MAE: {calibrationMae.toFixed(2)} pts
+                        </span>
+                    </div>
+                    <div className="analytics-calibration-list">
+                        {calibrationBuckets.length === 0 && (
+                            <div className="analytics-empty">
+                                No data with `quant_prob_side` in selected
+                                window.
+                            </div>
+                        )}
+                        {calibrationBuckets.map((bucket) => (
+                            <div className="cal-row" key={bucket.key}>
+                                <div className="cal-meta">
+                                    <span>{bucket.rangeLabel}</span>
+                                    <span>n={bucket.n}</span>
+                                </div>
+                                <div className="cal-bars">
+                                    <div
+                                        className="cal-bar cal-bar-expected"
+                                        style={{
+                                            width: `${bucket.expectedPct}%`,
+                                        }}
+                                    />
+                                    <div
+                                        className="cal-bar cal-bar-actual"
+                                        style={{
+                                            width: `${bucket.actualPct}%`,
+                                        }}
+                                    />
+                                </div>
+                                <div className="cal-values">
+                                    <span>
+                                        E {bucket.expectedPct.toFixed(1)}%
+                                    </span>
+                                    <span>
+                                        A {bucket.actualPct.toFixed(1)}%
+                                    </span>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </article>
+
+                <article className="analytics-panel">
+                    <h3>Edge Buckets vs Outcome</h3>
+                    <div className="analytics-chart-help">
+                        <div>How to read</div>
+                        <ul>
+                            <li>
+                                Higher edge buckets should improve hit rate and
+                                avg pnl.
+                            </li>
+                            <li>
+                                If monotonicity breaks, edge filter is not
+                                monetizing.
+                            </li>
+                            <li>
+                                Use n to avoid overfitting on sparse buckets.
+                            </li>
+                        </ul>
+                    </div>
+                    <table className="analytics-table">
+                        <thead>
+                            <tr>
+                                <th>Edge Bucket</th>
+                                <th>Signals</th>
+                                <th>Hit Rate</th>
+                                <th>Total PnL</th>
+                                <th>Avg PnL</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {edgeBuckets.map((bucket) => {
+                                const hitRate =
+                                    bucket.n > 0
+                                        ? (bucket.wins / bucket.n) * 100
+                                        : 0;
+                                const avgPnl =
+                                    bucket.n > 0 ? bucket.pnl / bucket.n : 0;
+                                return (
+                                    <tr key={bucket.key}>
+                                        <td>{bucket.label}</td>
+                                        <td>{bucket.n}</td>
+                                        <td>{hitRate.toFixed(2)}%</td>
+                                        <td>${bucket.pnl.toFixed(2)}</td>
+                                        <td>${avgPnl.toFixed(2)}</td>
+                                    </tr>
+                                );
+                            })}
+                        </tbody>
+                    </table>
+                </article>
+
+                <article className="analytics-panel analytics-panel-wide">
+                    <h3>Equity Curve + Drawdown</h3>
+                    <div className="analytics-chart-help">
+                        <div>How to read</div>
+                        <ul>
+                            <li>Equity should trend up over enough samples.</li>
+                            <li>
+                                Drawdown shows capital pain during losing
+                                streaks.
+                            </li>
+                            <li>
+                                Business quality = positive equity with
+                                tolerable drawdown.
+                            </li>
+                        </ul>
+                    </div>
+                    <div className="analytics-mini-kpis">
+                        <span>
+                            Final Equity: $
+                            {equityMetrics.finalEquity.toFixed(2)}
+                        </span>
+                        <span>
+                            Max Drawdown:{" "}
+                            {equityMetrics.maxDrawdownPct.toFixed(2)}%
+                        </span>
+                    </div>
+                    <EquityDrawdownChart points={equityPoints} />
+                </article>
+
+                <article className="analytics-panel analytics-panel-wide">
+                    <h3>Pipeline EV Curve (In-Sample)</h3>
+                    <div className="analytics-chart-help">
+                        <div>How to read</div>
+                        <ul>
+                            <li>
+                                This uses only
+                                `merged_pm_5m_slot_ranges_4cryptos.csv`.
+                            </li>
+                            <li>
+                                It is model in-sample EV, not live execution
+                                PnL.
+                            </li>
+                            <li>
+                                X-axis is ranked bins (slot/range), not
+                                wall-clock time.
+                            </li>
+                        </ul>
+                    </div>
+                    <div className="analytics-mini-kpis">
+                        <span>
+                            Source rows: {pipelineEv?.points_count ?? 0}
+                        </span>
+                        <span>
+                            Total samples: {pipelineEv?.total_samples ?? 0}
+                        </span>
+                        <span>
+                            Avg EV/Trade:{" "}
+                            {(pipelineEv?.avg_ev_per_trade_pct ?? 0).toFixed(2)}
+                            %
+                        </span>
+                        <span>
+                            Final Cum EV:{" "}
+                            {(pipelineEv?.final_cumulative_ev ?? 0).toFixed(2)}
+                        </span>
+                        <span>
+                            Max DD:{" "}
+                            {(pipelineEv?.max_drawdown_pct ?? 0).toFixed(2)}%
+                        </span>
+                    </div>
+                    <EquityDrawdownChart points={pipelineEvPoints} />
+                </article>
+
+                <article className="analytics-panel analytics-panel-wide">
+                    <h3>Paper Mode Equity + Drawdown (Execution Proxy)</h3>
+                    <div className="analytics-chart-help">
+                        <div>How to read</div>
+                        <ul>
+                            <li>
+                                Source: `backtest_output/paper_trades.csv`
+                                generated by bot in paper mode.
+                            </li>
+                            <li>
+                                `QuantumEdge = prob_side -
+                                marketProb_at_decision`.
+                            </li>
+                            <li>
+                                `pnl_simulated` is resolved at event close and
+                                uses decision-time price as fill proxy.
+                            </li>
+                        </ul>
+                    </div>
+                    <div className="analytics-mini-kpis">
+                        <span>Total decisions: {paperMetrics.total}</span>
+                        <span>Resolved: {paperMetrics.resolved}</span>
+                        <span>Pending: {paperMetrics.pending}</span>
+                        <span>
+                            Avg QuantumEdge: {paperMetrics.avgQePct.toFixed(2)}%
+                        </span>
+                        <span>
+                            Final Equity: $
+                            {paperEquityMetrics.finalEquity.toFixed(2)}
+                        </span>
+                        <span>
+                            Max DD:{" "}
+                            {paperEquityMetrics.maxDrawdownPct.toFixed(2)}%
+                        </span>
+                    </div>
+                    <EquityDrawdownChart points={paperEquityPoints} />
                 </article>
             </section>
 
@@ -500,6 +1123,87 @@ export default function OpportunitiesDashboard() {
                         </tbody>
                     </table>
                 </article>
+            </section>
+
+            <section className="analytics-panel">
+                <h3>Paper Decisions (Raw)</h3>
+                <div className="analytics-chart-help">
+                    <div>How to extract</div>
+                    <ul>
+                        <li>
+                            API: `GET
+                            /api/stats/paper/raw?limit=5000&ticker=BTC`
+                        </li>
+                        <li>CSV file: `backtest_output/paper_trades.csv`</li>
+                        <li>
+                            Focus columns: `decision_time`, `slot`, `range`,
+                            `prob_up`, `marketProb_at_decision`, `QuantumEdge`,
+                            `side_taken`, `event_outcome_real`, `pnl_simulated`.
+                        </li>
+                    </ul>
+                </div>
+                <table className="analytics-table">
+                    <thead>
+                        <tr>
+                            <th>Decision (UTC)</th>
+                            <th>Ticker</th>
+                            <th>Slot</th>
+                            <th>Range</th>
+                            <th>Prob UP</th>
+                            <th>Market Prob</th>
+                            <th>QE</th>
+                            <th>Side</th>
+                            <th>Outcome</th>
+                            <th>PnL Sim</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {filteredPaperRows
+                            .slice()
+                            .reverse()
+                            .slice(0, 50)
+                            .map((row) => (
+                                <tr key={row.decision_id}>
+                                    <td>
+                                        {row.decision_time
+                                            .replace("T", " ")
+                                            .slice(0, 19)}
+                                    </td>
+                                    <td>{row.ticker}</td>
+                                    <td>{row.slot || "n/a"}</td>
+                                    <td>{row.range || "n/a"}</td>
+                                    <td>{asNumber(row.prob_up).toFixed(4)}</td>
+                                    <td>
+                                        {asNumber(
+                                            row.marketProb_at_decision,
+                                        ).toFixed(4)}
+                                    </td>
+                                    <td>
+                                        {(
+                                            asNumber(row.QuantumEdge) * 100
+                                        ).toFixed(2)}
+                                        %
+                                    </td>
+                                    <td>
+                                        {String(row.side_taken).toUpperCase()}
+                                    </td>
+                                    <td>
+                                        {row.event_outcome_real
+                                            ? String(
+                                                  row.event_outcome_real,
+                                              ).toUpperCase()
+                                            : "pending"}
+                                    </td>
+                                    <td>
+                                        $
+                                        {asNumber(row.pnl_simulated).toFixed(2)}
+                                    </td>
+                                    <td>{row.status}</td>
+                                </tr>
+                            ))}
+                    </tbody>
+                </table>
             </section>
 
             <section className="analytics-panel">

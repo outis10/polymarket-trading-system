@@ -8,14 +8,15 @@
     "bot_max_buys_per_event_side": 3,
     "bot_max_event_exposure_pct": 15,
     "bot_max_ticker_exposure_pct": 25,
-    "bot_min_seconds_before_end": 20,
+    "bot_min_seconds_before_end": 15,
     "bot_order_notional_cap_usd": 5,
+    "bot_paper_mode": true,
     "bot_risk_enabled": true,
     "chart_options": [
       "hide_probabilities_card"
     ],
     "early_quant_gate_edge_vs_ask_enabled": false,
-    "early_quant_gate_min_diff_pct": 0.01,
+    "early_quant_gate_min_diff_pct": 0,
     "early_quant_gate_min_edge_pct": 4,
     "early_quant_gate_min_edge_vs_ask_pct": 2,
     "early_quant_gate_min_prob": 0,
@@ -26,9 +27,11 @@
     "kelly_bankroll": 100,
     "kelly_enabled": true,
     "kelly_fraction": 0.55,
+    "kelly_live_bankroll_usd": 100,
     "kelly_max_bet_pct": 25,
     "kelly_max_event_exposure_pct": 25,
     "kelly_min_edge_pct": 0.5,
+    "kelly_paper_bankroll_usd": 1000,
     "late_quant_gate_edge_vs_ask_enabled": false,
     "late_quant_gate_min_diff_pct": 0,
     "late_quant_gate_min_edge_pct": 4,
@@ -49,12 +52,12 @@
     "quant_gate_edge_vs_ask_enabled": true,
     "quant_gate_enabled": true,
     "quant_gate_max_price_c": 90,
-    "quant_gate_min_diff_pct": 0.05,
+    "quant_gate_min_diff_pct": 0,
     "quant_gate_min_edge_pct": 4,
     "quant_gate_min_edge_vs_ask_pct": 4,
     "quant_gate_min_price_c": 10,
-    "quant_gate_min_prob": 0.5,
-    "quant_gate_min_sample": 80,
+    "quant_gate_min_prob": 0,
+    "quant_gate_min_sample": 30,
     "quant_gate_min_sample_strong_signal": 20,
     "quant_gate_percentile_high": 85,
     "quant_gate_percentile_low": 15,
@@ -62,7 +65,7 @@
     "quant_gate_use_percentile": false,
     "refresh_rate": 1,
     "timeframe_filter": "5m",
-    "trading_mode": "manual"
+    "trading_mode": "bot"
   },
-  "updated_at_utc": "2026-02-24T04:27:09.278077+00:00"
+  "updated_at_utc": "2026-02-25T06:10:41.614931+00:00"
 }

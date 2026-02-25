@@ -112,7 +112,12 @@ class SettingsData(BaseModel):
     chart_options: list[str] = ["show_chart"]
     kelly_enabled: bool = True
     kelly_fraction: float = 0.25
+    # Legacy fallback bankroll (kept for backward compatibility).
     kelly_bankroll: float = 100.0
+    # Manual bankroll used for live sizing when API balance is unavailable.
+    kelly_live_bankroll_usd: float = 100.0
+    # Manual bankroll used for paper-mode sizing.
+    kelly_paper_bankroll_usd: float = 100.0
     kelly_min_edge_pct: float = 0.5
     kelly_max_bet_pct: float = 25.0
     kelly_max_event_exposure_pct: float = 25.0
@@ -154,6 +159,7 @@ class SettingsData(BaseModel):
     bot_max_event_exposure_pct: float = 15.0
     bot_max_ticker_exposure_pct: float = 25.0
     bot_order_notional_cap_usd: float = 5.0
+    bot_paper_mode: bool = False
     pm_min_shares: float = 5.0
     pm_min_notional_usd: float = 1.0
     # Order book streaming controls
