@@ -95,6 +95,14 @@ async def websocket_events(websocket: WebSocket):
                         event_manager.settings["kelly_paper_bankroll_usd"] = float(
                             settings["kelly_paper_bankroll_usd"]
                         )
+                    if "paper_compound_enabled" in settings:
+                        event_manager.settings["paper_compound_enabled"] = bool(
+                            settings["paper_compound_enabled"]
+                        )
+                    if "paper_current_bankroll_usd" in settings:
+                        event_manager.settings["paper_current_bankroll_usd"] = float(
+                            settings["paper_current_bankroll_usd"]
+                        )
                     if "kelly_min_edge_pct" in settings:
                         event_manager.settings["kelly_min_edge_pct"] = float(
                             settings["kelly_min_edge_pct"]

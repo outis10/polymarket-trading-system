@@ -118,6 +118,10 @@ class SettingsData(BaseModel):
     kelly_live_bankroll_usd: float = 100.0
     # Manual bankroll used for paper-mode sizing.
     kelly_paper_bankroll_usd: float = 100.0
+    # If true, paper bankroll compounds with resolved pnl_simulated.
+    paper_compound_enabled: bool = True
+    # Current bankroll used by paper compounding mode.
+    paper_current_bankroll_usd: float = 100.0
     kelly_min_edge_pct: float = 0.5
     kelly_max_bet_pct: float = 25.0
     kelly_max_event_exposure_pct: float = 25.0

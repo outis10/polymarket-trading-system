@@ -538,6 +538,46 @@ export default function Sidebar({ send }: SidebarProps) {
                         }
                     />
 
+                    <label
+                        className="chart-option"
+                        title="Si está activo, el bankroll paper se actualiza con el pnl simulado de cada trade resuelto."
+                    >
+                        <input
+                            type="checkbox"
+                            checked={settings.paper_compound_enabled ?? true}
+                            onChange={(e) =>
+                                handleKellySettingChange({
+                                    paper_compound_enabled: e.target.checked,
+                                })
+                            }
+                        />
+                        Paper Compound Bankroll
+                    </label>
+
+                    <label className="field-label">
+                        Paper Current Bankroll ($)
+                    </label>
+                    <input
+                        className="sidebar-number-input"
+                        type="number"
+                        min={0}
+                        step={1}
+                        value={
+                            settings.paper_current_bankroll_usd ??
+                            settings.kelly_paper_bankroll_usd ??
+                            settings.kelly_live_bankroll_usd ??
+                            settings.kelly_bankroll ??
+                            100
+                        }
+                        onChange={(e) =>
+                            handleKellySettingChange({
+                                paper_current_bankroll_usd: Number(
+                                    e.target.value || 0,
+                                ),
+                            })
+                        }
+                    />
+
                     <label className="field-label">Kelly Fraction</label>
                     <input
                         type="range"

@@ -228,6 +228,8 @@ class EventManager:
             "kelly_bankroll": 100.0,
             "kelly_live_bankroll_usd": 100.0,
             "kelly_paper_bankroll_usd": 100.0,
+            "paper_compound_enabled": True,
+            "paper_current_bankroll_usd": 100.0,
             "kelly_min_edge_pct": 0.5,
             "kelly_max_bet_pct": 25.0,
             "kelly_max_event_exposure_pct": 25.0,
@@ -432,6 +434,13 @@ class EventManager:
                 self.settings["kelly_paper_bankroll_usd"] = float(
                     persisted_settings.get("kelly_bankroll", 100.0) or 100.0
                 )
+            if (
+                "kelly_paper_bankroll_usd" in persisted_settings
+                and "paper_current_bankroll_usd" not in persisted_settings
+            ):
+                self.settings["paper_current_bankroll_usd"] = float(
+                    persisted_settings.get("kelly_paper_bankroll_usd", 100.0) or 100.0
+                )
             self.settings["mode"] = self.mode
 
     def _get_live_manual_bankroll_usd(self) -> float:
@@ -446,6 +455,16 @@ class EventManager:
         if isinstance(paper, (int, float)) and float(paper) > 0:
             return float(paper)
         return self._get_live_manual_bankroll_usd()
+
+    def _get_paper_effective_bankroll_usd(self) -> float:
+        base = self._get_paper_manual_bankroll_usd()
+        if not bool(self.settings.get("paper_compound_enabled", True)):
+            return base
+        current = self.settings.get("paper_current_bankroll_usd")
+        if isinstance(current, (int, float)) and float(current) > 0:
+            return float(current)
+        self.settings["paper_current_bankroll_usd"] = base
+        return base
 
     def persist_runtime_settings(self) -> None:
         """Persist current runtime mode/settings for restart continuity."""
@@ -1437,6 +1456,7 @@ class EventManager:
             return
 
         changed = False
+        resolved_pnl_delta = 0.0
         for row in rows:
             status = str(row.get("status", "")).strip().lower()
             if status == "resolved":
@@ -1475,6 +1495,7 @@ class EventManager:
             row["pnl_simulated"] = f"{pnl:.6f}"
             row["status"] = "resolved"
             changed = True
+            resolved_pnl_delta += pnl
 
         if changed:
             with open(_PAPER_TRADES_LOG_PATH, "w", newline="") as f:
@@ -1484,6 +1505,13 @@ class EventManager:
                     writer.writerow(
                         {k: row.get(k, "") for k in _PAPER_TRADES_FIELDNAMES}
                     )
+            if bool(self.settings.get("paper_compound_enabled", True)):
+                current = self.settings.get("paper_current_bankroll_usd")
+                if not isinstance(current, (int, float)) or float(current) <= 0:
+                    current = self._get_paper_manual_bankroll_usd()
+                new_value = max(0.0, float(current) + float(resolved_pnl_delta))
+                self.settings["paper_current_bankroll_usd"] = round(new_value, 6)
+                self.persist_runtime_settings()
 
     @staticmethod
     def _clean_old_order_records(records: list[dict], now_utc: datetime) -> list[dict]:
@@ -2828,7 +2856,7 @@ class EventManager:
                 )
                 kelly_pct = min(raw_kelly * fraction, max_bet_pct, max_event_pct)
                 bankroll = (
-                    self._get_paper_manual_bankroll_usd()
+                    self._get_paper_effective_bankroll_usd()
                     if paper_mode_enabled
                     else self._get_live_manual_bankroll_usd()
                 )

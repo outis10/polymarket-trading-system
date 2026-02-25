@@ -716,6 +716,20 @@ Implementar modulo Kelly configurable desde Settings:
 - UI Sidebar:
   - `Kelly Settings` ahora muestra `Live Manual Bankroll ($)` y `Paper Bankroll ($)`.
 
+## Estado actualizado (2026-02-25, paper compounding bankroll)
+
+- Paper mode ahora soporta compounding de bankroll:
+  - setting `paper_compound_enabled` (default `true`),
+  - setting `paper_current_bankroll_usd` (se actualiza con `pnl_simulated` al resolver trades paper).
+- Sizing en paper:
+  - si compounding está ON: usa `paper_current_bankroll_usd`,
+  - si está OFF: usa `kelly_paper_bankroll_usd` fijo.
+- Persistencia:
+  - `paper_current_bankroll_usd` se guarda en `config/runtime_settings.json`.
+- Sidebar:
+  - nuevo toggle `Paper Compound Bankroll`,
+  - input `Paper Current Bankroll ($)` para reset/manual override.
+
 ## Estado actualizado (2026-02-25, script reset de logs para paper)
 
 - Nuevo script: `scripts/reset_logs_for_paper.sh`
