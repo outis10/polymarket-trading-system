@@ -772,6 +772,14 @@ Implementar modulo Kelly configurable desde Settings:
     - `total rows`, `placed`, `failed`, `with fill price`,
       `avg edge@send`, `avg edge@fill`.
 
+## Estado actualizado (2026-02-25, shares_simulated en paper trades)
+
+- `paper_trades.csv` agrega columna `shares_simulated` (`stake_usd / marketProb_at_decision`).
+- Se agregó migración de schema para `paper_trades.csv` existente (header viejo -> nuevo).
+- Analytics (`Paper Decisions`) ahora muestra columnas:
+  - `Stake $`
+  - `Shares`
+
 ## Estado actualizado (2026-02-25, fix label event_outcome con exclude-last-slot)
 
 - Script afectado: `aggregate_pm_5m_slot_ranges.py`.

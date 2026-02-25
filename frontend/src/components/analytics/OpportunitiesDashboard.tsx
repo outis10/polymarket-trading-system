@@ -69,6 +69,8 @@ interface RawPaperTrade {
     event_id: string;
     ticker: string;
     event_end_utc: string;
+    stake_usd: string;
+    shares_simulated?: string;
     slot: string;
     range: string;
     prob_up: string;
@@ -1239,6 +1241,8 @@ export default function OpportunitiesDashboard() {
                             <th>Range</th>
                             <th>Prob UP</th>
                             <th>Market Prob</th>
+                            <th>Stake $</th>
+                            <th>Shares</th>
                             <th>QE</th>
                             <th>Side</th>
                             <th>Outcome</th>
@@ -1266,6 +1270,16 @@ export default function OpportunitiesDashboard() {
                                         {asNumber(
                                             row.marketProb_at_decision,
                                         ).toFixed(4)}
+                                    </td>
+                                    <td>
+                                        ${asNumber(row.stake_usd).toFixed(2)}
+                                    </td>
+                                    <td>
+                                        {asNumber(row.shares_simulated) > 0
+                                            ? asNumber(
+                                                  row.shares_simulated,
+                                              ).toFixed(4)
+                                            : "n/a"}
                                     </td>
                                     <td>
                                         {(

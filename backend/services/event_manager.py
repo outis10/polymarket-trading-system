@@ -67,6 +67,7 @@ _PAPER_TRADES_FIELDNAMES = [
     "price_to_beat_at_decision",
     "close_price_at_resolution",
     "stake_usd",
+    "shares_simulated",
     "slot",
     "range",
     "prob_up",
@@ -205,6 +206,30 @@ def _extract_fill_price_from_result(result: Any) -> float | None:
 def _ensure_paper_trades_csv() -> None:
     os.makedirs(os.path.dirname(_PAPER_TRADES_LOG_PATH), exist_ok=True)
     if os.path.exists(_PAPER_TRADES_LOG_PATH):
+        try:
+            with open(_PAPER_TRADES_LOG_PATH, newline="") as f:
+                reader = csv.DictReader(f)
+                existing_fields = reader.fieldnames or []
+                if existing_fields != _PAPER_TRADES_FIELDNAMES:
+                    existing_rows = list(reader)
+                    tmp_path = f"{_PAPER_TRADES_LOG_PATH}.tmp"
+                    with open(tmp_path, "w", newline="") as wf:
+                        writer = csv.DictWriter(wf, fieldnames=_PAPER_TRADES_FIELDNAMES)
+                        writer.writeheader()
+                        for old_row in existing_rows:
+                            writer.writerow(
+                                {
+                                    key: old_row.get(key, "")
+                                    for key in _PAPER_TRADES_FIELDNAMES
+                                }
+                            )
+                    os.replace(tmp_path, _PAPER_TRADES_LOG_PATH)
+        except Exception as exc:
+            logger.warning(
+                "Could not migrate paper trades log schema for %s: %s",
+                _PAPER_TRADES_LOG_PATH,
+                exc,
+            )
         return
     with open(_PAPER_TRADES_LOG_PATH, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=_PAPER_TRADES_FIELDNAMES)
@@ -1412,6 +1437,8 @@ class EventManager:
             if isinstance(event_dict.get("quant_prob_up"), (int, float))
             else None
         )
+        q = max(0.0, float(market_prob_at_decision))
+        stake = max(0.0, float(stake_usd))
         row = {
             "decision_id": decision_id,
             "decision_time": now_utc.isoformat(),
@@ -1420,13 +1447,12 @@ class EventManager:
             "event_end_utc": str(event_dict.get("event_end_utc", "") or ""),
             "price_to_beat_at_decision": float(event_dict.get("price_to_beat", 0) or 0),
             "close_price_at_resolution": "",
-            "stake_usd": round(max(0.0, float(stake_usd)), 6),
+            "stake_usd": round(stake, 6),
+            "shares_simulated": round((stake / q), 6) if q > 0 else "",
             "slot": slot if slot is not None else "",
             "range": range_label,
             "prob_up": round(prob_up, 6) if prob_up is not None else "",
-            "marketProb_at_decision": round(
-                max(0.0, float(market_prob_at_decision)), 6
-            ),
+            "marketProb_at_decision": round(q, 6),
             "QuantumEdge": round(float(quantum_edge), 6),
             "side_taken": side,
             "event_outcome_real": "",
