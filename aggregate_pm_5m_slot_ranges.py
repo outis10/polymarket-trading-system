@@ -152,19 +152,48 @@ def main() -> None:
     max_slot = 300 // slot_seconds
     df = df[(df["slot"] >= 1) & (df["slot"] <= max_slot)].copy()
 
+    # Keep full 5m data for event outcome labels (includes final slot).
+    df_all = df
+    slot_stats = df_all.groupby("_block_key", sort=False)["slot"].agg(["count", "max"])
+    incomplete_blocks = slot_stats[slot_stats["count"] != max_slot]
+    if not incomplete_blocks.empty:
+        sample_keys = incomplete_blocks.index.astype(str).tolist()[:5]
+        raise ValueError(
+            "Detected incomplete/duplicated 5m blocks before aggregation: "
+            f"expected {max_slot} rows per block, got mismatches in "
+            f"{len(incomplete_blocks)} block(s). Sample block keys: {sample_keys}"
+        )
+    if not args.exclude_last_slot:
+        missing_last_slot = slot_stats[slot_stats["max"] != max_slot]
+        if not missing_last_slot.empty:
+            sample_keys = missing_last_slot.index.astype(str).tolist()[:5]
+            raise ValueError(
+                "Detected block(s) without final slot while --exclude-last-slot is off: "
+                f"expected slot {max_slot} in every block. "
+                f"Sample block keys: {sample_keys}"
+            )
+
+    ref_price_all = df_all.groupby("_block_key", sort=False)["open"].transform("first")
+    final_close_all = df_all.groupby("_block_key", sort=False)["close"].transform(
+        "last"
+    )
+
     if args.exclude_last_slot:
-        df = df[df["slot"] != max_slot].copy()
+        df = df_all[df_all["slot"] != max_slot].copy()
+    else:
+        df = df_all.copy()
 
     df["ref_price"] = df.groupby("_block_key", sort=False)["open"].transform("first")
     df["price_move"] = df["close"] - df["ref_price"]
     df["inf_range"], df["sup_range"] = build_ranges(df["price_move"], step=step)
 
     if args.prob_source == "event_outcome":
-        final_close = df.groupby("_block_key", sort=False)["close"].transform("last")
+        final_close_event = final_close_all.loc[df.index]
+        ref_price_event = ref_price_all.loc[df.index]
         df["prob_up_event"] = np.where(
-            final_close > df["ref_price"],
+            final_close_event > ref_price_event,
             1.0,
-            np.where(final_close < df["ref_price"], 0.0, 0.5),
+            np.where(final_close_event < ref_price_event, 0.0, 0.5),
         )
         df["prob_down_event"] = 1.0 - df["prob_up_event"]
         prob_up_col = "prob_up_event"

@@ -634,3 +634,22 @@ Implementar modulo Kelly configurable desde Settings:
   python3 scripts/bitacora.py --date 2026-02-21  # filtra por fecha UTC
   python3 scripts/bitacora.py --dir /ruta/logs   # directorio personalizado
   ```
+
+## Estado actualizado (2026-02-25, fix label event_outcome con exclude-last-slot)
+
+- Script afectado: `aggregate_pm_5m_slot_ranges.py`.
+- Bug corregido:
+  - antes, al usar `--exclude-last-slot`, se removía slot 30 y luego `event_outcome`
+    se calculaba con `final_close` del último slot restante (slot 29).
+  - resultado: label desplazado a ~4:50 en vez de cierre real 5:00.
+- Comportamiento nuevo:
+  - se mantiene `df_all` (slots 1..max_slot) para calcular `ref_price_all` + `final_close_all`.
+  - `--exclude-last-slot` ahora solo filtra el dataset operable/exportado.
+  - `prob_up_event/prob_down_event` se calculan con cierre real del evento (`final_close_all`)
+    alineado al índice de filas exportadas.
+- Efecto esperado:
+  - con `--exclude-last-slot`: salida de slots operables (1..29), pero label de outcome a cierre 5m real.
+  - sin `--exclude-last-slot`: se exportan slots completos incluyendo slot 30.
+- Guardrails agregados en el script:
+  - falla si detecta bloques 5m incompletos/duplicados (`count != max_slot`),
+  - falla si `--exclude-last-slot` está desactivado y falta el slot final del bloque.
