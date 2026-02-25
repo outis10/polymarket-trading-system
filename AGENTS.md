@@ -22,6 +22,13 @@ Actualízalo cuando cambien decisiones, scripts o flujos importantes.
   - `kelly_live_bankroll_usd` y `kelly_paper_bankroll_usd` ya están presentes en runtime/settings,
   - no hay clientes/UI antiguos enviando solo `kelly_bankroll`.
 
+### TODO arquitectura (single source of truth de reglas)
+- Revisar y consolidar validaciones de elegibilidad/riesgo en una sola función fuente de verdad.
+- Evitar duplicidad entre:
+  - flujo de tracking/analytics (`_evaluate_trackable_side_for_tracking`)
+  - flujo de ejecución (`_bot_maybe_place_order` + `validate_order_risk_guards`).
+- Objetivo: que señales, paper y ejecución real usen exactamente la misma decisión.
+
 ### TODO Analytics (Out-of-Sample / Walk-Forward) — pendiente
 - Objetivo: validar si hay negocio real del modelo quant sin sesgo in-sample.
 - Alcance:
@@ -740,6 +747,13 @@ Implementar modulo Kelly configurable desde Settings:
   - bloqueo de lado opuesto (`bot_block_opposite_side`),
   - caps de exposición event/ticker
   funcionan con memoria entre decisiones paper, igual que en live.
+
+## Estado actualizado (2026-02-25, paridad de filtros en Recent Outcomes)
+
+- `_track_opportunities_for_event` ahora evalúa elegibilidad con:
+  - check de timeframe del bot (`bot_enforce_timeframe_filter`),
+  - `validate_order_risk_guards(...)` (cooldowns, max buys, lado opuesto, caps, mínimos).
+- Objetivo: que `Recent Outcomes` se alinee mejor con lo realmente ejecutable por el bot.
 
 ## Estado actualizado (2026-02-25, script reset de logs para paper)
 

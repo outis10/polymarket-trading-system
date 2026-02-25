@@ -1257,7 +1257,7 @@ class EventManager:
         for side in ("up", "down"):
             gate_side = quant_gate.get(side)
             evaluation = self._evaluate_trackable_side_for_tracking(
-                event_id, event_dict, side
+                event_id, event_dict, side, now_utc
             )
             self._opportunity_tracker.track_gate_transition(
                 event_id=event_id,
@@ -1277,7 +1277,7 @@ class EventManager:
             )
 
     def _evaluate_trackable_side_for_tracking(
-        self, event_id: str, event_dict: dict, side: str
+        self, event_id: str, event_dict: dict, side: str, now_utc: datetime
     ) -> dict:
         """Evaluate if side is actionable now. Returns {eligible, reason, stake_usd, shares, side_price}."""
         side_price = (
@@ -1292,6 +1292,14 @@ class EventManager:
             "shares": 0.0,
             "side_price": side_price,
         }
+        if bool(self.settings.get("bot_enforce_timeframe_filter", True)):
+            tf_raw = self.settings.get("timeframe_filter", "5m")
+            tf_map = {"5m": 5, "15m": 15, "1h": 60}
+            selected_tf = tf_map.get(str(tf_raw).strip().lower())
+            event_tf = int(event_dict.get("timeframe_minutes", 15) or 15)
+            if selected_tf is not None and event_tf != selected_tf:
+                result["reason"] = "timeframe_mismatch"
+                return result
         if not bool(self.settings.get("kelly_enabled", True)):
             result["reason"] = "kelly_disabled"
             return result
@@ -1364,6 +1372,26 @@ class EventManager:
             if stake_usd > ticker_cap:
                 result["reason"] = "ticker_cap_exceeded"
                 return result
+
+        # Align tracker eligibility with execution guardrails so analytics
+        # reflects what bot can actually place.
+        guard_bankroll_usd = (
+            self._get_paper_effective_bankroll_usd()
+            if bool(self.settings.get("bot_paper_mode", False))
+            else self._get_live_manual_bankroll_usd()
+        )
+        allowed, guard_reason = self.validate_order_risk_guards(
+            event_id=event_id,
+            event=event_dict,
+            outcome=side,
+            shares=shares,
+            notional_usd=stake_usd,
+            now_utc=now_utc,
+            bankroll_usd=guard_bankroll_usd,
+        )
+        if not allowed:
+            result["reason"] = guard_reason or "risk_guard_blocked"
+            return result
 
         result["eligible"] = True
         result["reason"] = None
