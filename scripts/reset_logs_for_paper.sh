@@ -37,10 +37,12 @@ FILES_TO_ARCHIVE=(
   "order_blocked_log.csv"
 )
 
-TODAY_BOT_FILE="bot_orders_$(date +%F).csv"
-if [[ -f "${LOG_DIR}/${TODAY_BOT_FILE}" ]]; then
-  FILES_TO_ARCHIVE+=("${TODAY_BOT_FILE}")
-fi
+shopt -s nullglob
+BOT_ORDER_FILES=("${LOG_DIR}"/bot_orders_*.csv)
+shopt -u nullglob
+for bot_file in "${BOT_ORDER_FILES[@]}"; do
+  FILES_TO_ARCHIVE+=("$(basename "${bot_file}")")
+done
 
 if [[ "${INCLUDE_BACKEND_LOG}" == "true" && -f "${ROOT_DIR}/backend.log" ]]; then
   FILES_TO_ARCHIVE+=("../backend.log")
@@ -66,7 +68,7 @@ rm -f "${LOG_DIR}/opportunities_log.csv"
 rm -f "${LOG_DIR}/opportunity_outcomes.csv"
 rm -f "${LOG_DIR}/opportunity_blocked.csv"
 rm -f "${LOG_DIR}/order_blocked_log.csv"
-rm -f "${LOG_DIR}/${TODAY_BOT_FILE}"
+rm -f "${LOG_DIR}"/bot_orders_*.csv
 
 if [[ "${INCLUDE_BACKEND_LOG}" == "true" ]]; then
   : > "${ROOT_DIR}/backend.log"

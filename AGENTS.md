@@ -740,7 +740,7 @@ Implementar modulo Kelly configurable desde Settings:
   - `opportunity_outcomes.csv`
   - `opportunity_blocked.csv`
   - `order_blocked_log.csv`
-  - `bot_orders_YYYY-MM-DD.csv` (del día actual)
+  - `bot_orders_YYYY-MM-DD.csv` (todos los archivos diarios `bot_orders_*.csv`)
 - Uso:
   ```bash
   bash scripts/reset_logs_for_paper.sh
