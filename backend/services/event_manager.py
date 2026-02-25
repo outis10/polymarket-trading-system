@@ -2907,6 +2907,15 @@ class EventManager:
                 return
 
             if paper_mode_enabled:
+                # Keep guard behavior aligned with live mode: once a paper decision is
+                # accepted, register it as a fill for cooldown/max-buys/exposure memory.
+                self.register_order_fill(
+                    event_id=event_id,
+                    event=event_dict,
+                    outcome=side,
+                    notional_usd=notional_usd,
+                    now_utc=now_utc,
+                )
                 self._bot_prev_gate_enabled[key] = True
                 self._append_paper_trade_decision(
                     event_id=event_id,

@@ -730,6 +730,17 @@ Implementar modulo Kelly configurable desde Settings:
   - nuevo toggle `Paper Compound Bankroll`,
   - input `Paper Current Bankroll ($)` para reset/manual override.
 
+## Estado actualizado (2026-02-25, paridad guardrails paper/live)
+
+- En `bot_paper_mode`, cuando una decisión paper pasa validaciones, ahora también se registra internamente como fill (`register_order_fill`).
+- Efecto:
+  - cooldown global (`bot_global_min_seconds_between_orders`),
+  - cooldown por evento (`bot_cooldown_seconds_per_event_side`),
+  - máximo compras por evento (`bot_max_buys_per_event_side`),
+  - bloqueo de lado opuesto (`bot_block_opposite_side`),
+  - caps de exposición event/ticker
+  funcionan con memoria entre decisiones paper, igual que en live.
+
 ## Estado actualizado (2026-02-25, script reset de logs para paper)
 
 - Nuevo script: `scripts/reset_logs_for_paper.sh`
