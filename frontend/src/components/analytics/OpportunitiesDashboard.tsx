@@ -86,6 +86,34 @@ interface RawPaperTradeResponse {
     rows: RawPaperTrade[];
 }
 
+interface RawBotOrder {
+    placed_at_utc: string;
+    event_id: string;
+    ticker: string;
+    side: "up" | "down";
+    token_id: string;
+    shares: string;
+    price: string;
+    notional_usd: string;
+    order_id: string;
+    quant_prob: string;
+    edge_pct: string;
+    price_source_at_send?: string;
+    fill_price_real?: string;
+    edge_at_fill_pct?: string;
+    kelly_pct?: string;
+    bankroll_usd?: string;
+    percentile_at_signal?: string;
+    status: string;
+}
+
+interface RawBotOrderResponse {
+    count: number;
+    ticker_filter: string | null;
+    days: number;
+    rows: RawBotOrder[];
+}
+
 interface PipelineEvPoint {
     idx: number;
     ticker: string;
@@ -187,6 +215,7 @@ export default function OpportunitiesDashboard() {
     const [signalRows, setSignalRows] = useState<RawSignal[]>([]);
     const [blockedRows, setBlockedRows] = useState<RawBlocked[]>([]);
     const [paperRows, setPaperRows] = useState<RawPaperTrade[]>([]);
+    const [botOrderRows, setBotOrderRows] = useState<RawBotOrder[]>([]);
     const [pipelineEv, setPipelineEv] = useState<PipelineEvResponse | null>(
         null,
     );
@@ -196,21 +225,25 @@ export default function OpportunitiesDashboard() {
         setLoading(true);
         setError("");
         try {
-            const [rawRes, signalsRes, blockedRes, paperRes] =
+            const [rawRes, signalsRes, blockedRes, paperRes, botOrdersRes] =
                 await Promise.all([
                     apiFetch(`/api/stats/opportunities/raw?limit=5000`),
                     apiFetch(`/api/stats/opportunities/signals/raw?limit=5000`),
                     apiFetch(`/api/stats/opportunities/blocked/raw?limit=5000`),
                     apiFetch(`/api/stats/paper/raw?limit=5000`),
+                    apiFetch(
+                        `/api/stats/bot-orders/raw?limit=5000&days=${days}`,
+                    ),
                 ]);
             if (
                 !rawRes.ok ||
                 !signalsRes.ok ||
                 !blockedRes.ok ||
-                !paperRes.ok
+                !paperRes.ok ||
+                !botOrdersRes.ok
             ) {
                 throw new Error(
-                    `Failed to load analytics (${rawRes.status}/${signalsRes.status}/${blockedRes.status}/${paperRes.status})`,
+                    `Failed to load analytics (${rawRes.status}/${signalsRes.status}/${blockedRes.status}/${paperRes.status}/${botOrdersRes.status})`,
                 );
             }
 
@@ -218,6 +251,8 @@ export default function OpportunitiesDashboard() {
             const signalJson = (await signalsRes.json()) as RawSignalResponse;
             const blockedJson = (await blockedRes.json()) as RawBlockedResponse;
             const paperJson = (await paperRes.json()) as RawPaperTradeResponse;
+            const botOrdersJson =
+                (await botOrdersRes.json()) as RawBotOrderResponse;
             setRawRows(Array.isArray(rawJson.rows) ? rawJson.rows : []);
             setSignalRows(
                 Array.isArray(signalJson.rows) ? signalJson.rows : [],
@@ -226,6 +261,9 @@ export default function OpportunitiesDashboard() {
                 Array.isArray(blockedJson.rows) ? blockedJson.rows : [],
             );
             setPaperRows(Array.isArray(paperJson.rows) ? paperJson.rows : []);
+            setBotOrderRows(
+                Array.isArray(botOrdersJson.rows) ? botOrdersJson.rows : [],
+            );
         } catch (e) {
             setError(
                 e instanceof Error ? e.message : "Failed to load analytics",
@@ -369,6 +407,29 @@ export default function OpportunitiesDashboard() {
             (row) => String(row.ticker || "").toUpperCase() === ticker,
         );
     }, [paperRowsInWindow, ticker]);
+
+    const botOrderRowsInWindow = useMemo(() => {
+        return botOrderRows.filter((row) => {
+            if (!inLastDays(row.placed_at_utc, days)) return false;
+            if (regimeFilter === "weekday" && isWeekendUtc(row.placed_at_utc)) {
+                return false;
+            }
+            if (
+                regimeFilter === "weekend" &&
+                !isWeekendUtc(row.placed_at_utc)
+            ) {
+                return false;
+            }
+            return true;
+        });
+    }, [botOrderRows, days, regimeFilter]);
+
+    const filteredBotOrderRows = useMemo(() => {
+        if (ticker === "ALL") return botOrderRowsInWindow;
+        return botOrderRowsInWindow.filter(
+            (row) => String(row.ticker || "").toUpperCase() === ticker,
+        );
+    }, [botOrderRowsInWindow, ticker]);
 
     const chartRows = useMemo(() => {
         if (chartScope === "all") return rowsInWindow;
@@ -663,6 +724,33 @@ export default function OpportunitiesDashboard() {
             maxDrawdownPct: maxDd,
         };
     }, [paperEquityPoints]);
+
+    const botOrderMetrics = useMemo(() => {
+        const total = filteredBotOrderRows.length;
+        const placed = filteredBotOrderRows.filter(
+            (r) => String(r.status).toLowerCase() === "placed",
+        ).length;
+        const failed = filteredBotOrderRows.filter(
+            (r) => String(r.status).toLowerCase() === "failed",
+        ).length;
+        const withFill = filteredBotOrderRows.filter(
+            (r) => asNumber(r.fill_price_real) > 0,
+        ).length;
+        const avgEdgeSend = total
+            ? filteredBotOrderRows.reduce(
+                  (acc, r) => acc + asNumber(r.edge_pct),
+                  0,
+              ) / total
+            : 0;
+        const avgEdgeFill =
+            withFill > 0
+                ? filteredBotOrderRows.reduce(
+                      (acc, r) => acc + asNumber(r.edge_at_fill_pct),
+                      0,
+                  ) / withFill
+                : 0;
+        return { total, placed, failed, withFill, avgEdgeSend, avgEdgeFill };
+    }, [filteredBotOrderRows]);
 
     return (
         <main className="analytics-page">
@@ -1200,6 +1288,94 @@ export default function OpportunitiesDashboard() {
                                         {asNumber(row.pnl_simulated).toFixed(2)}
                                     </td>
                                     <td>{row.status}</td>
+                                </tr>
+                            ))}
+                    </tbody>
+                </table>
+            </section>
+
+            <section className="analytics-panel">
+                <h3>Bot Orders (Execution Log)</h3>
+                <div className="analytics-chart-help">
+                    <div>How to read</div>
+                    <ul>
+                        <li>
+                            Source: `backtest_output/bot_orders_YYYY-MM-DD.csv`.
+                        </li>
+                        <li>
+                            `edge_pct` is edge at send; `edge_at_fill_pct` is
+                            edge versus actual fill price when available.
+                        </li>
+                    </ul>
+                </div>
+                <div className="analytics-mini-kpis">
+                    <span>Total rows: {botOrderMetrics.total}</span>
+                    <span>Placed: {botOrderMetrics.placed}</span>
+                    <span>Failed: {botOrderMetrics.failed}</span>
+                    <span>With fill price: {botOrderMetrics.withFill}</span>
+                    <span>
+                        Avg Edge@Send: {botOrderMetrics.avgEdgeSend.toFixed(2)}%
+                    </span>
+                    <span>
+                        Avg Edge@Fill: {botOrderMetrics.avgEdgeFill.toFixed(2)}%
+                    </span>
+                </div>
+                <table className="analytics-table">
+                    <thead>
+                        <tr>
+                            <th>Placed (UTC)</th>
+                            <th>Ticker</th>
+                            <th>Side</th>
+                            <th>Price Send</th>
+                            <th>Fill Price</th>
+                            <th>Edge Send</th>
+                            <th>Edge Fill</th>
+                            <th>Notional</th>
+                            <th>Status</th>
+                            <th>Event</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {filteredBotOrderRows
+                            .slice()
+                            .reverse()
+                            .slice(0, 50)
+                            .map((row, idx) => (
+                                <tr
+                                    key={`${row.placed_at_utc}-${row.event_id}-${idx}`}
+                                >
+                                    <td>
+                                        {row.placed_at_utc
+                                            .replace("T", " ")
+                                            .slice(0, 19)}
+                                    </td>
+                                    <td>{row.ticker}</td>
+                                    <td>
+                                        {String(row.side || "").toUpperCase()}
+                                    </td>
+                                    <td>{asNumber(row.price).toFixed(4)}</td>
+                                    <td>
+                                        {asNumber(row.fill_price_real) > 0
+                                            ? asNumber(
+                                                  row.fill_price_real,
+                                              ).toFixed(4)
+                                            : "n/a"}
+                                    </td>
+                                    <td>
+                                        {asNumber(row.edge_pct).toFixed(2)}%
+                                    </td>
+                                    <td>
+                                        {asNumber(row.fill_price_real) > 0
+                                            ? `${asNumber(row.edge_at_fill_pct).toFixed(2)}%`
+                                            : "n/a"}
+                                    </td>
+                                    <td>
+                                        ${asNumber(row.notional_usd).toFixed(2)}
+                                    </td>
+                                    <td>{row.status}</td>
+                                    <td className="analytics-event-id">
+                                        {row.event_id}
+                                    </td>
                                 </tr>
                             ))}
                     </tbody>

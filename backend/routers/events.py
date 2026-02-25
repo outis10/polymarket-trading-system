@@ -1,6 +1,8 @@
 """REST endpoints for events data."""
 
 import csv
+import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -250,6 +252,57 @@ async def get_paper_trades_raw(limit: int = 500, ticker: str | None = None):
     return {
         "count": len(rows),
         "ticker_filter": ticker.upper() if ticker else None,
+        "rows": rows,
+    }
+
+
+@router.get("/stats/bot-orders/raw")
+async def get_bot_orders_raw(
+    limit: int = 500,
+    ticker: str | None = None,
+    days: int = 7,
+):
+    """Return raw bot order rows from daily bot_orders_YYYY-MM-DD.csv logs."""
+    root = Path("backtest_output")
+    rows: list[dict[str, Any]] = []
+    ticker_filter = ticker.upper() if ticker else None
+    cutoff_day = datetime.now(tz=timezone.utc).date() - timedelta(
+        days=max(1, int(days)) - 1
+    )
+    pattern = re.compile(r"^bot_orders_(\d{4}-\d{2}-\d{2})\.csv$")
+
+    candidates: list[tuple[datetime, Path]] = []
+    for path in root.glob("bot_orders_*.csv"):
+        m = pattern.match(path.name)
+        if not m:
+            continue
+        try:
+            day = datetime.strptime(m.group(1), "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if day < cutoff_day:
+            continue
+        candidates.append((datetime.combine(day, datetime.min.time()), path))
+
+    for _, path in sorted(candidates, key=lambda x: x[0]):
+        try:
+            with open(path, newline="") as f:
+                for row in csv.DictReader(f):
+                    row_ticker = str(row.get("ticker", "")).upper()
+                    if ticker_filter and row_ticker != ticker_filter:
+                        continue
+                    rows.append(row)
+        except FileNotFoundError:
+            continue
+
+    rows.sort(
+        key=lambda r: str(r.get("placed_at_utc", "")),
+    )
+    rows = rows[-max(1, int(limit)) :]
+    return {
+        "count": len(rows),
+        "ticker_filter": ticker_filter,
+        "days": max(1, int(days)),
         "rows": rows,
     }
 

@@ -733,6 +733,20 @@ Implementar modulo Kelly configurable desde Settings:
   bash scripts/reset_logs_for_paper.sh --include-backend-log
   ```
 
+## Estado actualizado (2026-02-25, bot orders en Analytics)
+
+- Nuevo endpoint backend:
+  - `GET /api/stats/bot-orders/raw?limit=5000&days=7&ticker=BTC`
+  - Lee `backtest_output/bot_orders_YYYY-MM-DD.csv` en ventana multi-día.
+- Dashboard analytics:
+  - Nuevo panel `Bot Orders (Execution Log)` en `/analytics/opportunities`.
+  - Muestra tabla con:
+    - `placed_at_utc`, `ticker`, `side`, `price` (send), `fill_price_real`,
+      `edge_pct`, `edge_at_fill_pct`, `notional_usd`, `status`, `event_id`.
+  - KPIs rápidos:
+    - `total rows`, `placed`, `failed`, `with fill price`,
+      `avg edge@send`, `avg edge@fill`.
+
 ## Estado actualizado (2026-02-25, fix label event_outcome con exclude-last-slot)
 
 - Script afectado: `aggregate_pm_5m_slot_ranges.py`.
