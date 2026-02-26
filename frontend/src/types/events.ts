@@ -103,6 +103,8 @@ export interface SettingsData {
     kelly_paper_bankroll_usd?: number;
     paper_compound_enabled?: boolean;
     paper_current_bankroll_usd?: number;
+    live_equity_start_bankroll_usd?: number;
+    live_equity_start_at_utc?: string;
     kelly_min_edge_pct?: number;
     kelly_max_bet_pct?: number;
     kelly_max_event_exposure_pct?: number;

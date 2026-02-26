@@ -122,6 +122,10 @@ class SettingsData(BaseModel):
     paper_compound_enabled: bool = True
     # Current bankroll used by paper compounding mode.
     paper_current_bankroll_usd: float = 100.0
+    # Baseline bankroll captured on first real live fill for live equity curve.
+    live_equity_start_bankroll_usd: float = 0.0
+    # UTC timestamp when live equity baseline was captured.
+    live_equity_start_at_utc: str = ""
     kelly_min_edge_pct: float = 0.5
     kelly_max_bet_pct: float = 25.0
     kelly_max_event_exposure_pct: float = 25.0

@@ -20,6 +20,9 @@ export default function Header({ route, onNavigate }: HeaderProps) {
     const mode = useEventsStore((s) => s.settings.mode);
     const tradingMode = useEventsStore((s) => s.settings.trading_mode);
     const paperMode = useEventsStore((s) => s.settings.bot_paper_mode);
+    const paperCurrentBankrollUsd = useEventsStore(
+        (s) => s.settings.paper_current_bankroll_usd,
+    );
     const bankrollReal = useAccountStore((s) => s.bankrollReal);
     const setBankrollReal = useAccountStore((s) => s.setBankrollReal);
     const [balanceText, setBalanceText] = useState("Bankroll: unavailable");
@@ -118,6 +121,14 @@ export default function Header({ route, onNavigate }: HeaderProps) {
     }, [bankrollReal, mode]);
 
     const showPaperBadge = tradingMode === "bot" && paperMode === true;
+    const paperCurrentBankroll = toFiniteNumber(paperCurrentBankrollUsd);
+    const paperBankrollText =
+        paperCurrentBankroll !== null
+            ? `Paper $${paperCurrentBankroll.toLocaleString("en-US", {
+                  minimumFractionDigits: 2,
+                  maximumFractionDigits: 2,
+              })}`
+            : "Paper $N/A";
 
     return (
         <header className="app-header">
@@ -129,6 +140,14 @@ export default function Header({ route, onNavigate }: HeaderProps) {
             </div>
             <div className="app-header-center">
                 <span className="bankroll-chip">{balanceText}</span>
+                {showPaperBadge && (
+                    <span
+                        className="paper-bankroll-chip"
+                        title="Paper Current Bankroll ($)"
+                    >
+                        {paperBankrollText}
+                    </span>
+                )}
                 {showPaperBadge && (
                     <span
                         className="paper-mode-chip"

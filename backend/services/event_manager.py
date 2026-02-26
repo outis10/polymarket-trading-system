@@ -255,6 +255,8 @@ class EventManager:
             "kelly_paper_bankroll_usd": 100.0,
             "paper_compound_enabled": True,
             "paper_current_bankroll_usd": 100.0,
+            "live_equity_start_bankroll_usd": 0.0,
+            "live_equity_start_at_utc": "",
             "kelly_min_edge_pct": 0.5,
             "kelly_max_bet_pct": 25.0,
             "kelly_max_event_exposure_pct": 25.0,
@@ -1276,55 +1278,146 @@ class EventManager:
                 estimated_shares=evaluation.get("shares"),
             )
 
-    def _evaluate_trackable_side_for_tracking(
-        self, event_id: str, event_dict: dict, side: str, now_utc: datetime
-    ) -> dict:
-        """Evaluate if side is actionable now. Returns {eligible, reason, stake_usd, shares, side_price}."""
+    @staticmethod
+    def _parse_timeframe_filter_to_minutes(raw: object) -> int | None:
+        value = str(raw or "").strip().lower()
+        if value == "5m":
+            return 5
+        if value == "15m":
+            return 15
+        if value == "1h":
+            return 60
+        return None
+
+    @staticmethod
+    def _quant_gate_reason_text(reasons: list[object]) -> str:
+        cleaned = [str(r).strip() for r in reasons if str(r).strip()]
+        return " | ".join(cleaned) if cleaned else "quant_gate_blocked"
+
+    @staticmethod
+    def _event_best_ask_price(event_dict: dict, side: str) -> tuple[float, bool, str]:
         side_price = (
             float(event_dict.get("yes_price", 0.5) or 0.5)
             if side == "up"
             else float(event_dict.get("no_price", 0.5) or 0.5)
         )
+        asks = (
+            (event_dict.get("order_book_yes") or {}).get("asks", [])
+            if side == "up"
+            else (event_dict.get("order_book_no") or {}).get("asks", [])
+        )
+        if isinstance(asks, list) and asks:
+            raw = asks[0].get("price") if isinstance(asks[0], dict) else None
+            if raw is not None:
+                try:
+                    return float(raw), False, "best_ask"
+                except (TypeError, ValueError):
+                    pass
+        return side_price, True, "proxy_mid"
+
+    def evaluate_bot_order_candidate(
+        self,
+        *,
+        event_id: str,
+        event_dict: dict,
+        side: str,
+        now_utc: datetime,
+        bankroll_usd: float | None = None,
+    ) -> dict:
+        """
+        Single source of truth for bot/tracking eligibility on one event side.
+        Returns sizing + decision so tracking/paper/live stay aligned.
+        """
+        side_norm = "up" if str(side).lower() == "up" else "down"
+        side_price = (
+            float(event_dict.get("yes_price", 0.5) or 0.5)
+            if side_norm == "up"
+            else float(event_dict.get("no_price", 0.5) or 0.5)
+        )
+        ask_price, ask_is_proxy, price_source_at_send = self._event_best_ask_price(
+            event_dict, side_norm
+        )
         result = {
             "eligible": False,
             "reason": "unknown",
+            "side": side_norm,
+            "side_price": side_price,
+            "ask_price": ask_price,
+            "ask_is_proxy": ask_is_proxy,
+            "price_source_at_send": price_source_at_send,
+            "quant_prob": None,
             "stake_usd": 0.0,
             "shares": 0.0,
-            "side_price": side_price,
+            "notional_usd": 0.0,
+            "kelly_pct": None,
         }
+
         if bool(self.settings.get("bot_enforce_timeframe_filter", True)):
-            tf_raw = self.settings.get("timeframe_filter", "5m")
-            tf_map = {"5m": 5, "15m": 15, "1h": 60}
-            selected_tf = tf_map.get(str(tf_raw).strip().lower())
+            selected_tf = self._parse_timeframe_filter_to_minutes(
+                self.settings.get("timeframe_filter", "5m")
+            )
             event_tf = int(event_dict.get("timeframe_minutes", 15) or 15)
             if selected_tf is not None and event_tf != selected_tf:
                 result["reason"] = "timeframe_mismatch"
                 return result
+
+        min_secs_before_end = max(
+            0, int(self.settings.get("bot_min_seconds_before_end", 30))
+        )
+        end_raw = event_dict.get("event_end_utc")
+        if min_secs_before_end > 0 and end_raw:
+            try:
+                end_dt = datetime.fromisoformat(str(end_raw))
+                secs_remaining = (end_dt - now_utc).total_seconds()
+                if secs_remaining < min_secs_before_end:
+                    result["reason"] = "too_close_to_end"
+                    return result
+            except Exception:
+                pass
+
+        quant_gate = event_dict.get("quant_buy_gate")
+        if isinstance(quant_gate, dict):
+            gate_side = quant_gate.get(side_norm)
+            if isinstance(gate_side, dict) and not bool(
+                gate_side.get("enabled", False)
+            ):
+                reasons = gate_side.get("reasons", [])
+                reasons_list = reasons if isinstance(reasons, list) else [reasons]
+                result["reason"] = (
+                    f"quant_gate_blocked:{self._quant_gate_reason_text(reasons_list)}"
+                )
+                return result
+
+        max_price_c = float(self.settings.get("quant_gate_max_price_c", 90.0))
+        min_price_c = float(self.settings.get("quant_gate_min_price_c", 10.0))
+        ask_price_c = ask_price * 100.0
+        if ask_price_c > max_price_c or ask_price_c < min_price_c:
+            result["reason"] = "ask_price_outside_range"
+            return result
+
         if not bool(self.settings.get("kelly_enabled", True)):
             result["reason"] = "kelly_disabled"
-            return result
-        if side_price <= 0:
-            result["reason"] = "invalid_side_price"
             return result
 
         quant_prob_raw = (
             event_dict.get("quant_prob_up")
-            if side == "up"
+            if side_norm == "up"
             else event_dict.get("quant_prob_down")
         )
         if not isinstance(quant_prob_raw, (float, int)):
             result["reason"] = "no_quant_prob"
             return result
         quant_prob = float(quant_prob_raw)
+        result["quant_prob"] = quant_prob
 
         min_edge_pct = max(0.0, float(self.settings.get("kelly_min_edge_pct", 0.5)))
-        edge_pct = (quant_prob - side_price) * 100.0
+        edge_pct = (quant_prob - ask_price) * 100.0
         if edge_pct < min_edge_pct:
             result["reason"] = "edge_below_min"
             return result
 
-        denom = max(0.0001, 1.0 - side_price)
-        raw_kelly = max(0.0, (quant_prob - side_price) / denom)
+        denom = max(0.0001, 1.0 - ask_price)
+        raw_kelly = max(0.0, (quant_prob - ask_price) / denom)
         kelly_fraction = max(0.0, float(self.settings.get("kelly_fraction", 0.25)))
         max_bet_pct = (
             max(0.0, float(self.settings.get("kelly_max_bet_pct", 25.0))) / 100.0
@@ -1334,60 +1427,46 @@ class EventManager:
             / 100.0
         )
         kelly_pct = min(raw_kelly * kelly_fraction, max_bet_pct, max_event_exposure_pct)
-
-        bankroll = max(0.0, self._get_live_manual_bankroll_usd())
-        stake_usd = kelly_pct * bankroll
-        shares = stake_usd / max(0.0001, side_price)
-        result["stake_usd"] = stake_usd
-        result["shares"] = shares
-        if stake_usd <= 0:
-            result["reason"] = "stake_non_positive"
-            return result
-
-        min_shares = max(0.0, float(self.settings.get("pm_min_shares", 5.0)))
-        min_notional = max(0.0, float(self.settings.get("pm_min_notional_usd", 1.0)))
-        if shares < min_shares:
-            result["reason"] = "below_pm_min_shares"
-            return result
-        if stake_usd < min_notional:
-            result["reason"] = "below_pm_min_notional"
-            return result
-
-        if bool(self.settings.get("bot_risk_enabled", True)):
-            event_cap = (
-                bankroll
-                * max(0.0, float(self.settings.get("bot_max_event_exposure_pct", 15.0)))
-                / 100.0
-            )
-            ticker_cap = (
-                bankroll
-                * max(
-                    0.0, float(self.settings.get("bot_max_ticker_exposure_pct", 25.0))
-                )
-                / 100.0
-            )
-            if stake_usd > event_cap:
-                result["reason"] = "event_cap_exceeded"
-                return result
-            if stake_usd > ticker_cap:
-                result["reason"] = "ticker_cap_exceeded"
-                return result
-
-        # Align tracker eligibility with execution guardrails so analytics
-        # reflects what bot can actually place.
-        guard_bankroll_usd = (
+        result["kelly_pct"] = kelly_pct
+        base_bankroll = (
             self._get_paper_effective_bankroll_usd()
             if bool(self.settings.get("bot_paper_mode", False))
             else self._get_live_manual_bankroll_usd()
         )
+        base_bankroll = max(1.0, float(base_bankroll))
+        stake_usd = kelly_pct * base_bankroll
+
+        hard_cap = max(0.0, float(self.settings.get("bot_order_notional_cap_usd", 0.0)))
+        if hard_cap > 0:
+            stake_usd = min(stake_usd, hard_cap)
+
+        if ask_price <= 0:
+            result["reason"] = "invalid_side_price"
+            return result
+        shares = stake_usd / ask_price
+        notional_usd = ask_price * shares
+        result["stake_usd"] = stake_usd
+        result["shares"] = shares
+        result["notional_usd"] = notional_usd
+        if stake_usd <= 0:
+            result["reason"] = "stake_non_positive"
+            return result
+
+        guard_bankroll = bankroll_usd
+        if guard_bankroll is None:
+            guard_bankroll = (
+                self._get_paper_effective_bankroll_usd()
+                if bool(self.settings.get("bot_paper_mode", False))
+                else self._get_live_manual_bankroll_usd()
+            )
         allowed, guard_reason = self.validate_order_risk_guards(
             event_id=event_id,
             event=event_dict,
-            outcome=side,
+            outcome=side_norm,
             shares=shares,
-            notional_usd=stake_usd,
+            notional_usd=notional_usd,
             now_utc=now_utc,
-            bankroll_usd=guard_bankroll_usd,
+            bankroll_usd=guard_bankroll,
         )
         if not allowed:
             result["reason"] = guard_reason or "risk_guard_blocked"
@@ -1396,6 +1475,24 @@ class EventManager:
         result["eligible"] = True
         result["reason"] = None
         return result
+
+    def _evaluate_trackable_side_for_tracking(
+        self, event_id: str, event_dict: dict, side: str, now_utc: datetime
+    ) -> dict:
+        """Compatibility wrapper for tracker payload."""
+        evaluation = self.evaluate_bot_order_candidate(
+            event_id=event_id,
+            event_dict=event_dict,
+            side=side,
+            now_utc=now_utc,
+        )
+        return {
+            "eligible": bool(evaluation.get("eligible")),
+            "reason": evaluation.get("reason"),
+            "stake_usd": float(evaluation.get("stake_usd", 0.0) or 0.0),
+            "shares": float(evaluation.get("shares", 0.0) or 0.0),
+            "side_price": float(evaluation.get("side_price", 0.5) or 0.5),
+        }
 
     def _extract_event_ticker(self, event_id: str, event_dict: dict) -> str:
         raw_symbol = normalize_symbol(
@@ -1762,6 +1859,7 @@ class EventManager:
         outcome: str,
         notional_usd: float,
         now_utc: datetime,
+        bankroll_snapshot_usd: float | None = None,
     ) -> None:
         self._order_guard_records = self._clean_old_order_records(
             self._order_guard_records, now_utc
@@ -1776,6 +1874,24 @@ class EventManager:
             }
         )
         self._last_order_at_utc = now_utc
+
+        # Capture a persistent baseline for live trading equity on first real live fill.
+        if self.mode == "live" and not bool(self.settings.get("bot_paper_mode", False)):
+            current_base = self.settings.get("live_equity_start_bankroll_usd")
+            has_base = (
+                isinstance(current_base, (int, float)) and float(current_base) > 0
+            )
+            if not has_base:
+                candidate = (
+                    float(bankroll_snapshot_usd)
+                    if isinstance(bankroll_snapshot_usd, (int, float))
+                    and float(bankroll_snapshot_usd) > 0
+                    else self._get_live_manual_bankroll_usd()
+                )
+                candidate = max(1.0, float(candidate))
+                self.settings["live_equity_start_bankroll_usd"] = round(candidate, 6)
+                self.settings["live_equity_start_at_utc"] = now_utc.isoformat()
+                self.persist_runtime_settings()
 
     # ------------------------------------------------------------------
     # Position Tracker — fuente de verdad para shares por evento
@@ -2807,82 +2923,21 @@ class EventManager:
 
         self._bot_pending_orders.add(key)
         try:
-            # Check timeframe filter before placing order
-            if bool(self.settings.get("bot_enforce_timeframe_filter", True)):
-                tf_raw = self.settings.get("timeframe_filter", "5m")
-                tf_map = {"5m": 5, "15m": 15, "1h": 60}
-                selected_tf = tf_map.get(str(tf_raw).strip().lower())
-                event_tf = int(event_dict.get("timeframe_minutes", 15) or 15)
-                if selected_tf is not None and event_tf != selected_tf:
-                    logger.info(
-                        "Bot auto-order skipped: timeframe mismatch "
-                        "(selected=%sm, event=%sm) for %s %s",
-                        selected_tf,
-                        event_tf,
-                        event_id,
-                        side,
-                    )
-                    return
-
             client = get_client()
             if not client:
                 logger.warning("Bot auto-order: Polymarket client unavailable")
                 return
 
-            # Determine price and token
-            if side == "up":
-                side_price = float(event_dict.get("yes_price") or 0.5)
-                token_id = event_dict.get("yes_token_id")
-            else:
-                side_price = float(event_dict.get("no_price") or 0.5)
-                token_id = event_dict.get("no_token_id")
-
+            # Determine token
+            token_id = (
+                event_dict.get("yes_token_id")
+                if side == "up"
+                else event_dict.get("no_token_id")
+            )
             if not token_id:
                 logger.warning("Bot auto-order: no token_id for %s %s", event_id, side)
                 return
 
-            # Ask price for order (use best ask from order book if available)
-            if side == "up":
-                asks = (event_dict.get("order_book_yes") or {}).get("asks", [])
-            else:
-                asks = (event_dict.get("order_book_no") or {}).get("asks", [])
-            ask_price = side_price
-            price_source_at_send = "proxy_mid"
-            if isinstance(asks, list) and asks:
-                raw = asks[0].get("price") if isinstance(asks[0], dict) else None
-                if raw is not None:
-                    try:
-                        ask_price = float(raw)
-                        price_source_at_send = "best_ask"
-                    except (TypeError, ValueError):
-                        pass
-
-            # Hard price cap check — revalidate ask_price at order time since the
-            # gate may have been computed one or more ticks ago when price was lower.
-            max_price_c = float(self.settings.get("quant_gate_max_price_c", 90.0))
-            min_price_c = float(self.settings.get("quant_gate_min_price_c", 10.0))
-            ask_price_c = ask_price * 100
-            if ask_price_c > max_price_c or ask_price_c < min_price_c:
-                logger.info(
-                    "Bot auto-order skipped: ask price %.0f¢ outside allowed range [%.0f¢, %.0f¢] "
-                    "for %s %s",
-                    ask_price_c,
-                    min_price_c,
-                    max_price_c,
-                    event_id,
-                    side,
-                )
-                return
-
-            # Kelly sizing
-            quant_prob_raw = (
-                event_dict.get("quant_prob_up")
-                if side == "up"
-                else event_dict.get("quant_prob_down")
-            )
-            if not isinstance(quant_prob_raw, (int, float)):
-                return
-            quant_prob = float(quant_prob_raw)
             histogram = event_dict.get("quant_range_histogram")
             percentile_at_signal: float | None = None
             paper_mode_enabled = bool(self.settings.get("bot_paper_mode", False))
@@ -2890,75 +2945,47 @@ class EventManager:
                 raw_pct = histogram.get("current_percentile")
                 if isinstance(raw_pct, (float, int)):
                     percentile_at_signal = round(float(raw_pct), 4)
-            kelly_enabled = bool(self.settings.get("kelly_enabled", True))
-            kelly_pct: float | None = None
-            if kelly_enabled:
-                edge = quant_prob - ask_price
-                denom = max(0.0001, 1.0 - ask_price)
-                raw_kelly = max(0.0, edge / denom)
-                fraction = max(0.0, float(self.settings.get("kelly_fraction", 0.25)))
-                max_bet_pct = (
-                    max(0.0, float(self.settings.get("kelly_max_bet_pct", 25.0)))
-                    / 100.0
-                )
-                max_event_pct = (
-                    max(
-                        0.0,
-                        float(self.settings.get("kelly_max_event_exposure_pct", 25.0)),
-                    )
-                    / 100.0
-                )
-                kelly_pct = min(raw_kelly * fraction, max_bet_pct, max_event_pct)
-                bankroll = (
-                    self._get_paper_effective_bankroll_usd()
-                    if paper_mode_enabled
-                    else self._get_live_manual_bankroll_usd()
-                )
-                bankroll = max(1.0, bankroll)
-                stake_usd = kelly_pct * bankroll
-            else:
-                stake_usd = max(
-                    0.0, float(self.settings.get("bot_order_notional_cap_usd", 5.0))
-                )
-
-            hard_cap = max(
-                0.0, float(self.settings.get("bot_order_notional_cap_usd", 0.0))
-            )
-            if hard_cap > 0:
-                stake_usd = min(stake_usd, hard_cap)
-
-            if ask_price <= 0:
-                return
-            shares = stake_usd / ask_price
-            notional_usd = ask_price * shares
             now_utc = datetime.now(tz=timezone.utc)
 
-            # Fetch live balance for risk guards
             bankroll_usd: float | None = None
-            try:
-                bal = await asyncio.to_thread(client.get_balance)
-                if isinstance(bal, (int, float)) and bal > 0:
-                    bankroll_usd = float(bal)
-            except Exception:
-                pass
+            # In paper mode, keep guardrails tied to paper bankroll only.
+            # In live mode, prefer exchange balance for exposure-based caps.
+            if not paper_mode_enabled:
+                try:
+                    bal = await asyncio.to_thread(client.get_balance)
+                    if isinstance(bal, (int, float)) and bal > 0:
+                        bankroll_usd = float(bal)
+                except Exception:
+                    pass
 
-            allowed, reason = self.validate_order_risk_guards(
+            evaluation = self.evaluate_bot_order_candidate(
                 event_id=event_id,
-                event=event_dict,
-                outcome=side,
-                shares=shares,
-                notional_usd=notional_usd,
+                event_dict=event_dict,
+                side=side,
                 now_utc=now_utc,
                 bankroll_usd=bankroll_usd,
             )
-            if not allowed:
+            if not bool(evaluation.get("eligible")):
                 logger.info(
-                    "Bot auto-order blocked by risk guard: %s | event=%s side=%s",
-                    reason,
+                    "Bot auto-order skipped by unified eligibility: %s | event=%s side=%s",
+                    evaluation.get("reason"),
                     event_id,
                     side,
                 )
                 return
+            ask_price = float(evaluation.get("ask_price", 0.0) or 0.0)
+            notional_usd = float(evaluation.get("notional_usd", 0.0) or 0.0)
+            shares = float(evaluation.get("shares", 0.0) or 0.0)
+            quant_prob = float(evaluation.get("quant_prob", 0.0) or 0.0)
+            kelly_pct_raw = evaluation.get("kelly_pct")
+            kelly_pct = (
+                float(kelly_pct_raw)
+                if isinstance(kelly_pct_raw, (int, float))
+                else None
+            )
+            price_source_at_send = str(
+                evaluation.get("price_source_at_send") or "proxy_mid"
+            )
 
             if paper_mode_enabled:
                 # Keep guard behavior aligned with live mode: once a paper decision is
@@ -2969,6 +2996,7 @@ class EventManager:
                     outcome=side,
                     notional_usd=notional_usd,
                     now_utc=now_utc,
+                    bankroll_snapshot_usd=bankroll_usd,
                 )
                 self._bot_prev_gate_enabled[key] = True
                 self._append_paper_trade_decision(

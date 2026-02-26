@@ -35,6 +35,8 @@ export const useEventsStore = create<EventsState>((set) => ({
         kelly_paper_bankroll_usd: 100,
         paper_compound_enabled: true,
         paper_current_bankroll_usd: 100,
+        live_equity_start_bankroll_usd: 0,
+        live_equity_start_at_utc: "",
         kelly_min_edge_pct: 0.5,
         kelly_max_bet_pct: 25,
         kelly_max_event_exposure_pct: 25,

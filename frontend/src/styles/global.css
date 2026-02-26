@@ -96,6 +96,18 @@ body {
     letter-spacing: 0.4px;
 }
 
+.paper-bankroll-chip {
+    background: rgba(56, 139, 253, 0.14);
+    border: 1px solid rgba(56, 139, 253, 0.5);
+    color: #8cb8ff;
+    border-radius: 999px;
+    padding: 5px 10px;
+    font-size: 12px;
+    font-weight: 700;
+    margin-left: 6px;
+    letter-spacing: 0.2px;
+}
+
 .bankroll-refresh-btn {
     background: none;
     border: none;
@@ -2066,6 +2078,27 @@ body {
     font-weight: 600;
 }
 
+.analytics-danger-btn {
+    background: rgba(248, 81, 73, 0.14);
+    border: 1px solid rgba(248, 81, 73, 0.45);
+    color: #ffb1ad;
+    border-radius: 8px;
+    padding: 7px 10px;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    margin-bottom: 10px;
+}
+
+.analytics-danger-btn:hover:not(:disabled) {
+    background: rgba(248, 81, 73, 0.2);
+}
+
+.analytics-danger-btn:disabled {
+    opacity: 0.65;
+    cursor: not-allowed;
+}
+
 .analytics-chart-canvas {
     height: 320px;
 }
@@ -2222,6 +2255,11 @@ body {
     }
 
     .paper-mode-chip {
+        font-size: 10px;
+        padding: 4px 7px;
+    }
+
+    .paper-bankroll-chip {
         font-size: 10px;
         padding: 4px 7px;
     }

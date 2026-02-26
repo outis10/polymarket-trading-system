@@ -8,7 +8,6 @@ import time
 from datetime import datetime, timezone
 
 import requests as _requests
-
 from fastapi import APIRouter, HTTPException
 
 from ..models.schemas import OrderRequest, OrderResponse
@@ -26,6 +25,8 @@ _positions_cache: dict[str, dict] = {}
 def invalidate_positions_cache(event_id: str) -> None:
     """Remove cached positions for an event so the next request fetches fresh data."""
     _positions_cache.pop(event_id, None)
+
+
 _ORDER_BLOCKED_LOG_PATH = os.path.normpath(
     os.path.join(
         os.path.dirname(__file__),
@@ -223,7 +224,9 @@ async def place_order(order: OrderRequest):
         if min_secs_before_end > 0 and end_raw:
             try:
                 end_dt = datetime.fromisoformat(end_raw)
-                secs_remaining = (end_dt - datetime.now(tz=timezone.utc)).total_seconds()
+                secs_remaining = (
+                    end_dt - datetime.now(tz=timezone.utc)
+                ).total_seconds()
                 if secs_remaining < min_secs_before_end:
                     raise _blocked(
                         detail=(
@@ -241,10 +244,14 @@ async def place_order(order: OrderRequest):
         quant_gate = event.get("quant_buy_gate")
         if isinstance(quant_gate, dict):
             gate_side = quant_gate.get(outcome_side)
-            if isinstance(gate_side, dict) and not bool(gate_side.get("enabled", False)):
+            if isinstance(gate_side, dict) and not bool(
+                gate_side.get("enabled", False)
+            ):
                 reasons = gate_side.get("reasons", [])
                 reasons_list = reasons if isinstance(reasons, list) else [reasons]
-                ask_proxy_flag = " (proxy=mid)" if quant_debug.get("ask_is_proxy_at_check") else ""
+                ask_proxy_flag = (
+                    " (proxy=mid)" if quant_debug.get("ask_is_proxy_at_check") else ""
+                )
                 detail = (
                     f"Quant gate blocked: {_quant_gate_reason_text(reasons_list)}"
                     f" | quant_prob={quant_debug.get('quant_prob_at_check')}"
@@ -366,21 +373,30 @@ async def place_order(order: OrderRequest):
             "[ORDER] event_id=%s outcome=%s side=%s order_type=%s "
             "requested_shares=%.4f effective_shares=%.4f order_price=%.4f "
             "token_id=%s",
-            order.event_id, outcome_side, side, order.order_type,
-            requested_shares, effective_shares, order_price_ref, token_id,
+            order.event_id,
+            outcome_side,
+            side,
+            order.order_type,
+            requested_shares,
+            effective_shares,
+            order_price_ref,
+            token_id,
         )
         if is_sell:
             # Ensure the CLOB has allowance to move conditional tokens (shares) from wallet.
             # Without this, sells fail with "not enough balance / allowance".
             try:
                 from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
+
                 cond_params = BalanceAllowanceParams(
                     asset_type=AssetType.CONDITIONAL,
                     token_id=token_id,
                     signature_type=client.config.signature_type,
                 )
                 client.client.update_balance_allowance(cond_params)
-                logger.info("[SELL] conditional allowance updated for token=%s", token_id)
+                logger.info(
+                    "[SELL] conditional allowance updated for token=%s", token_id
+                )
             except Exception as e:
                 logger.warning("[SELL] could not update conditional allowance: %s", e)
 
@@ -403,7 +419,10 @@ async def place_order(order: OrderRequest):
             logger.info(
                 "[SELL] token=%s price=%.4f shares=%.4f price_source=%s "
                 "bids_top3=%s asks_top3=%s yes_price=%.4f no_price=%.4f",
-                token_id, sell_price, effective_shares, price_source,
+                token_id,
+                sell_price,
+                effective_shares,
+                price_source,
                 [b.get("price") for b in bids[:3]] if bids else "none",
                 [a.get("price") for a in asks[:3]] if asks else "none",
                 float(event.get("yes_price") or 0),
@@ -415,12 +434,20 @@ async def place_order(order: OrderRequest):
         else:
             result = client.place_order(token_id, side, order.price, effective_shares)
 
-        logger.info("Raw CLOB result type=%s value=%s", type(result).__name__, repr(result)[:200])
+        logger.info(
+            "Raw CLOB result type=%s value=%s",
+            type(result).__name__,
+            repr(result)[:200],
+        )
 
         # Detect CLOB error responses (dict with errorCode/error key)
-        if isinstance(result, dict) and (result.get("errorCode") or result.get("error")):
+        if isinstance(result, dict) and (
+            result.get("errorCode") or result.get("error")
+        ):
             err_msg = result.get("error") or result.get("errorCode") or str(result)
-            logger.error("CLOB returned error for %s %s: %s", side, outcome_side, err_msg)
+            logger.error(
+                "CLOB returned error for %s %s: %s", side, outcome_side, err_msg
+            )
             raise HTTPException(status_code=500, detail=f"CLOB error: {err_msg}")
 
         if result:
@@ -431,7 +458,11 @@ async def place_order(order: OrderRequest):
                 or (result.get("orderID") if isinstance(result, dict) else None)
                 or str(result)[:16]
             )
-            status = getattr(result, "status", None) or (result.get("status") if isinstance(result, dict) else None) or "OPEN"
+            status = (
+                getattr(result, "status", None)
+                or (result.get("status") if isinstance(result, dict) else None)
+                or "OPEN"
+            )
             now_fill = datetime.now(tz=timezone.utc)
             if not is_sell:
                 event_manager.register_order_fill(
@@ -440,10 +471,15 @@ async def place_order(order: OrderRequest):
                     outcome=outcome_side,
                     notional_usd=notional_usd,
                     now_utc=now_fill,
+                    bankroll_snapshot_usd=bankroll_usd,
                 )
                 # Extraer shares reales del resultado (takingAmount del CLOB)
-                taking_amount = result.get("takingAmount") if isinstance(result, dict) else None
-                real_shares = float(taking_amount) if taking_amount else effective_shares
+                taking_amount = (
+                    result.get("takingAmount") if isinstance(result, dict) else None
+                )
+                real_shares = (
+                    float(taking_amount) if taking_amount else effective_shares
+                )
                 event_manager.record_position_buy(
                     event_id=order.event_id,
                     outcome=outcome_side,
@@ -499,8 +535,13 @@ async def place_order(order: OrderRequest):
         logger.error(
             "[ORDER ERROR] event_id=%s outcome=%s side=%s order_type=%s "
             "token_id=%s effective_shares=%.4f error=%s",
-            order.event_id, outcome_side, order.side.upper(), order.order_type,
-            token_id, effective_shares, e,
+            order.event_id,
+            outcome_side,
+            order.side.upper(),
+            order.order_type,
+            token_id,
+            effective_shares,
+            e,
         )
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -602,13 +643,15 @@ def _fetch_claimable_sync(wallet: str) -> dict:
         if value <= 0:
             continue
         claimable_usd += value
-        claimable_positions.append({
-            "market": pos.get("market") or pos.get("conditionId", ""),
-            "title": pos.get("title") or pos.get("question", ""),
-            "outcome": pos.get("outcome", ""),
-            "size": round(size, 4),
-            "value_usd": round(value, 4),
-        })
+        claimable_positions.append(
+            {
+                "market": pos.get("market") or pos.get("conditionId", ""),
+                "title": pos.get("title") or pos.get("question", ""),
+                "outcome": pos.get("outcome", ""),
+                "size": round(size, 4),
+                "value_usd": round(value, 4),
+            }
+        )
 
     return {
         "claimable_usd": round(claimable_usd, 4),
@@ -632,7 +675,10 @@ async def get_claimable():
         raise HTTPException(status_code=500, detail="POLYMARKET_FUNDER not configured")
 
     now = time.monotonic()
-    if _CLAIMABLE_CACHE["data"] is not None and (now - _CLAIMABLE_CACHE["ts"]) < _CLAIMABLE_CACHE_TTL:
+    if (
+        _CLAIMABLE_CACHE["data"] is not None
+        and (now - _CLAIMABLE_CACHE["ts"]) < _CLAIMABLE_CACHE_TTL
+    ):
         return _CLAIMABLE_CACHE["data"]
 
     result = await asyncio.to_thread(_fetch_claimable_sync, wallet)
@@ -781,7 +827,8 @@ async def get_positions(event_id: str):
         for outcome_key, pos in tracked.items():
             outcome_label = "Up" if outcome_key == "up" else "Down"
             current_price = float(
-                event.get("yes_price", pos["avg_price"]) if outcome_key == "up"
+                event.get("yes_price", pos["avg_price"])
+                if outcome_key == "up"
                 else event.get("no_price", pos["avg_price"])
             )
             qty = pos["shares"]
@@ -790,18 +837,20 @@ async def get_positions(event_id: str):
             value = round(qty * current_price, 2)
             return_value = round(value - cost, 2)
             return_pct = round((return_value / cost * 100) if cost > 0 else 0, 2)
-            positions.append({
-                "outcome": outcome_label,
-                "qty": round(qty, 4),
-                "avg_price": round(avg_price, 4),
-                "current_price": round(current_price, 4),
-                "cost": cost,
-                "value": value,
-                "return_value": return_value,
-                "return_pct": return_pct,
-                "token_id": pos.get("token_id", ""),
-                "placed_at_utc": pos.get("placed_at_utc", ""),
-            })
+            positions.append(
+                {
+                    "outcome": outcome_label,
+                    "qty": round(qty, 4),
+                    "avg_price": round(avg_price, 4),
+                    "current_price": round(current_price, 4),
+                    "cost": cost,
+                    "value": value,
+                    "return_value": return_value,
+                    "return_pct": return_pct,
+                    "token_id": pos.get("token_id", ""),
+                    "placed_at_utc": pos.get("placed_at_utc", ""),
+                }
+            )
         return {"positions": positions, "source": "tracker"}
 
     # Sin posiciones trackeadas para este evento

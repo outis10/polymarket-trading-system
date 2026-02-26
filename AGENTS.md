@@ -22,6 +22,13 @@ Actualízalo cuando cambien decisiones, scripts o flujos importantes.
   - `kelly_live_bankroll_usd` y `kelly_paper_bankroll_usd` ya están presentes en runtime/settings,
   - no hay clientes/UI antiguos enviando solo `kelly_bankroll`.
 
+### TODO técnico (naming guardrail max buys)
+- El setting `bot_max_buys_per_event_side` hoy se aplica por **evento total** (no por `event+side`).
+- Evaluar renombre a algo semánticamente correcto (ej. `bot_max_buys_per_event`) manteniendo compatibilidad backward:
+  - backend: aceptar ambos campos durante transición,
+  - frontend: migrar label/UI,
+  - runtime/settings: plan de migración sin romper clientes existentes.
+
 ### TODO arquitectura (single source of truth de reglas)
 - Revisar y consolidar validaciones de elegibilidad/riesgo en una sola función fuente de verdad.
 - Evitar duplicidad entre:
@@ -812,3 +819,74 @@ Implementar modulo Kelly configurable desde Settings:
 - Guardrails agregados en el script:
   - falla si detecta bloques 5m incompletos/duplicados (`count != max_slot`),
   - falla si `--exclude-last-slot` está desactivado y falta el slot final del bloque.
+
+## Estado actualizado (2026-02-25, single source of truth de elegibilidad bot/tracking)
+
+- Nuevo método backend en `EventManager`:
+  - `evaluate_bot_order_candidate(...)` centraliza decisión y sizing por `event_id + side`.
+- Cobertura de reglas unificadas (mismo orden de decisión):
+  1. `timeframe_filter` (si `bot_enforce_timeframe_filter=true`),
+  2. guardrail por cercanía a cierre (`bot_min_seconds_before_end`),
+  3. `quant_buy_gate` del lado (`up/down`),
+  4. rango de precio permitido (`quant_gate_min_price_c` / `quant_gate_max_price_c`),
+  5. requisito duro `kelly_enabled=true`,
+  6. sizing Kelly + cap por orden (`bot_order_notional_cap_usd`),
+  7. `validate_order_risk_guards(...)` (mínimos, cooldowns, max buys, lado opuesto, caps).
+- Integración aplicada:
+  - tracking (`_evaluate_trackable_side_for_tracking`) ahora usa el método unificado,
+  - ejecución bot (`_bot_maybe_place_order`) también usa el método unificado.
+- Resultado:
+  - señales analytics, paper y live quedan alineadas a la misma elegibilidad efectiva.
+
+## Estado actualizado (2026-02-25, badge paper bankroll en header)
+
+- Header live ahora muestra, en `bot_paper_mode`, un badge adicional:
+  - `Paper $...` usando `settings.paper_current_bankroll_usd`.
+- Ubicación:
+  - en la zona central del header, inmediatamente a la izquierda del badge `PAPER MODE`.
+- Si el valor no está disponible, el badge muestra `Paper $N/A`.
+
+## Estado actualizado (2026-02-25, blocked stake como N/A)
+
+- `Blocked Opportunities` ya no usa fallback `$100` cuando la señal se bloquea antes de sizing accionable.
+- Backend (`OpportunityTracker.track_gate_transition`):
+  - `estimated_stake_usd` en bloqueados se guarda vacío si `stake_usd_override` no es `> 0`.
+- Frontend (`OpportunitiesDashboard`):
+  - columna `Est. Stake` muestra `N/A` cuando `estimated_stake_usd` no tiene valor positivo.
+
+## Estado actualizado (2026-02-25, caps de exposición en paper usan bankroll paper)
+
+- Ajuste en `_bot_maybe_place_order`:
+  - cuando `bot_paper_mode=true`, ya no se consulta ni usa `client.get_balance()` para guardrails.
+  - la evaluación (`evaluate_bot_order_candidate`) usa bankroll paper efectivo (`paper_current_bankroll_usd` / `kelly_paper_bankroll_usd`) para caps.
+- Resultado:
+  - evita bloqueos paper por `event_exposure_cap_reached` causados por balance live.
+
+## Estado actualizado (2026-02-25, nuevas curvas Trading Equity en Analytics)
+
+- Dashboard analytics agrega dos graficas nuevas (linea de equity):
+  1. `Paper Trading Equity Curve`
+  2. `Live Trading Equity Curve`
+- Implementacion frontend:
+  - nuevo componente `frontend/src/components/analytics/TradingEquityCurveChart.tsx`.
+  - integradas en `OpportunitiesDashboard.tsx` dentro de la grilla de charts.
+  - refresh automatico de analytics cada 15s para actualizar curvas en runtime.
+- Fuente de calculo:
+  - Paper: `paper_trades` filtrado por `days/ticker/regime` (equity acumulada desde `kelly_paper_bankroll_usd`).
+  - Live: `bot_orders` (`status=placed`) cruzado con outcomes resueltos del evento para estimar PnL por orden.
+
+## Estado actualizado (2026-02-25, baseline inicial de bankroll para live equity)
+
+- Nuevos settings persistentes:
+  - `live_equity_start_bankroll_usd`
+  - `live_equity_start_at_utc`
+- Comportamiento:
+  - se capturan automaticamente en el primer fill real live (no paper).
+  - fuente del snapshot: `bankroll_snapshot_usd` del fill (balance API live); fallback a `kelly_live_bankroll_usd`.
+  - una vez seteados, no se sobreescriben automaticamente en fills siguientes.
+- Uso en analytics:
+  - `Live Trading Equity Curve` arranca desde este baseline persistido.
+  - fallback: `kelly_live_bankroll_usd` cuando aun no existe snapshot.
+- Control manual:
+  - nuevo boton `Reset Live Baseline` en analytics con `confirm(...)` antes de ejecutar.
+  - resetea `live_equity_start_bankroll_usd` y `live_equity_start_at_utc` via `POST /api/settings`.

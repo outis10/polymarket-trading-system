@@ -1,8 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { apiFetch } from "../../auth/apiFetch";
+import { useEventsStore } from "../../stores/useEventsStore";
 import EquityDrawdownChart, {
     EquityDrawdownPoint,
 } from "./EquityDrawdownChart";
+import TradingEquityCurveChart, {
+    TradingEquityPoint,
+} from "./TradingEquityCurveChart";
 
 type Ticker = "ALL" | "BTC" | "ETH" | "SOL" | "XRP";
 type RegimeFilter = "all" | "weekday" | "weekend";
@@ -17,6 +21,7 @@ interface RawOutcome {
     side: "up" | "down";
     won: string;
     pnl_usd: string;
+    actual_outcome?: string;
     percentile_at_signal?: string;
     edge_pct_at_signal?: string;
 }
@@ -207,6 +212,8 @@ const EDGE_BUCKETS: Array<{
 ];
 
 export default function OpportunitiesDashboard() {
+    const runtimeSettings = useEventsStore((s) => s.settings);
+    const updateRuntimeSettings = useEventsStore((s) => s.updateSettings);
     const [days, setDays] = useState(7);
     const [ticker, setTicker] = useState<Ticker>("ALL");
     const [regimeFilter, setRegimeFilter] = useState<RegimeFilter>("all");
@@ -222,6 +229,7 @@ export default function OpportunitiesDashboard() {
         null,
     );
     const [pipelineError, setPipelineError] = useState("");
+    const [resettingLiveBaseline, setResettingLiveBaseline] = useState(false);
 
     const loadData = async () => {
         setLoading(true);
@@ -302,8 +310,47 @@ export default function OpportunitiesDashboard() {
         }
     };
 
+    const handleResetLiveBaseline = async () => {
+        if (resettingLiveBaseline) return;
+        const ok = window.confirm(
+            "Reset live equity baseline? This will set baseline bankroll to 0 until the next real live fill captures a new start point.",
+        );
+        if (!ok) return;
+        setResettingLiveBaseline(true);
+        try {
+            const res = await apiFetch("/api/settings", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    settings: {
+                        live_equity_start_bankroll_usd: 0,
+                        live_equity_start_at_utc: "",
+                    },
+                }),
+            });
+            if (!res.ok) {
+                throw new Error(`Failed to reset baseline (${res.status})`);
+            }
+            updateRuntimeSettings({
+                live_equity_start_bankroll_usd: 0,
+                live_equity_start_at_utc: "",
+            });
+            await loadData();
+        } catch (e) {
+            setError(
+                e instanceof Error
+                    ? e.message
+                    : "Failed to reset live equity baseline",
+            );
+        } finally {
+            setResettingLiveBaseline(false);
+        }
+    };
+
     useEffect(() => {
         loadData();
+        const interval = setInterval(loadData, 15000);
+        return () => clearInterval(interval);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [days]);
 
@@ -727,6 +774,124 @@ export default function OpportunitiesDashboard() {
         };
     }, [paperEquityPoints]);
 
+    const paperTradingCurve = useMemo<TradingEquityPoint[]>(() => {
+        const baseEquity = asNumber(
+            runtimeSettings.kelly_paper_bankroll_usd ?? 1000,
+        );
+        const rows = filteredPaperRows
+            .slice()
+            .sort(
+                (a, b) =>
+                    new Date(a.decision_time).getTime() -
+                    new Date(b.decision_time).getTime(),
+            );
+
+        let equity = baseEquity;
+        let lastTsMs = Number.NEGATIVE_INFINITY;
+        return rows.map((row) => {
+            if (String(row.status).toLowerCase() === "resolved") {
+                equity += asNumber(row.pnl_simulated);
+            }
+            let tsMs = new Date(row.decision_time).getTime();
+            if (!Number.isFinite(tsMs)) tsMs = Date.now();
+            if (tsMs <= lastTsMs) tsMs = lastTsMs + 1;
+            lastTsMs = tsMs;
+            return { ts: new Date(tsMs).toISOString(), equity };
+        });
+    }, [filteredPaperRows, runtimeSettings.kelly_paper_bankroll_usd]);
+
+    const paperTradingCurveMetrics = useMemo(() => {
+        const first = paperTradingCurve[0];
+        const last = paperTradingCurve[paperTradingCurve.length - 1];
+        return {
+            points: paperTradingCurve.length,
+            startEquity:
+                first?.equity ??
+                asNumber(runtimeSettings.kelly_paper_bankroll_usd ?? 1000),
+            finalEquity:
+                last?.equity ??
+                asNumber(runtimeSettings.kelly_paper_bankroll_usd ?? 1000),
+        };
+    }, [paperTradingCurve, runtimeSettings.kelly_paper_bankroll_usd]);
+
+    const liveTradingCurve = useMemo<TradingEquityPoint[]>(() => {
+        const baseEquity = asNumber(
+            runtimeSettings.live_equity_start_bankroll_usd &&
+                runtimeSettings.live_equity_start_bankroll_usd > 0
+                ? runtimeSettings.live_equity_start_bankroll_usd
+                : (runtimeSettings.kelly_live_bankroll_usd ?? 100),
+        );
+        const outcomeByEvent = new Map<string, string>();
+        for (const row of rowsInWindow) {
+            const key = String(row.event_id || "").trim();
+            const actual = String(row.actual_outcome || "")
+                .trim()
+                .toLowerCase();
+            if (!key || !actual) continue;
+            outcomeByEvent.set(key, actual);
+        }
+
+        const placedOrders = filteredBotOrderRows
+            .filter((r) => String(r.status).toLowerCase() === "placed")
+            .slice()
+            .sort(
+                (a, b) =>
+                    new Date(a.placed_at_utc).getTime() -
+                    new Date(b.placed_at_utc).getTime(),
+            );
+
+        let equity = baseEquity;
+        let lastTsMs = Number.NEGATIVE_INFINITY;
+        const points: TradingEquityPoint[] = [];
+        for (const row of placedOrders) {
+            const eventId = String(row.event_id || "").trim();
+            const actual = outcomeByEvent.get(eventId);
+            if (!actual) continue;
+            const side = String(row.side || "").toLowerCase();
+            const stake = asNumber(row.notional_usd);
+            const q =
+                asNumber(row.fill_price_real) > 0
+                    ? asNumber(row.fill_price_real)
+                    : asNumber(row.price);
+            if (stake <= 0 || q <= 0) continue;
+            const won = side === actual;
+            const pnl = won ? stake * (1 / q - 1) : -stake;
+            equity += pnl;
+
+            let tsMs = new Date(row.placed_at_utc).getTime();
+            if (!Number.isFinite(tsMs)) tsMs = Date.now();
+            if (tsMs <= lastTsMs) tsMs = lastTsMs + 1;
+            lastTsMs = tsMs;
+            points.push({ ts: new Date(tsMs).toISOString(), equity });
+        }
+        return points;
+    }, [
+        filteredBotOrderRows,
+        rowsInWindow,
+        runtimeSettings.live_equity_start_bankroll_usd,
+        runtimeSettings.kelly_live_bankroll_usd,
+    ]);
+
+    const liveTradingCurveMetrics = useMemo(() => {
+        const first = liveTradingCurve[0];
+        const last = liveTradingCurve[liveTradingCurve.length - 1];
+        const configuredStart = asNumber(
+            runtimeSettings.live_equity_start_bankroll_usd &&
+                runtimeSettings.live_equity_start_bankroll_usd > 0
+                ? runtimeSettings.live_equity_start_bankroll_usd
+                : (runtimeSettings.kelly_live_bankroll_usd ?? 100),
+        );
+        return {
+            points: liveTradingCurve.length,
+            startEquity: first?.equity ?? configuredStart,
+            finalEquity: last?.equity ?? configuredStart,
+        };
+    }, [
+        liveTradingCurve,
+        runtimeSettings.live_equity_start_bankroll_usd,
+        runtimeSettings.kelly_live_bankroll_usd,
+    ]);
+
     const botOrderMetrics = useMemo(() => {
         const total = filteredBotOrderRows.length;
         const placed = filteredBotOrderRows.filter(
@@ -1097,6 +1262,64 @@ export default function OpportunitiesDashboard() {
                     </div>
                     <EquityDrawdownChart points={paperEquityPoints} />
                 </article>
+
+                <article className="analytics-panel">
+                    <h3>Paper Trading Equity Curve</h3>
+                    <div className="analytics-mini-kpis">
+                        <span>Points: {paperTradingCurveMetrics.points}</span>
+                        <span>
+                            Start: $
+                            {paperTradingCurveMetrics.startEquity.toFixed(2)}
+                        </span>
+                        <span>
+                            Final: $
+                            {paperTradingCurveMetrics.finalEquity.toFixed(2)}
+                        </span>
+                    </div>
+                    <TradingEquityCurveChart
+                        points={paperTradingCurve}
+                        color="#3fb950"
+                    />
+                </article>
+
+                <article className="analytics-panel">
+                    <h3>Live Trading Equity Curve</h3>
+                    <div className="analytics-mini-kpis">
+                        <span>
+                            Resolved placed orders:{" "}
+                            {liveTradingCurveMetrics.points}
+                        </span>
+                        <span>
+                            Start: $
+                            {liveTradingCurveMetrics.startEquity.toFixed(2)}
+                        </span>
+                        <span>
+                            Final: $
+                            {liveTradingCurveMetrics.finalEquity.toFixed(2)}
+                        </span>
+                        <span>
+                            Baseline at:{" "}
+                            {runtimeSettings.live_equity_start_at_utc
+                                ? runtimeSettings.live_equity_start_at_utc
+                                      .replace("T", " ")
+                                      .slice(0, 19)
+                                : "not set"}
+                        </span>
+                    </div>
+                    <button
+                        className="analytics-danger-btn"
+                        onClick={handleResetLiveBaseline}
+                        disabled={resettingLiveBaseline}
+                    >
+                        {resettingLiveBaseline
+                            ? "Resetting..."
+                            : "Reset Live Baseline"}
+                    </button>
+                    <TradingEquityCurveChart
+                        points={liveTradingCurve}
+                        color="#58a6ff"
+                    />
+                </article>
             </section>
 
             <section className="analytics-panels">
@@ -1240,6 +1463,7 @@ export default function OpportunitiesDashboard() {
                             <th>Slot</th>
                             <th>Range</th>
                             <th>Prob UP</th>
+                            <th>Prob Side</th>
                             <th>Market Prob</th>
                             <th>Stake $</th>
                             <th>Shares</th>
@@ -1255,55 +1479,69 @@ export default function OpportunitiesDashboard() {
                             .slice()
                             .reverse()
                             .slice(0, 50)
-                            .map((row) => (
-                                <tr key={row.decision_id}>
-                                    <td>
-                                        {row.decision_time
-                                            .replace("T", " ")
-                                            .slice(0, 19)}
-                                    </td>
-                                    <td>{row.ticker}</td>
-                                    <td>{row.slot || "n/a"}</td>
-                                    <td>{row.range || "n/a"}</td>
-                                    <td>{asNumber(row.prob_up).toFixed(4)}</td>
-                                    <td>
-                                        {asNumber(
-                                            row.marketProb_at_decision,
-                                        ).toFixed(4)}
-                                    </td>
-                                    <td>
-                                        ${asNumber(row.stake_usd).toFixed(2)}
-                                    </td>
-                                    <td>
-                                        {asNumber(row.shares_simulated) > 0
-                                            ? asNumber(
-                                                  row.shares_simulated,
-                                              ).toFixed(4)
-                                            : "n/a"}
-                                    </td>
-                                    <td>
-                                        {(
-                                            asNumber(row.QuantumEdge) * 100
-                                        ).toFixed(2)}
-                                        %
-                                    </td>
-                                    <td>
-                                        {String(row.side_taken).toUpperCase()}
-                                    </td>
-                                    <td>
-                                        {row.event_outcome_real
-                                            ? String(
-                                                  row.event_outcome_real,
-                                              ).toUpperCase()
-                                            : "pending"}
-                                    </td>
-                                    <td>
-                                        $
-                                        {asNumber(row.pnl_simulated).toFixed(2)}
-                                    </td>
-                                    <td>{row.status}</td>
-                                </tr>
-                            ))}
+                            .map((row) => {
+                                const probUp = asNumber(row.prob_up);
+                                const probSide =
+                                    String(row.side_taken).toLowerCase() ===
+                                    "down"
+                                        ? 1 - probUp
+                                        : probUp;
+                                return (
+                                    <tr key={row.decision_id}>
+                                        <td>
+                                            {row.decision_time
+                                                .replace("T", " ")
+                                                .slice(0, 19)}
+                                        </td>
+                                        <td>{row.ticker}</td>
+                                        <td>{row.slot || "n/a"}</td>
+                                        <td>{row.range || "n/a"}</td>
+                                        <td>{probUp.toFixed(4)}</td>
+                                        <td>{probSide.toFixed(4)}</td>
+                                        <td>
+                                            {asNumber(
+                                                row.marketProb_at_decision,
+                                            ).toFixed(4)}
+                                        </td>
+                                        <td>
+                                            $
+                                            {asNumber(row.stake_usd).toFixed(2)}
+                                        </td>
+                                        <td>
+                                            {asNumber(row.shares_simulated) > 0
+                                                ? asNumber(
+                                                      row.shares_simulated,
+                                                  ).toFixed(4)
+                                                : "n/a"}
+                                        </td>
+                                        <td>
+                                            {(
+                                                asNumber(row.QuantumEdge) * 100
+                                            ).toFixed(2)}
+                                            %
+                                        </td>
+                                        <td>
+                                            {String(
+                                                row.side_taken,
+                                            ).toUpperCase()}
+                                        </td>
+                                        <td>
+                                            {row.event_outcome_real
+                                                ? String(
+                                                      row.event_outcome_real,
+                                                  ).toUpperCase()
+                                                : "pending"}
+                                        </td>
+                                        <td>
+                                            $
+                                            {asNumber(
+                                                row.pnl_simulated,
+                                            ).toFixed(2)}
+                                        </td>
+                                        <td>{row.status}</td>
+                                    </tr>
+                                );
+                            })}
                     </tbody>
                 </table>
             </section>
@@ -1475,10 +1713,11 @@ export default function OpportunitiesDashboard() {
                                     <td>{row.side.toUpperCase()}</td>
                                     <td>{row.blocked_reason}</td>
                                     <td>
-                                        $
-                                        {asNumber(
-                                            row.estimated_stake_usd,
-                                        ).toFixed(2)}
+                                        {asNumber(row.estimated_stake_usd) > 0
+                                            ? `$${asNumber(
+                                                  row.estimated_stake_usd,
+                                              ).toFixed(2)}`
+                                            : "N/A"}
                                     </td>
                                     <td className="analytics-event-id">
                                         {row.event_id}
