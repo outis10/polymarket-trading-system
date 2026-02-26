@@ -1,17 +1,27 @@
 import { create } from "zustand";
 import type { EventData, SettingsData } from "../types/events";
 
+export interface SystemToast {
+    message: string;
+    type: "success" | "warning" | "error";
+    id: number;
+}
+
 interface EventsState {
     events: Record<string, EventData>;
     settings: SettingsData;
+    systemToast: SystemToast | null;
     setEvents: (events: Record<string, EventData>) => void;
     updateEvent: (eventId: string, data: Partial<EventData>) => void;
     setSettings: (settings: SettingsData) => void;
     updateSettings: (partial: Partial<SettingsData>) => void;
+    showSystemToast: (message: string, type: SystemToast["type"]) => void;
+    clearSystemToast: () => void;
 }
 
 export const useEventsStore = create<EventsState>((set) => ({
     events: {},
+    systemToast: null,
     settings: {
         mode: "live",
         refresh_rate: 1,
@@ -21,6 +31,12 @@ export const useEventsStore = create<EventsState>((set) => ({
         kelly_enabled: true,
         kelly_fraction: 0.25,
         kelly_bankroll: 100,
+        kelly_live_bankroll_usd: 100,
+        kelly_paper_bankroll_usd: 100,
+        paper_compound_enabled: true,
+        paper_current_bankroll_usd: 100,
+        live_equity_start_bankroll_usd: 0,
+        live_equity_start_at_utc: "",
         kelly_min_edge_pct: 0.5,
         kelly_max_bet_pct: 25,
         kelly_max_event_exposure_pct: 25,
@@ -39,7 +55,8 @@ export const useEventsStore = create<EventsState>((set) => ({
         quant_gate_min_edge_vs_ask_pct: 2,
         quant_gate_min_prob: 0.0,
         early_window_enabled: true,
-        early_window_seconds: 50,
+        early_window_start: 20,
+        early_window_end: 120,
         early_quant_gate_min_sample: 90,
         early_quant_gate_min_edge_pct: 4,
         early_quant_gate_edge_vs_ask_enabled: false,
@@ -47,7 +64,8 @@ export const useEventsStore = create<EventsState>((set) => ({
         early_quant_gate_min_prob: 0,
         early_quant_gate_min_diff_pct: 0,
         late_window_enabled: true,
-        late_window_seconds: 120,
+        late_window_start: 180,
+        late_window_end: 280,
         late_quant_gate_min_sample: 70,
         late_quant_gate_min_edge_pct: 3,
         late_quant_gate_edge_vs_ask_enabled: false,
@@ -62,11 +80,14 @@ export const useEventsStore = create<EventsState>((set) => ({
         bot_max_event_exposure_pct: 15,
         bot_max_ticker_exposure_pct: 25,
         bot_order_notional_cap_usd: 5,
+        bot_paper_mode: false,
         pm_min_shares: 5,
         pm_min_notional_usd: 1,
         order_book_max_levels: 8,
         order_book_min_broadcast_ms: 120,
         bot_enforce_timeframe_filter: true,
+        bot_min_seconds_before_end: 30,
+        bot_block_opposite_side: true,
         keyboard_shortcuts_enabled:
             localStorage.getItem("keyboard_shortcuts_enabled") === "true",
     },
@@ -95,4 +116,9 @@ export const useEventsStore = create<EventsState>((set) => ({
         set((state) => ({
             settings: { ...state.settings, ...partial },
         })),
+
+    showSystemToast: (message, type) =>
+        set({ systemToast: { message, type, id: Date.now() } }),
+
+    clearSystemToast: () => set({ systemToast: null }),
 }));

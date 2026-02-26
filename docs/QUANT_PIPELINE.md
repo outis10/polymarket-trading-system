@@ -267,7 +267,40 @@ Al cierre de evento:
   QE = (quantProb - bestAsk)\cdot 100
   \]
 
-## 10. Comando Recomendado Para Regenerar Base
+## 10. Actualización Diaria (Fin De Día)
+
+Al terminar cada jornada de trading, regenera la tabla quant con los últimos 7 días de datos de Binance y actívala en caliente sin reiniciar el backend.
+
+### Comando rápido
+
+```bash
+cd /ruta/a/polymarket-trading-system
+bash scripts/update_quant.sh
+```
+
+El script hace automáticamente:
+1. Descarga datos frescos de Binance (últimos 7 días, 1s klines)
+2. Resamplea a slots de 10s
+3. Agrega rangos por slot y aplica Bayes smoothing
+4. Genera `backtest_output/merged_pm_5m_slot_ranges_4cryptos.csv`
+5. Llama a `POST /api/quant/reload` — hot-reload en memoria sin reiniciar el proceso
+
+### Variables opcionales
+
+```bash
+# Con más historial (ej. 14 días):
+LOOKBACK_DAYS=14 bash scripts/update_quant.sh
+
+# Con API Key activa en el backend:
+API_KEY=<tu-key> bash scripts/update_quant.sh
+
+# Ambas:
+LOOKBACK_DAYS=14 API_KEY=<tu-key> bash scripts/update_quant.sh
+```
+
+### Comando manual equivalente
+
+Si prefieres correrlo paso a paso:
 
 ```bash
 python3 run_pm_pipeline_4cryptos_5m_10s.py \
@@ -276,7 +309,28 @@ python3 run_pm_pipeline_4cryptos_5m_10s.py \
   --range-step 10 \
   --min-count 20 \
   --output-dir backtest_output
+
+# Luego hot-reload (sin API Key):
+curl -s -X POST http://localhost:8000/api/quant/reload
+
+# Con API Key:
+curl -s -X POST http://localhost:8000/api/quant/reload \
+  -H "X-API-Key: <tu-key>"
 ```
+
+### Endpoint de hot-reload
+
+`POST /api/quant/reload`
+
+- Recarga ambas tablas (`pm_ranges` y `pm_5m_slot_ranges`) desde disco sin detener el backend.
+- Responde `{"ok": true, "ranges_tickers": [...], "slot_ranges_tickers": [...]}` en éxito.
+- Si falla la lectura del CSV, responde `{"ok": false, "error": "..."}` y mantiene las tablas anteriores en memoria.
+
+### Cuándo correrlo
+
+- Al finalizar el último evento del día (típicamente ~23:55 UTC).
+- Después de cambiar parámetros del pipeline (`--lookback-days`, `--min-count`, etc.).
+- Cuando sospechas drift del modelo (señales fuera de lo esperado).
 
 ## 11. Supuestos Y Limites
 

@@ -7,8 +7,9 @@ import json
 import logging
 import os
 import re
+import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from ..config import load_events_config
 from ..ws.manager import manager
@@ -35,9 +36,47 @@ _BOT_ORDERS_LOG_DIR = os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "..", "backtest_output")
 )
 _BOT_ORDERS_FIELDNAMES = [
-    "placed_at_utc", "event_id", "ticker", "side", "token_id",
-    "shares", "price", "notional_usd", "order_id",
-    "quant_prob", "edge_pct", "kelly_pct", "bankroll_usd", "percentile_at_signal", "status",
+    "placed_at_utc",
+    "event_id",
+    "ticker",
+    "side",
+    "token_id",
+    "shares",
+    "price",
+    "notional_usd",
+    "order_id",
+    "quant_prob",
+    "edge_pct",
+    "price_source_at_send",
+    "fill_price_real",
+    "edge_at_fill_pct",
+    "kelly_pct",
+    "bankroll_usd",
+    "percentile_at_signal",
+    "status",
+]
+_PAPER_TRADES_LOG_PATH = os.path.normpath(
+    os.path.join(_BOT_ORDERS_LOG_DIR, "paper_trades.csv")
+)
+_PAPER_TRADES_FIELDNAMES = [
+    "decision_id",
+    "decision_time",
+    "event_id",
+    "ticker",
+    "event_end_utc",
+    "price_to_beat_at_decision",
+    "close_price_at_resolution",
+    "stake_usd",
+    "shares_simulated",
+    "slot",
+    "range",
+    "prob_up",
+    "marketProb_at_decision",
+    "QuantumEdge",
+    "side_taken",
+    "event_outcome_real",
+    "pnl_simulated",
+    "status",
 ]
 
 
@@ -50,11 +89,151 @@ def _append_bot_order_log(row: dict) -> None:
     path = _bot_orders_log_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     file_exists = os.path.exists(path)
+    if file_exists:
+        try:
+            with open(path, newline="") as f:
+                reader = csv.DictReader(f)
+                existing_fields = reader.fieldnames or []
+                if existing_fields != _BOT_ORDERS_FIELDNAMES:
+                    # Migrate in-place to the latest schema to avoid malformed rows.
+                    existing_rows = list(reader)
+                    tmp_path = f"{path}.tmp"
+                    with open(tmp_path, "w", newline="") as wf:
+                        writer = csv.DictWriter(wf, fieldnames=_BOT_ORDERS_FIELDNAMES)
+                        writer.writeheader()
+                        for old_row in existing_rows:
+                            writer.writerow(
+                                {
+                                    key: old_row.get(key, "")
+                                    for key in _BOT_ORDERS_FIELDNAMES
+                                }
+                            )
+                    os.replace(tmp_path, path)
+        except Exception as exc:
+            logger.warning(
+                "Could not migrate bot orders log schema for %s: %s", path, exc
+            )
     with open(path, "a", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=_BOT_ORDERS_FIELDNAMES)
         if not file_exists:
             writer.writeheader()
         writer.writerow({k: row.get(k, "") for k in _BOT_ORDERS_FIELDNAMES})
+
+
+def _as_float(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_fill_price_from_result(result: Any) -> float | None:
+    """Best-effort extraction of real fill/avg price from order response."""
+    if result is None:
+        return None
+
+    # Object-like response -> dict-like view.
+    if not isinstance(result, dict):
+        obj_dict = getattr(result, "__dict__", None)
+        if isinstance(obj_dict, dict):
+            result = obj_dict
+        else:
+            return None
+
+    # 1) Prefer explicit avg/fill fields.
+    preferred_keys = [
+        "filled_price",
+        "fill_price",
+        "avg_price",
+        "average_price",
+        "executed_price",
+        "execution_price",
+        "price_per_share",
+    ]
+    for key in preferred_keys:
+        price = _as_float(result.get(key))
+        if price is not None and price > 0:
+            return price
+
+    # 2) Look for fills list and compute weighted average.
+    fills = result.get("fills")
+    if isinstance(fills, list) and fills:
+        weighted_num = 0.0
+        weighted_den = 0.0
+        for fill in fills:
+            if not isinstance(fill, dict):
+                continue
+            p = _as_float(
+                fill.get("price")
+                or fill.get("fill_price")
+                or fill.get("executed_price")
+            )
+            # size/shares fallback priority
+            q = _as_float(
+                fill.get("size")
+                or fill.get("shares")
+                or fill.get("quantity")
+                or fill.get("filled_size")
+            )
+            if p is None or p <= 0:
+                continue
+            if q is None or q <= 0:
+                # If quantity is missing, treat as 1 unit.
+                q = 1.0
+            weighted_num += p * q
+            weighted_den += q
+        if weighted_den > 0:
+            return weighted_num / weighted_den
+
+    # 3) Nested common containers.
+    for nested_key in ("data", "result", "order", "fill"):
+        nested = result.get(nested_key)
+        if isinstance(nested, dict):
+            nested_price = _extract_fill_price_from_result(nested)
+            if nested_price is not None:
+                return nested_price
+
+    # 4) Last resort: plain "price" from result payload.
+    plain_price = _as_float(result.get("price"))
+    if plain_price is not None and plain_price > 0:
+        return plain_price
+
+    return None
+
+
+def _ensure_paper_trades_csv() -> None:
+    os.makedirs(os.path.dirname(_PAPER_TRADES_LOG_PATH), exist_ok=True)
+    if os.path.exists(_PAPER_TRADES_LOG_PATH):
+        try:
+            with open(_PAPER_TRADES_LOG_PATH, newline="") as f:
+                reader = csv.DictReader(f)
+                existing_fields = reader.fieldnames or []
+                if existing_fields != _PAPER_TRADES_FIELDNAMES:
+                    existing_rows = list(reader)
+                    tmp_path = f"{_PAPER_TRADES_LOG_PATH}.tmp"
+                    with open(tmp_path, "w", newline="") as wf:
+                        writer = csv.DictWriter(wf, fieldnames=_PAPER_TRADES_FIELDNAMES)
+                        writer.writeheader()
+                        for old_row in existing_rows:
+                            writer.writerow(
+                                {
+                                    key: old_row.get(key, "")
+                                    for key in _PAPER_TRADES_FIELDNAMES
+                                }
+                            )
+                    os.replace(tmp_path, _PAPER_TRADES_LOG_PATH)
+        except Exception as exc:
+            logger.warning(
+                "Could not migrate paper trades log schema for %s: %s",
+                _PAPER_TRADES_LOG_PATH,
+                exc,
+            )
+        return
+    with open(_PAPER_TRADES_LOG_PATH, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=_PAPER_TRADES_FIELDNAMES)
+        writer.writeheader()
 
 
 class EventManager:
@@ -72,6 +251,12 @@ class EventManager:
             "kelly_enabled": True,
             "kelly_fraction": 0.25,
             "kelly_bankroll": 100.0,
+            "kelly_live_bankroll_usd": 100.0,
+            "kelly_paper_bankroll_usd": 100.0,
+            "paper_compound_enabled": True,
+            "paper_current_bankroll_usd": 100.0,
+            "live_equity_start_bankroll_usd": 0.0,
+            "live_equity_start_at_utc": "",
             "kelly_min_edge_pct": 0.5,
             "kelly_max_bet_pct": 25.0,
             "kelly_max_event_exposure_pct": 25.0,
@@ -90,7 +275,8 @@ class EventManager:
             "quant_gate_min_sample_strong_signal": 20,
             "quant_gate_strong_signal_threshold": 0.72,
             "early_window_enabled": True,
-            "early_window_seconds": 50,
+            "early_window_start": 20,
+            "early_window_end": 120,
             "early_quant_gate_min_sample": 90,
             "early_quant_gate_min_edge_pct": 4.0,
             "early_quant_gate_edge_vs_ask_enabled": False,
@@ -98,7 +284,8 @@ class EventManager:
             "early_quant_gate_min_prob": 0.0,
             "early_quant_gate_min_diff_pct": 0.0,
             "late_window_enabled": True,
-            "late_window_seconds": 120,
+            "late_window_start": 180,
+            "late_window_end": 280,
             "late_quant_gate_min_sample": 70,
             "late_quant_gate_min_edge_pct": 3.0,
             "late_quant_gate_edge_vs_ask_enabled": False,
@@ -113,11 +300,14 @@ class EventManager:
             "bot_max_event_exposure_pct": 15.0,
             "bot_max_ticker_exposure_pct": 25.0,
             "bot_order_notional_cap_usd": 5.0,
+            "bot_paper_mode": False,
             "pm_min_shares": 5.0,
             "pm_min_notional_usd": 1.0,
             "order_book_max_levels": 8,
             "order_book_min_broadcast_ms": 120,
             "bot_enforce_timeframe_filter": True,
+            "bot_block_opposite_side": True,
+            "bot_min_seconds_before_end": 30,
         }
         self._config: dict = {}
         self._task: Optional[asyncio.Task] = None
@@ -160,19 +350,76 @@ class EventManager:
         }
         self._last_discovery_refresh: datetime | None = None
         self._running = False
-        self._order_guard_records: list[dict] = []
+        self._last_price_tick_at: datetime | None = (
+            None  # last time _on_reference_price fired
+        )
+        self._streamer_stall_logged_at: datetime | None = (
+            None  # throttle stall warning logs
+        )
+        self._price_broadcast_last_ms: dict[
+            str, int
+        ] = {}  # throttle price broadcasts per event
+        self._order_guard_records: list[dict] = (
+            self._load_order_guard_records_from_csv()
+        )
         self._last_order_at_utc: datetime | None = None
         # Bot auto-order: track previous gate state to detect disabled→enabled transitions
         self._bot_prev_gate_enabled: dict[tuple[str, str], bool] = {}
         self._bot_pending_orders: set[tuple[str, str]] = set()
+        # Position tracker: fuente de verdad para shares compradas por evento
+        # {event_id: {"up": {"shares": float, "avg_price": float, "token_id": str, "placed_at_utc": str}, ...}}
+        self._position_tracker: dict[str, dict] = {}
         tracker_dir = os.path.normpath(
             os.path.join(os.path.dirname(__file__), "..", "..", "backtest_output")
         )
         self._opportunity_tracker = OpportunityTracker(base_dir=tracker_dir)
         self._runtime_settings_path = os.path.normpath(
-            os.path.join(os.path.dirname(__file__), "..", "..", "config", "runtime_settings.json")
+            os.path.join(
+                os.path.dirname(__file__), "..", "..", "config", "runtime_settings.json"
+            )
         )
         self._persisted_setting_keys = set(self.settings.keys())
+        self._last_paper_reconcile_at: datetime | None = None
+        self._paper_event_cache: dict[str, dict[str, Any]] = {}
+
+    def _load_order_guard_records_from_csv(self) -> list[dict]:
+        """Seed _order_guard_records from today's bot_orders CSV so guards survive restarts."""
+        records = []
+        try:
+            today_str = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+            csv_path = os.path.normpath(
+                os.path.join(
+                    os.path.dirname(__file__),
+                    "..",
+                    "..",
+                    "backtest_output",
+                    f"bot_orders_{today_str}.csv",
+                )
+            )
+            if not os.path.exists(csv_path):
+                return records
+            with open(csv_path, newline="") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    if row.get("status") != "placed":
+                        continue
+                    try:
+                        at_utc = datetime.fromisoformat(row["placed_at_utc"])
+                        records.append(
+                            {
+                                "at_utc": at_utc,
+                                "event_id": row.get("event_id", ""),
+                                "ticker": row.get("ticker", ""),
+                                "outcome": row.get("side", "").lower(),
+                                "notional_usd": float(row.get("notional_usd", 0) or 0),
+                            }
+                        )
+                    except Exception:
+                        continue
+            logger.info("Loaded %d order guard records from %s", len(records), csv_path)
+        except Exception as e:
+            logger.warning("Could not load order guard records from CSV: %s", e)
+        return records
 
     def _load_runtime_settings(self) -> None:
         """Load persisted runtime mode/settings from disk, if available."""
@@ -199,7 +446,52 @@ class EventManager:
             for key, value in persisted_settings.items():
                 if key in self._persisted_setting_keys:
                     self.settings[key] = value
+            # Backward-compat migration for old runtime_settings.json files.
+            if (
+                "kelly_bankroll" in persisted_settings
+                and "kelly_live_bankroll_usd" not in persisted_settings
+            ):
+                self.settings["kelly_live_bankroll_usd"] = float(
+                    persisted_settings.get("kelly_bankroll", 100.0) or 100.0
+                )
+            if (
+                "kelly_bankroll" in persisted_settings
+                and "kelly_paper_bankroll_usd" not in persisted_settings
+            ):
+                self.settings["kelly_paper_bankroll_usd"] = float(
+                    persisted_settings.get("kelly_bankroll", 100.0) or 100.0
+                )
+            if (
+                "kelly_paper_bankroll_usd" in persisted_settings
+                and "paper_current_bankroll_usd" not in persisted_settings
+            ):
+                self.settings["paper_current_bankroll_usd"] = float(
+                    persisted_settings.get("kelly_paper_bankroll_usd", 100.0) or 100.0
+                )
             self.settings["mode"] = self.mode
+
+    def _get_live_manual_bankroll_usd(self) -> float:
+        live = self.settings.get("kelly_live_bankroll_usd")
+        if isinstance(live, (int, float)) and float(live) > 0:
+            return float(live)
+        legacy = self.settings.get("kelly_bankroll", 100.0)
+        return max(1.0, float(legacy) if isinstance(legacy, (int, float)) else 100.0)
+
+    def _get_paper_manual_bankroll_usd(self) -> float:
+        paper = self.settings.get("kelly_paper_bankroll_usd")
+        if isinstance(paper, (int, float)) and float(paper) > 0:
+            return float(paper)
+        return self._get_live_manual_bankroll_usd()
+
+    def _get_paper_effective_bankroll_usd(self) -> float:
+        base = self._get_paper_manual_bankroll_usd()
+        if not bool(self.settings.get("paper_compound_enabled", True)):
+            return base
+        current = self.settings.get("paper_current_bankroll_usd")
+        if isinstance(current, (int, float)) and float(current) > 0:
+            return float(current)
+        self.settings["paper_current_bankroll_usd"] = base
+        return base
 
     def persist_runtime_settings(self) -> None:
         """Persist current runtime mode/settings for restart continuity."""
@@ -315,6 +607,29 @@ class EventManager:
         )
         return table
 
+    def reload_quant_ranges(self) -> dict:
+        """Hot-reload both PM range tables from disk. Safe to call while running."""
+        try:
+            new_ranges = self._load_pm_ranges()
+            new_5m = self._load_pm_5m_slot_ranges()
+            self._pm_ranges = new_ranges
+            self._pm_5m_slot_ranges = new_5m
+            tickers_ranges = list(new_ranges.keys())
+            tickers_5m = list(new_5m.keys())
+            logger.info(
+                "Quant ranges hot-reloaded: ranges=%s 5m_slots=%s",
+                tickers_ranges,
+                tickers_5m,
+            )
+            return {
+                "ok": True,
+                "ranges_tickers": tickers_ranges,
+                "slot_ranges_tickers": tickers_5m,
+            }
+        except Exception as exc:
+            logger.exception("Failed to hot-reload quant ranges: %s", exc)
+            return {"ok": False, "error": str(exc)}
+
     def _lookup_quant_probs(
         self, ticker: str, minute: int, price_diff: float
     ) -> tuple[float, float, int] | None:
@@ -327,15 +642,16 @@ class EventManager:
             return None
         idx = bisect.bisect_right([r[0] for r in ranges], price_diff) - 1
         if idx < 0:
-            # price_diff below all known ranges → use first bin
-            idx = 0
-        elif idx >= len(ranges):
+            # price_diff below all known ranges → clamp to first bin
+            inf_r, sup_r, prob_up, prob_down, count = ranges[0]
+            return (prob_up, prob_down, count)
+        if idx >= len(ranges):
             idx = len(ranges) - 1
         inf_r, sup_r, prob_up, prob_down, count = ranges[idx]
         if inf_r <= price_diff < sup_r:
             return (prob_up, prob_down, count)
-        # price_diff above all known ranges → use last bin
-        if price_diff >= sup_r and idx == len(ranges) - 1:
+        # price_diff above all known ranges → clamp to last bin
+        if idx == len(ranges) - 1:
             return (prob_up, prob_down, count)
         return None
 
@@ -353,15 +669,16 @@ class EventManager:
             return None
         idx = bisect.bisect_right([r[0] for r in ranges], price_diff) - 1
         if idx < 0:
-            # price_diff below all known ranges → use first bin
-            idx = 0
-        elif idx >= len(ranges):
+            # price_diff below all known ranges → clamp to first bin
+            inf_r, sup_r, prob_up, prob_down, count = ranges[0]
+            return (prob_up, prob_down, count)
+        if idx >= len(ranges):
             idx = len(ranges) - 1
         inf_r, sup_r, prob_up, prob_down, count = ranges[idx]
         if inf_r <= price_diff < sup_r:
             return (prob_up, prob_down, count)
-        # price_diff above all known ranges → use last bin
-        if price_diff >= sup_r and idx == len(ranges) - 1:
+        # price_diff above all known ranges → clamp to last bin
+        if idx == len(ranges) - 1:
             return (prob_up, prob_down, count)
         return None
 
@@ -616,9 +933,7 @@ class EventManager:
         )
         min_prob = float(gp.get("min_prob", settings.get("quant_gate_min_prob", 0.0)))
         min_diff_pct = float(gp.get("min_diff_pct", 0.0))
-        min_sample_strong = int(
-            settings.get("quant_gate_min_sample_strong_signal", 20)
-        )
+        min_sample_strong = int(settings.get("quant_gate_min_sample_strong_signal", 20))
         strong_signal_threshold = float(
             settings.get("quant_gate_strong_signal_threshold", 0.72)
         )
@@ -670,7 +985,10 @@ class EventManager:
             if edge_vs_ask_enabled:
                 if ask_is_proxy or ask_price is None or ask_price <= 0:
                     reasons.append("no_ask_price")
-                elif edge_vs_ask_pct is not None and edge_vs_ask_pct < min_edge_vs_ask_pct:
+                elif (
+                    edge_vs_ask_pct is not None
+                    and edge_vs_ask_pct < min_edge_vs_ask_pct
+                ):
                     reasons.append(f"ask_edge<{min_edge_vs_ask_pct:.2f}%")
 
         price_c = market_prob * 100.0
@@ -741,12 +1059,24 @@ class EventManager:
         if end_dt is not None:
             time_left_seconds = max(0, int((end_dt - now_utc).total_seconds()))
 
+        # ── Min seconds before end ────────────────────────────────────────────
+        min_secs_before_end = max(
+            0, int(settings.get("bot_min_seconds_before_end", 30))
+        )
+        if time_left_seconds is not None and time_left_seconds < min_secs_before_end:
+            return "blocked_end", {**params, "gate_enabled": False}
+
+        # ── Early window ──────────────────────────────────────────────────────
         if (
             bool(settings.get("early_window_enabled", False))
             and elapsed_seconds is not None
         ):
-            early_seconds = max(1, int(settings.get("early_window_seconds", 50)))
-            if elapsed_seconds <= early_seconds:
+            early_start = int(settings.get("early_window_start", 20))
+            early_end = int(settings.get("early_window_end", 120))
+            if elapsed_seconds < early_start:
+                # Too early — block gate entirely
+                return "blocked_early", {**params, "gate_enabled": False}
+            if elapsed_seconds <= early_end:
                 params.update(
                     {
                         "min_sample": int(
@@ -772,7 +1102,8 @@ class EventManager:
                             )
                         ),
                         "min_prob": float(
-                            settings.get("early_quant_gate_min_prob") or params["min_prob"]
+                            settings.get("early_quant_gate_min_prob")
+                            or params["min_prob"]
                         ),
                         "min_diff_pct": float(
                             settings.get("early_quant_gate_min_diff_pct", 0.0)
@@ -781,12 +1112,17 @@ class EventManager:
                 )
                 return "early", params
 
+        # ── Late window ───────────────────────────────────────────────────────
         if (
             bool(settings.get("late_window_enabled", False))
-            and time_left_seconds is not None
+            and elapsed_seconds is not None
         ):
-            late_seconds = max(1, int(settings.get("late_window_seconds", 120)))
-            if time_left_seconds <= late_seconds:
+            late_start = int(settings.get("late_window_start", 180))
+            late_end = int(settings.get("late_window_end", 280))
+            if elapsed_seconds > late_end:
+                # Too late — block gate entirely
+                return "blocked_late", {**params, "gate_enabled": False}
+            if elapsed_seconds >= late_start:
                 params.update(
                     {
                         "min_sample": int(
@@ -812,7 +1148,8 @@ class EventManager:
                             )
                         ),
                         "min_prob": float(
-                            settings.get("late_quant_gate_min_prob") or params["min_prob"]
+                            settings.get("late_quant_gate_min_prob")
+                            or params["min_prob"]
                         ),
                         "min_diff_pct": float(
                             settings.get("late_quant_gate_min_diff_pct", 0.0)
@@ -837,7 +1174,11 @@ class EventManager:
         cp = event_dict.get("current_price")
         price_diff_abs = None
         price_diff_pct = None
-        if isinstance(ptb, (int, float)) and isinstance(cp, (int, float)) and float(ptb) > 0:
+        if (
+            isinstance(ptb, (int, float))
+            and isinstance(cp, (int, float))
+            and float(ptb) > 0
+        ):
             try:
                 price_diff_abs = abs(float(cp) - float(ptb))
                 price_diff_pct = price_diff_abs / float(ptb) * 100.0
@@ -918,7 +1259,7 @@ class EventManager:
         for side in ("up", "down"):
             gate_side = quant_gate.get(side)
             evaluation = self._evaluate_trackable_side_for_tracking(
-                event_id, event_dict, side
+                event_id, event_dict, side, now_utc
             )
             self._opportunity_tracker.track_gate_transition(
                 event_id=event_id,
@@ -937,47 +1278,146 @@ class EventManager:
                 estimated_shares=evaluation.get("shares"),
             )
 
-    def _evaluate_trackable_side_for_tracking(
-        self, event_id: str, event_dict: dict, side: str
-    ) -> dict:
-        """Evaluate if side is actionable now. Returns {eligible, reason, stake_usd, shares, side_price}."""
+    @staticmethod
+    def _parse_timeframe_filter_to_minutes(raw: object) -> int | None:
+        value = str(raw or "").strip().lower()
+        if value == "5m":
+            return 5
+        if value == "15m":
+            return 15
+        if value == "1h":
+            return 60
+        return None
+
+    @staticmethod
+    def _quant_gate_reason_text(reasons: list[object]) -> str:
+        cleaned = [str(r).strip() for r in reasons if str(r).strip()]
+        return " | ".join(cleaned) if cleaned else "quant_gate_blocked"
+
+    @staticmethod
+    def _event_best_ask_price(event_dict: dict, side: str) -> tuple[float, bool, str]:
         side_price = (
             float(event_dict.get("yes_price", 0.5) or 0.5)
             if side == "up"
             else float(event_dict.get("no_price", 0.5) or 0.5)
         )
+        asks = (
+            (event_dict.get("order_book_yes") or {}).get("asks", [])
+            if side == "up"
+            else (event_dict.get("order_book_no") or {}).get("asks", [])
+        )
+        if isinstance(asks, list) and asks:
+            raw = asks[0].get("price") if isinstance(asks[0], dict) else None
+            if raw is not None:
+                try:
+                    return float(raw), False, "best_ask"
+                except (TypeError, ValueError):
+                    pass
+        return side_price, True, "proxy_mid"
+
+    def evaluate_bot_order_candidate(
+        self,
+        *,
+        event_id: str,
+        event_dict: dict,
+        side: str,
+        now_utc: datetime,
+        bankroll_usd: float | None = None,
+    ) -> dict:
+        """
+        Single source of truth for bot/tracking eligibility on one event side.
+        Returns sizing + decision so tracking/paper/live stay aligned.
+        """
+        side_norm = "up" if str(side).lower() == "up" else "down"
+        side_price = (
+            float(event_dict.get("yes_price", 0.5) or 0.5)
+            if side_norm == "up"
+            else float(event_dict.get("no_price", 0.5) or 0.5)
+        )
+        ask_price, ask_is_proxy, price_source_at_send = self._event_best_ask_price(
+            event_dict, side_norm
+        )
         result = {
             "eligible": False,
             "reason": "unknown",
+            "side": side_norm,
+            "side_price": side_price,
+            "ask_price": ask_price,
+            "ask_is_proxy": ask_is_proxy,
+            "price_source_at_send": price_source_at_send,
+            "quant_prob": None,
             "stake_usd": 0.0,
             "shares": 0.0,
-            "side_price": side_price,
+            "notional_usd": 0.0,
+            "kelly_pct": None,
         }
+
+        if bool(self.settings.get("bot_enforce_timeframe_filter", True)):
+            selected_tf = self._parse_timeframe_filter_to_minutes(
+                self.settings.get("timeframe_filter", "5m")
+            )
+            event_tf = int(event_dict.get("timeframe_minutes", 15) or 15)
+            if selected_tf is not None and event_tf != selected_tf:
+                result["reason"] = "timeframe_mismatch"
+                return result
+
+        min_secs_before_end = max(
+            0, int(self.settings.get("bot_min_seconds_before_end", 30))
+        )
+        end_raw = event_dict.get("event_end_utc")
+        if min_secs_before_end > 0 and end_raw:
+            try:
+                end_dt = datetime.fromisoformat(str(end_raw))
+                secs_remaining = (end_dt - now_utc).total_seconds()
+                if secs_remaining < min_secs_before_end:
+                    result["reason"] = "too_close_to_end"
+                    return result
+            except Exception:
+                pass
+
+        quant_gate = event_dict.get("quant_buy_gate")
+        if isinstance(quant_gate, dict):
+            gate_side = quant_gate.get(side_norm)
+            if isinstance(gate_side, dict) and not bool(
+                gate_side.get("enabled", False)
+            ):
+                reasons = gate_side.get("reasons", [])
+                reasons_list = reasons if isinstance(reasons, list) else [reasons]
+                result["reason"] = (
+                    f"quant_gate_blocked:{self._quant_gate_reason_text(reasons_list)}"
+                )
+                return result
+
+        max_price_c = float(self.settings.get("quant_gate_max_price_c", 90.0))
+        min_price_c = float(self.settings.get("quant_gate_min_price_c", 10.0))
+        ask_price_c = ask_price * 100.0
+        if ask_price_c > max_price_c or ask_price_c < min_price_c:
+            result["reason"] = "ask_price_outside_range"
+            return result
+
         if not bool(self.settings.get("kelly_enabled", True)):
             result["reason"] = "kelly_disabled"
-            return result
-        if side_price <= 0:
-            result["reason"] = "invalid_side_price"
             return result
 
         quant_prob_raw = (
             event_dict.get("quant_prob_up")
-            if side == "up"
+            if side_norm == "up"
             else event_dict.get("quant_prob_down")
         )
         if not isinstance(quant_prob_raw, (float, int)):
             result["reason"] = "no_quant_prob"
             return result
         quant_prob = float(quant_prob_raw)
+        result["quant_prob"] = quant_prob
 
         min_edge_pct = max(0.0, float(self.settings.get("kelly_min_edge_pct", 0.5)))
-        edge_pct = (quant_prob - side_price) * 100.0
+        edge_pct = (quant_prob - ask_price) * 100.0
         if edge_pct < min_edge_pct:
             result["reason"] = "edge_below_min"
             return result
 
-        denom = max(0.0001, 1.0 - side_price)
-        raw_kelly = max(0.0, (quant_prob - side_price) / denom)
+        denom = max(0.0001, 1.0 - ask_price)
+        raw_kelly = max(0.0, (quant_prob - ask_price) / denom)
         kelly_fraction = max(0.0, float(self.settings.get("kelly_fraction", 0.25)))
         max_bet_pct = (
             max(0.0, float(self.settings.get("kelly_max_bet_pct", 25.0))) / 100.0
@@ -987,48 +1427,72 @@ class EventManager:
             / 100.0
         )
         kelly_pct = min(raw_kelly * kelly_fraction, max_bet_pct, max_event_exposure_pct)
+        result["kelly_pct"] = kelly_pct
+        base_bankroll = (
+            self._get_paper_effective_bankroll_usd()
+            if bool(self.settings.get("bot_paper_mode", False))
+            else self._get_live_manual_bankroll_usd()
+        )
+        base_bankroll = max(1.0, float(base_bankroll))
+        stake_usd = kelly_pct * base_bankroll
 
-        bankroll = max(0.0, float(self.settings.get("kelly_bankroll", 100.0)))
-        stake_usd = kelly_pct * bankroll
-        shares = stake_usd / max(0.0001, side_price)
+        hard_cap = max(0.0, float(self.settings.get("bot_order_notional_cap_usd", 0.0)))
+        if hard_cap > 0:
+            stake_usd = min(stake_usd, hard_cap)
+
+        if ask_price <= 0:
+            result["reason"] = "invalid_side_price"
+            return result
+        shares = stake_usd / ask_price
+        notional_usd = ask_price * shares
         result["stake_usd"] = stake_usd
         result["shares"] = shares
+        result["notional_usd"] = notional_usd
         if stake_usd <= 0:
             result["reason"] = "stake_non_positive"
             return result
 
-        min_shares = max(0.0, float(self.settings.get("pm_min_shares", 5.0)))
-        min_notional = max(0.0, float(self.settings.get("pm_min_notional_usd", 1.0)))
-        if shares < min_shares:
-            result["reason"] = "below_pm_min_shares"
-            return result
-        if stake_usd < min_notional:
-            result["reason"] = "below_pm_min_notional"
-            return result
-
-        if bool(self.settings.get("bot_risk_enabled", True)):
-            event_cap = (
-                bankroll
-                * max(0.0, float(self.settings.get("bot_max_event_exposure_pct", 15.0)))
-                / 100.0
+        guard_bankroll = bankroll_usd
+        if guard_bankroll is None:
+            guard_bankroll = (
+                self._get_paper_effective_bankroll_usd()
+                if bool(self.settings.get("bot_paper_mode", False))
+                else self._get_live_manual_bankroll_usd()
             )
-            ticker_cap = (
-                bankroll
-                * max(
-                    0.0, float(self.settings.get("bot_max_ticker_exposure_pct", 25.0))
-                )
-                / 100.0
-            )
-            if stake_usd > event_cap:
-                result["reason"] = "event_cap_exceeded"
-                return result
-            if stake_usd > ticker_cap:
-                result["reason"] = "ticker_cap_exceeded"
-                return result
+        allowed, guard_reason = self.validate_order_risk_guards(
+            event_id=event_id,
+            event=event_dict,
+            outcome=side_norm,
+            shares=shares,
+            notional_usd=notional_usd,
+            now_utc=now_utc,
+            bankroll_usd=guard_bankroll,
+        )
+        if not allowed:
+            result["reason"] = guard_reason or "risk_guard_blocked"
+            return result
 
         result["eligible"] = True
         result["reason"] = None
         return result
+
+    def _evaluate_trackable_side_for_tracking(
+        self, event_id: str, event_dict: dict, side: str, now_utc: datetime
+    ) -> dict:
+        """Compatibility wrapper for tracker payload."""
+        evaluation = self.evaluate_bot_order_candidate(
+            event_id=event_id,
+            event_dict=event_dict,
+            side=side,
+            now_utc=now_utc,
+        )
+        return {
+            "eligible": bool(evaluation.get("eligible")),
+            "reason": evaluation.get("reason"),
+            "stake_usd": float(evaluation.get("stake_usd", 0.0) or 0.0),
+            "shares": float(evaluation.get("shares", 0.0) or 0.0),
+            "side_price": float(evaluation.get("side_price", 0.5) or 0.5),
+        }
 
     def _extract_event_ticker(self, event_id: str, event_dict: dict) -> str:
         raw_symbol = normalize_symbol(
@@ -1053,6 +1517,152 @@ class EventManager:
         if re.search(r"\b(xrp|ripple)\b", text):
             return "XRP"
         return "OTHER"
+
+    @staticmethod
+    def _paper_current_slot_and_range(event_dict: dict) -> tuple[int | None, str]:
+        histogram = event_dict.get("quant_range_histogram")
+        if not isinstance(histogram, dict):
+            return None, ""
+        slot = None
+        raw_slot = histogram.get("slot")
+        raw_minute = histogram.get("minute")
+        if isinstance(raw_slot, (int, float)):
+            slot = int(raw_slot)
+        elif isinstance(raw_minute, (int, float)):
+            slot = int(raw_minute)
+
+        range_label = ""
+        idx = histogram.get("current_bin_index")
+        bins = histogram.get("bins")
+        if isinstance(idx, int) and isinstance(bins, list) and 0 <= idx < len(bins):
+            row = bins[idx] if isinstance(bins[idx], dict) else {}
+            inf_v = row.get("inf_range")
+            sup_v = row.get("sup_range")
+            if isinstance(inf_v, (int, float)) and isinstance(sup_v, (int, float)):
+                range_label = f"[{float(inf_v):.2f},{float(sup_v):.2f})"
+        return slot, range_label
+
+    def _append_paper_trade_decision(
+        self,
+        *,
+        event_id: str,
+        event_dict: dict,
+        side: str,
+        stake_usd: float,
+        market_prob_at_decision: float,
+        quantum_edge: float,
+        now_utc: datetime,
+    ) -> None:
+        _ensure_paper_trades_csv()
+        decision_id = str(uuid.uuid4())
+        ticker = self._extract_event_ticker(event_id, event_dict)
+        slot, range_label = self._paper_current_slot_and_range(event_dict)
+        prob_up = (
+            float(event_dict.get("quant_prob_up"))
+            if isinstance(event_dict.get("quant_prob_up"), (int, float))
+            else None
+        )
+        q = max(0.0, float(market_prob_at_decision))
+        stake = max(0.0, float(stake_usd))
+        row = {
+            "decision_id": decision_id,
+            "decision_time": now_utc.isoformat(),
+            "event_id": event_id,
+            "ticker": ticker,
+            "event_end_utc": str(event_dict.get("event_end_utc", "") or ""),
+            "price_to_beat_at_decision": float(event_dict.get("price_to_beat", 0) or 0),
+            "close_price_at_resolution": "",
+            "stake_usd": round(stake, 6),
+            "shares_simulated": round((stake / q), 6) if q > 0 else "",
+            "slot": slot if slot is not None else "",
+            "range": range_label,
+            "prob_up": round(prob_up, 6) if prob_up is not None else "",
+            "marketProb_at_decision": round(q, 6),
+            "QuantumEdge": round(float(quantum_edge), 6),
+            "side_taken": side,
+            "event_outcome_real": "",
+            "pnl_simulated": "",
+            "status": "pending",
+        }
+        with open(_PAPER_TRADES_LOG_PATH, "a", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=_PAPER_TRADES_FIELDNAMES)
+            writer.writerow(row)
+
+    def _reconcile_paper_trades(self, now_utc: datetime) -> None:
+        _ensure_paper_trades_csv()
+        # Avoid rewriting CSV too often.
+        if (
+            self._last_paper_reconcile_at is not None
+            and (now_utc - self._last_paper_reconcile_at).total_seconds() < 10
+        ):
+            return
+        self._last_paper_reconcile_at = now_utc
+
+        try:
+            with open(_PAPER_TRADES_LOG_PATH, newline="") as f:
+                rows = list(csv.DictReader(f))
+        except FileNotFoundError:
+            return
+        if not rows:
+            return
+
+        changed = False
+        resolved_pnl_delta = 0.0
+        for row in rows:
+            status = str(row.get("status", "")).strip().lower()
+            if status == "resolved":
+                continue
+            event_id = str(row.get("event_id", "")).strip()
+            if not event_id:
+                continue
+            end_raw = str(row.get("event_end_utc", "")).strip()
+            try:
+                end_dt = datetime.fromisoformat(end_raw) if end_raw else None
+            except Exception:
+                end_dt = None
+            if end_dt is None or now_utc < end_dt:
+                continue
+
+            event = self.events.get(event_id)
+            close_price = 0.0
+            if isinstance(event, dict):
+                close_price = float(event.get("current_price", 0) or 0)
+            if close_price <= 0:
+                cached = self._paper_event_cache.get(event_id, {})
+                close_price = float(cached.get("close_price", 0) or 0)
+            ptb = _as_float(row.get("price_to_beat_at_decision"))
+            q = _as_float(row.get("marketProb_at_decision"))
+            stake = _as_float(row.get("stake_usd"))
+            side = str(row.get("side_taken", "")).strip().lower()
+            if close_price <= 0 or ptb is None or q is None or q <= 0 or stake is None:
+                continue
+
+            event_outcome_real = "up" if close_price >= ptb else "down"
+            won = event_outcome_real == side
+            pnl = (stake * (1.0 / q - 1.0)) if won else (-stake)
+
+            row["close_price_at_resolution"] = f"{close_price:.6f}"
+            row["event_outcome_real"] = event_outcome_real
+            row["pnl_simulated"] = f"{pnl:.6f}"
+            row["status"] = "resolved"
+            changed = True
+            resolved_pnl_delta += pnl
+
+        if changed:
+            with open(_PAPER_TRADES_LOG_PATH, "w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=_PAPER_TRADES_FIELDNAMES)
+                writer.writeheader()
+                for row in rows:
+                    writer.writerow(
+                        {k: row.get(k, "") for k in _PAPER_TRADES_FIELDNAMES}
+                    )
+            if bool(self.settings.get("paper_compound_enabled", True)):
+                current = self.settings.get("paper_current_bankroll_usd")
+                if not isinstance(current, (int, float)) or float(current) <= 0:
+                    current = self._get_paper_manual_bankroll_usd()
+                new_value = max(0.0, float(current) + float(resolved_pnl_delta))
+                self.settings["paper_current_bankroll_usd"] = round(new_value, 6)
+                self.persist_runtime_settings()
 
     @staticmethod
     def _clean_old_order_records(records: list[dict], now_utc: datetime) -> list[dict]:
@@ -1105,38 +1715,38 @@ class EventManager:
             return False, "global_order_cooldown_active"
 
         side = "up" if str(outcome).lower() == "up" else "down"
-        per_event_side_limit = max(
+        per_event_limit = max(
             0, int(self.settings.get("bot_max_buys_per_event_side", 1))
         )
-        side_cooldown = max(
+        event_cooldown = max(
             0.0, float(self.settings.get("bot_cooldown_seconds_per_event_side", 60))
         )
         start_day = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
-        event_side_records = [
+        # Max buys and cooldown apply per event (any side), not per event+side
+        event_records = [
             r
             for r in self._order_guard_records
-            if r.get("event_id") == event_id
-            and r.get("outcome") == side
-            and r.get("at_utc") >= start_day
+            if r.get("event_id") == event_id and r.get("at_utc") >= start_day
         ]
-        if per_event_side_limit > 0 and len(event_side_records) >= per_event_side_limit:
-            return False, "max_buys_per_event_side_reached"
-        if event_side_records and side_cooldown > 0:
-            last_side_at = max(r["at_utc"] for r in event_side_records)
-            if (now_utc - last_side_at).total_seconds() < side_cooldown:
-                return False, "event_side_cooldown_active"
+        if per_event_limit > 0 and len(event_records) >= per_event_limit:
+            return False, "max_buys_per_event_reached"
+        if event_records and event_cooldown > 0:
+            last_event_at = max(r["at_utc"] for r in event_records)
+            if (now_utc - last_event_at).total_seconds() < event_cooldown:
+                return False, "event_cooldown_active"
 
-        # Block buying opposite side if already bought this event today
-        opposite_side = "down" if side == "up" else "up"
-        opposite_records = [
-            r
-            for r in self._order_guard_records
-            if r.get("event_id") == event_id
-            and r.get("outcome") == opposite_side
-            and r.get("at_utc") >= start_day
-        ]
-        if opposite_records:
-            return False, f"already_bought_{opposite_side}_this_event"
+        # Block buying opposite side if already bought this event today (configurable)
+        if bool(self.settings.get("bot_block_opposite_side", True)):
+            opposite_side = "down" if side == "up" else "up"
+            opposite_records = [
+                r
+                for r in self._order_guard_records
+                if r.get("event_id") == event_id
+                and r.get("outcome") == opposite_side
+                and r.get("at_utc") >= start_day
+            ]
+            if opposite_records:
+                return False, f"already_bought_{opposite_side}_this_event"
 
         ticker = self._extract_event_ticker(event_id, event)
         hard_order_cap = max(
@@ -1150,7 +1760,7 @@ class EventManager:
         base_bankroll = (
             float(bankroll_usd)
             if bankroll_usd is not None and bankroll_usd > 0
-            else float(self.settings.get("kelly_bankroll", 100.0))
+            else self._get_live_manual_bankroll_usd()
         )
         base_bankroll = max(1.0, base_bankroll)
         event_cap_usd = (
@@ -1203,7 +1813,7 @@ class EventManager:
         base_bankroll = (
             float(bankroll_usd)
             if bankroll_usd is not None and bankroll_usd > 0
-            else float(self.settings.get("kelly_bankroll", 100.0))
+            else self._get_live_manual_bankroll_usd()
         )
         base_bankroll = max(1.0, base_bankroll)
         event_cap_usd = (
@@ -1249,6 +1859,7 @@ class EventManager:
         outcome: str,
         notional_usd: float,
         now_utc: datetime,
+        bankroll_snapshot_usd: float | None = None,
     ) -> None:
         self._order_guard_records = self._clean_old_order_records(
             self._order_guard_records, now_utc
@@ -1263,6 +1874,98 @@ class EventManager:
             }
         )
         self._last_order_at_utc = now_utc
+
+        # Capture a persistent baseline for live trading equity on first real live fill.
+        if self.mode == "live" and not bool(self.settings.get("bot_paper_mode", False)):
+            current_base = self.settings.get("live_equity_start_bankroll_usd")
+            has_base = (
+                isinstance(current_base, (int, float)) and float(current_base) > 0
+            )
+            if not has_base:
+                candidate = (
+                    float(bankroll_snapshot_usd)
+                    if isinstance(bankroll_snapshot_usd, (int, float))
+                    and float(bankroll_snapshot_usd) > 0
+                    else self._get_live_manual_bankroll_usd()
+                )
+                candidate = max(1.0, float(candidate))
+                self.settings["live_equity_start_bankroll_usd"] = round(candidate, 6)
+                self.settings["live_equity_start_at_utc"] = now_utc.isoformat()
+                self.persist_runtime_settings()
+
+    # ------------------------------------------------------------------
+    # Position Tracker — fuente de verdad para shares por evento
+    # ------------------------------------------------------------------
+
+    def record_position_buy(
+        self,
+        *,
+        event_id: str,
+        outcome: str,
+        token_id: str,
+        shares: float,
+        price: float,
+        placed_at_utc: str,
+    ) -> None:
+        """Registra una compra en el tracker. Promedia si ya hay posición."""
+        outcome = outcome.lower()
+        if event_id not in self._position_tracker:
+            self._position_tracker[event_id] = {}
+        existing = self._position_tracker[event_id].get(outcome)
+        if existing:
+            total_shares = existing["shares"] + shares
+            avg_price = (
+                existing["shares"] * existing["avg_price"] + shares * price
+            ) / total_shares
+            self._position_tracker[event_id][outcome] = {
+                "shares": round(total_shares, 6),
+                "avg_price": round(avg_price, 6),
+                "token_id": token_id,
+                "placed_at_utc": existing["placed_at_utc"],
+            }
+        else:
+            self._position_tracker[event_id][outcome] = {
+                "shares": round(shares, 6),
+                "avg_price": round(price, 6),
+                "token_id": token_id,
+                "placed_at_utc": placed_at_utc,
+            }
+        logger.info(
+            "[POSITION_TRACKER] buy event_id=%s outcome=%s shares=%.6f price=%.6f",
+            event_id,
+            outcome,
+            shares,
+            price,
+        )
+
+    def record_position_sell(
+        self,
+        *,
+        event_id: str,
+        outcome: str,
+        shares_sold: float,
+    ) -> None:
+        """Reduce o elimina la posición trackeada tras una venta."""
+        outcome = outcome.lower()
+        pos = self._position_tracker.get(event_id, {}).get(outcome)
+        if not pos:
+            return
+        remaining = max(0.0, round(pos["shares"] - shares_sold, 6))
+        if remaining == 0.0:
+            self._position_tracker.get(event_id, {}).pop(outcome, None)
+        else:
+            self._position_tracker[event_id][outcome]["shares"] = remaining
+        logger.info(
+            "[POSITION_TRACKER] sell event_id=%s outcome=%s sold=%.6f remaining=%.6f",
+            event_id,
+            outcome,
+            shares_sold,
+            remaining,
+        )
+
+    def get_tracked_positions(self, event_id: str) -> dict:
+        """Retorna las posiciones trackeadas para un evento."""
+        return self._position_tracker.get(event_id, {})
 
     def is_event_trading_enabled(
         self, event_id: str, event_dict: dict | None = None
@@ -1438,6 +2141,7 @@ class EventManager:
                     await self._broadcast_full_snapshot()
                 else:
                     self._maybe_refresh_live_events()
+                    await self._watchdog_price_streams()
                     await self._update_live()
                     self._tick_counter += 1
                     # Live mode uses incremental WS updates; send full snapshots less often.
@@ -1450,6 +2154,42 @@ class EventManager:
             except Exception as e:
                 logger.error("Update loop error: %s", e)
                 await asyncio.sleep(5)
+
+    async def _watchdog_price_streams(self) -> None:
+        """Restart any price stream tasks that have died unexpectedly."""
+        # Chainlink tasks
+        dead_chainlink: list[int] = []
+        for i, task in enumerate(self._chainlink_stream_tasks):
+            if task.done():
+                exc = task.exception() if not task.cancelled() else None
+                logger.warning(
+                    "Chainlink stream task[%d] died (cancelled=%s, exc=%s) — restarting",
+                    i,
+                    task.cancelled(),
+                    exc,
+                )
+                dead_chainlink.append(i)
+        for i in reversed(dead_chainlink):
+            streamer = self._chainlink_streamers[i]
+            streamer._running = True
+            self._chainlink_stream_tasks[i] = asyncio.create_task(streamer.start())
+
+        # Binance tasks
+        dead_binance: list[int] = []
+        for i, task in enumerate(self._binance_stream_tasks):
+            if task.done():
+                exc = task.exception() if not task.cancelled() else None
+                logger.warning(
+                    "Binance stream task[%d] died (cancelled=%s, exc=%s) — restarting",
+                    i,
+                    task.cancelled(),
+                    exc,
+                )
+                dead_binance.append(i)
+        for i in reversed(dead_binance):
+            streamer = self._binance_streamers[i]
+            streamer._running = True
+            self._binance_stream_tasks[i] = asyncio.create_task(streamer.start())
 
     def _update_demo(self):
         """Update all demo events with simulated data."""
@@ -2060,7 +2800,8 @@ class EventManager:
         """Apply tick to all matching events and broadcast incremental update."""
         if self.mode != "live":
             return
-        now_iso = datetime.now(tz=timezone.utc).isoformat()
+        self._last_price_tick_at = datetime.now(tz=timezone.utc)
+        now_iso = self._last_price_tick_at.isoformat()
 
         for event_id, event_dict in self.events.items():
             ecfg = self._live_event_configs.get(event_id)
@@ -2087,11 +2828,19 @@ class EventManager:
 
             event_dict["last_update"] = now_iso
 
+            # Always run state + bot logic on every tick
             self._apply_quant_metrics(event_dict, ecfg, datetime.now(tz=timezone.utc))
             self._apply_quant_buy_gates(event_dict)
             self._track_opportunities_for_event(
                 event_id, event_dict, datetime.now(tz=timezone.utc)
             )
+
+            # Throttle only the broadcast to frontend (max 1/s per event)
+            now_ms = int(self._last_price_tick_at.timestamp() * 1000)
+            last_broadcast_ms = self._price_broadcast_last_ms.get(event_id, 0)
+            if now_ms - last_broadcast_ms < 1000:
+                continue
+            self._price_broadcast_last_ms[event_id] = now_ms
 
             await manager.broadcast(
                 {
@@ -2174,125 +2923,122 @@ class EventManager:
 
         self._bot_pending_orders.add(key)
         try:
-            # Check timeframe filter before placing order
-            if bool(self.settings.get("bot_enforce_timeframe_filter", True)):
-                tf_raw = self.settings.get("timeframe_filter", "5m")
-                tf_map = {"5m": 5, "15m": 15, "1h": 60}
-                selected_tf = tf_map.get(str(tf_raw).strip().lower())
-                event_tf = int(event_dict.get("timeframe_minutes", 15) or 15)
-                if selected_tf is not None and event_tf != selected_tf:
-                    logger.info(
-                        "Bot auto-order skipped: timeframe mismatch "
-                        "(selected=%sm, event=%sm) for %s %s",
-                        selected_tf, event_tf, event_id, side,
-                    )
-                    return
-
             client = get_client()
             if not client:
                 logger.warning("Bot auto-order: Polymarket client unavailable")
                 return
 
-            # Determine price and token
-            if side == "up":
-                side_price = float(event_dict.get("yes_price") or 0.5)
-                token_id = event_dict.get("yes_token_id")
-            else:
-                side_price = float(event_dict.get("no_price") or 0.5)
-                token_id = event_dict.get("no_token_id")
-
+            # Determine token
+            token_id = (
+                event_dict.get("yes_token_id")
+                if side == "up"
+                else event_dict.get("no_token_id")
+            )
             if not token_id:
                 logger.warning("Bot auto-order: no token_id for %s %s", event_id, side)
                 return
 
-            # Ask price for order (use best ask from order book if available)
-            if side == "up":
-                asks = (event_dict.get("order_book_yes") or {}).get("asks", [])
-            else:
-                asks = (event_dict.get("order_book_no") or {}).get("asks", [])
-            ask_price = side_price
-            if isinstance(asks, list) and asks:
-                raw = asks[0].get("price") if isinstance(asks[0], dict) else None
-                if raw is not None:
-                    try:
-                        ask_price = float(raw)
-                    except (TypeError, ValueError):
-                        pass
-
-            # Kelly sizing
-            quant_prob_raw = (
-                event_dict.get("quant_prob_up")
-                if side == "up"
-                else event_dict.get("quant_prob_down")
-            )
-            if not isinstance(quant_prob_raw, (int, float)):
-                return
-            quant_prob = float(quant_prob_raw)
             histogram = event_dict.get("quant_range_histogram")
             percentile_at_signal: float | None = None
+            paper_mode_enabled = bool(self.settings.get("bot_paper_mode", False))
             if isinstance(histogram, dict):
                 raw_pct = histogram.get("current_percentile")
                 if isinstance(raw_pct, (float, int)):
                     percentile_at_signal = round(float(raw_pct), 4)
-            kelly_enabled = bool(self.settings.get("kelly_enabled", True))
-            kelly_pct: float | None = None
-            if kelly_enabled:
-                edge = quant_prob - ask_price
-                denom = max(0.0001, 1.0 - ask_price)
-                raw_kelly = max(0.0, edge / denom)
-                fraction = max(0.0, float(self.settings.get("kelly_fraction", 0.25)))
-                max_bet_pct = max(0.0, float(self.settings.get("kelly_max_bet_pct", 25.0))) / 100.0
-                max_event_pct = max(0.0, float(self.settings.get("kelly_max_event_exposure_pct", 25.0))) / 100.0
-                kelly_pct = min(raw_kelly * fraction, max_bet_pct, max_event_pct)
-                bankroll = max(1.0, float(self.settings.get("kelly_bankroll", 100.0)))
-                stake_usd = kelly_pct * bankroll
-            else:
-                stake_usd = max(0.0, float(self.settings.get("bot_order_notional_cap_usd", 5.0)))
-
-            hard_cap = max(0.0, float(self.settings.get("bot_order_notional_cap_usd", 0.0)))
-            if hard_cap > 0:
-                stake_usd = min(stake_usd, hard_cap)
-
-            if ask_price <= 0:
-                return
-            shares = stake_usd / ask_price
-            notional_usd = ask_price * shares
             now_utc = datetime.now(tz=timezone.utc)
 
-            # Fetch live balance for risk guards
             bankroll_usd: float | None = None
-            try:
-                bal = await asyncio.to_thread(client.get_balance)
-                if isinstance(bal, (int, float)) and bal > 0:
-                    bankroll_usd = float(bal)
-            except Exception:
-                pass
+            # In paper mode, keep guardrails tied to paper bankroll only.
+            # In live mode, prefer exchange balance for exposure-based caps.
+            if not paper_mode_enabled:
+                try:
+                    bal = await asyncio.to_thread(client.get_balance)
+                    if isinstance(bal, (int, float)) and bal > 0:
+                        bankroll_usd = float(bal)
+                except Exception:
+                    pass
 
-            allowed, reason = self.validate_order_risk_guards(
+            evaluation = self.evaluate_bot_order_candidate(
                 event_id=event_id,
-                event=event_dict,
-                outcome=side,
-                shares=shares,
-                notional_usd=notional_usd,
+                event_dict=event_dict,
+                side=side,
                 now_utc=now_utc,
                 bankroll_usd=bankroll_usd,
             )
-            if not allowed:
+            if not bool(evaluation.get("eligible")):
                 logger.info(
-                    "Bot auto-order blocked by risk guard: %s | event=%s side=%s",
-                    reason, event_id, side,
+                    "Bot auto-order skipped by unified eligibility: %s | event=%s side=%s",
+                    evaluation.get("reason"),
+                    event_id,
+                    side,
+                )
+                return
+            ask_price = float(evaluation.get("ask_price", 0.0) or 0.0)
+            notional_usd = float(evaluation.get("notional_usd", 0.0) or 0.0)
+            shares = float(evaluation.get("shares", 0.0) or 0.0)
+            quant_prob = float(evaluation.get("quant_prob", 0.0) or 0.0)
+            kelly_pct_raw = evaluation.get("kelly_pct")
+            kelly_pct = (
+                float(kelly_pct_raw)
+                if isinstance(kelly_pct_raw, (int, float))
+                else None
+            )
+            price_source_at_send = str(
+                evaluation.get("price_source_at_send") or "proxy_mid"
+            )
+
+            if paper_mode_enabled:
+                # Keep guard behavior aligned with live mode: once a paper decision is
+                # accepted, register it as a fill for cooldown/max-buys/exposure memory.
+                self.register_order_fill(
+                    event_id=event_id,
+                    event=event_dict,
+                    outcome=side,
+                    notional_usd=notional_usd,
+                    now_utc=now_utc,
+                    bankroll_snapshot_usd=bankroll_usd,
+                )
+                self._bot_prev_gate_enabled[key] = True
+                self._append_paper_trade_decision(
+                    event_id=event_id,
+                    event_dict=event_dict,
+                    side=side,
+                    stake_usd=notional_usd,
+                    market_prob_at_decision=ask_price,
+                    quantum_edge=(quant_prob - ask_price),
+                    now_utc=now_utc,
+                )
+                logger.info(
+                    "Bot paper decision logged: event=%s side=%s stake=%.2f q=%.4f edge=%.4f src=%s",
+                    event_id,
+                    side,
+                    notional_usd,
+                    ask_price,
+                    (quant_prob - ask_price),
+                    price_source_at_send,
                 )
                 return
 
             logger.info(
-                "Bot auto-order: placing BUY %s shares @ %.4f for %s %s (notional $%.2f)",
-                f"{shares:.4f}", ask_price, event_id, side, notional_usd,
+                "Bot auto-order: placing FOK BUY $%.2f for %s %s (ask=%.4f shares=%.4f)",
+                notional_usd,
+                event_id,
+                side,
+                ask_price,
+                shares,
             )
             result = await asyncio.to_thread(
-                client.place_order, token_id, "BUY", ask_price, shares
+                client.place_fok_order, token_id, "BUY", notional_usd
             )
 
             if result:
+                # Lazy import to avoid circular dependency; invalidate stale cache
+                try:
+                    from ..routers.trading import invalidate_positions_cache
+
+                    invalidate_positions_cache(event_id)
+                except Exception:
+                    pass
                 self.register_order_fill(
                     event_id=event_id,
                     event=event_dict,
@@ -2300,76 +3046,129 @@ class EventManager:
                     notional_usd=notional_usd,
                     now_utc=now_utc,
                 )
+                # Lock gate for this key so a re-enable in the next tick
+                # doesn't trigger a second order for the same event/side.
+                self._bot_prev_gate_enabled[key] = True
                 order_id = (
                     getattr(result, "id", None)
                     or getattr(result, "orderID", None)
+                    or (result.get("id") if isinstance(result, dict) else None)
+                    or (result.get("orderID") if isinstance(result, dict) else None)
                     or str(result)[:16]
                 )
-                _append_bot_order_log({
-                    "placed_at_utc": now_utc.isoformat(),
-                    "event_id": event_id,
-                    "ticker": self._extract_event_ticker(event_id, event_dict),
-                    "side": side,
-                    "token_id": token_id,
-                    "shares": round(shares, 6),
-                    "price": round(ask_price, 6),
-                    "notional_usd": round(notional_usd, 4),
-                    "order_id": str(order_id),
-                    "quant_prob": round(quant_prob, 6),
-                    "edge_pct": round((quant_prob - ask_price) * 100, 4),
-                    "kelly_pct": round(kelly_pct * 100, 4) if kelly_pct is not None else "",
-                    "bankroll_usd": round(bankroll_usd, 2) if bankroll_usd is not None else "",
-                    "percentile_at_signal": percentile_at_signal if percentile_at_signal is not None else "",
-                    "status": "placed",
-                })
+                fill_price_real = _extract_fill_price_from_result(result)
+                edge_at_fill_pct = (
+                    (quant_prob - fill_price_real) * 100.0
+                    if isinstance(fill_price_real, float) and fill_price_real > 0
+                    else None
+                )
+                _append_bot_order_log(
+                    {
+                        "placed_at_utc": now_utc.isoformat(),
+                        "event_id": event_id,
+                        "ticker": self._extract_event_ticker(event_id, event_dict),
+                        "side": side,
+                        "token_id": token_id,
+                        "shares": round(shares, 6),
+                        "price": round(ask_price, 6),
+                        "notional_usd": round(notional_usd, 4),
+                        "order_id": str(order_id),
+                        "quant_prob": round(quant_prob, 6),
+                        "edge_pct": round((quant_prob - ask_price) * 100, 4),
+                        "price_source_at_send": price_source_at_send,
+                        "fill_price_real": round(fill_price_real, 6)
+                        if isinstance(fill_price_real, float)
+                        else "",
+                        "edge_at_fill_pct": round(edge_at_fill_pct, 4)
+                        if isinstance(edge_at_fill_pct, float)
+                        else "",
+                        "kelly_pct": round(kelly_pct * 100, 4)
+                        if kelly_pct is not None
+                        else "",
+                        "bankroll_usd": round(bankroll_usd, 2)
+                        if bankroll_usd is not None
+                        else "",
+                        "percentile_at_signal": percentile_at_signal
+                        if percentile_at_signal is not None
+                        else "",
+                        "status": "placed",
+                    }
+                )
                 logger.info("Bot auto-order placed: order_id=%s", order_id)
+                self.record_position_buy(
+                    event_id=event_id,
+                    outcome=side,
+                    token_id=token_id,
+                    shares=shares,
+                    price=ask_price,
+                    placed_at_utc=now_utc.isoformat(),
+                )
                 # Broadcast bot_order event to frontend
                 try:
                     refreshed_balance = await asyncio.to_thread(client.get_balance)
                 except Exception:
                     refreshed_balance = None
-                await manager.broadcast({
-                    "type": "bot_order_placed",
-                    "event_id": event_id,
-                    "data": {
-                        "side": side,
-                        "shares": round(shares, 4),
-                        "price": round(ask_price, 4),
-                        "notional_usd": round(notional_usd, 2),
-                        "order_id": str(order_id),
-                        "balance": float(refreshed_balance)
-                        if isinstance(refreshed_balance, (int, float))
-                        else None,
-                    },
-                })
-                if isinstance(refreshed_balance, (int, float)):
-                    await manager.broadcast({
-                        "type": "balance_update",
-                        "event_id": "",
+                await manager.broadcast(
+                    {
+                        "type": "bot_order_placed",
+                        "event_id": event_id,
                         "data": {
-                            "balance": float(refreshed_balance),
-                            "source": "bot_auto_order",
+                            "side": side,
+                            "shares": round(shares, 4),
+                            "price": round(ask_price, 4),
+                            "notional_usd": round(notional_usd, 2),
+                            "order_id": str(order_id),
+                            "balance": float(refreshed_balance)
+                            if isinstance(refreshed_balance, (int, float))
+                            else None,
                         },
-                    })
+                    }
+                )
+                if isinstance(refreshed_balance, (int, float)):
+                    await manager.broadcast(
+                        {
+                            "type": "balance_update",
+                            "event_id": "",
+                            "data": {
+                                "balance": float(refreshed_balance),
+                                "source": "bot_auto_order",
+                            },
+                        }
+                    )
             else:
-                logger.error("Bot auto-order: place_order returned no result for %s %s", event_id, side)
-                _append_bot_order_log({
-                    "placed_at_utc": now_utc.isoformat(),
-                    "event_id": event_id,
-                    "ticker": self._extract_event_ticker(event_id, event_dict),
-                    "side": side,
-                    "token_id": token_id,
-                    "shares": round(shares, 6),
-                    "price": round(ask_price, 6),
-                    "notional_usd": round(notional_usd, 4),
-                    "order_id": "",
-                    "quant_prob": round(quant_prob, 6),
-                    "edge_pct": round((quant_prob - ask_price) * 100, 4),
-                    "kelly_pct": round(kelly_pct * 100, 4) if kelly_pct is not None else "",
-                    "bankroll_usd": round(bankroll_usd, 2) if bankroll_usd is not None else "",
-                    "percentile_at_signal": percentile_at_signal if percentile_at_signal is not None else "",
-                    "status": "failed",
-                })
+                logger.error(
+                    "Bot auto-order: place_order returned no result for %s %s",
+                    event_id,
+                    side,
+                )
+                _append_bot_order_log(
+                    {
+                        "placed_at_utc": now_utc.isoformat(),
+                        "event_id": event_id,
+                        "ticker": self._extract_event_ticker(event_id, event_dict),
+                        "side": side,
+                        "token_id": token_id,
+                        "shares": round(shares, 6),
+                        "price": round(ask_price, 6),
+                        "notional_usd": round(notional_usd, 4),
+                        "order_id": "",
+                        "quant_prob": round(quant_prob, 6),
+                        "edge_pct": round((quant_prob - ask_price) * 100, 4),
+                        "price_source_at_send": price_source_at_send,
+                        "fill_price_real": "",
+                        "edge_at_fill_pct": "",
+                        "kelly_pct": round(kelly_pct * 100, 4)
+                        if kelly_pct is not None
+                        else "",
+                        "bankroll_usd": round(bankroll_usd, 2)
+                        if bankroll_usd is not None
+                        else "",
+                        "percentile_at_signal": percentile_at_signal
+                        if percentile_at_signal is not None
+                        else "",
+                        "status": "failed",
+                    }
+                )
 
         except Exception as e:
             logger.error("Bot auto-order error for %s %s: %s", event_id, side, e)
@@ -2393,9 +3192,31 @@ class EventManager:
             )
             if ref:
                 symbols.append(ref)
+        # Use polling if no streamers exist, OR if streamer hasn't sent a tick in >10s (stall)
+        streamer_stalled = (
+            (self._binance_streamers or self._chainlink_streamers)
+            and self._last_price_tick_at is not None
+            and (
+                datetime.now(tz=timezone.utc) - self._last_price_tick_at
+            ).total_seconds()
+            > 10
+        )
         use_polling_prices = (
             not self._binance_streamers and not self._chainlink_streamers
-        )
+        ) or streamer_stalled
+        if streamer_stalled:
+            now_check = datetime.now(tz=timezone.utc)
+            if (
+                self._streamer_stall_logged_at is None
+                or (now_check - self._streamer_stall_logged_at).total_seconds() > 30
+            ):
+                logger.warning(
+                    "Price streamer stalled (no tick >10s), falling back to REST polling"
+                )
+                self._streamer_stall_logged_at = now_check
+        elif self._streamer_stall_logged_at is not None:
+            logger.info("Price streamer recovered — resuming WS ticks")
+            self._streamer_stall_logged_at = None
         market_symbols = [f"{s}USDT" for s in symbols]
         prices_by_symbol = (
             fetch_binance_prices(market_symbols) if use_polling_prices else {}
@@ -2435,6 +3256,12 @@ class EventManager:
                 event_dict["no_price"] = 1 - yes_p
 
             event_dict["last_update"] = now_iso
+            self._paper_event_cache[event_id] = {
+                "event_end_utc": event_dict.get("event_end_utc"),
+                "price_to_beat": float(event_dict.get("price_to_beat", 0) or 0),
+                "close_price": float(event_dict.get("current_price", 0) or 0),
+                "cached_at_utc": now_iso,
+            }
             self._apply_quant_metrics(event_dict, ecfg, datetime.now(tz=timezone.utc))
             self._apply_quant_buy_gates(event_dict)
             self._track_opportunities_for_event(
@@ -2492,6 +3319,7 @@ class EventManager:
         self._opportunity_tracker.resolve_closed_events(
             self.events, datetime.now(tz=timezone.utc)
         )
+        self._reconcile_paper_trades(datetime.now(tz=timezone.utc))
 
         # 2) Slow path in round-robin: refresh Polymarket books/prices for a subset.
         if not client or not event_ids:
@@ -2511,7 +3339,7 @@ class EventManager:
             if not self._is_trackable_crypto_event(event_id, event_dict):
                 continue
 
-            pr = fetch_real_prices(client, ecfg)
+            pr = await asyncio.to_thread(fetch_real_prices, client, ecfg)
             if pr:
                 event_dict["yes_price"] = pr["yes_price"]
                 event_dict["no_price"] = pr["no_price"]

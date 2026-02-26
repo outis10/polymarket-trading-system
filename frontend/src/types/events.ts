@@ -99,6 +99,12 @@ export interface SettingsData {
     kelly_enabled?: boolean;
     kelly_fraction?: number;
     kelly_bankroll?: number;
+    kelly_live_bankroll_usd?: number;
+    kelly_paper_bankroll_usd?: number;
+    paper_compound_enabled?: boolean;
+    paper_current_bankroll_usd?: number;
+    live_equity_start_bankroll_usd?: number;
+    live_equity_start_at_utc?: string;
     kelly_min_edge_pct?: number;
     kelly_max_bet_pct?: number;
     kelly_max_event_exposure_pct?: number;
@@ -117,7 +123,8 @@ export interface SettingsData {
     quant_gate_min_edge_vs_ask_pct?: number;
     quant_gate_min_prob?: number;
     early_window_enabled?: boolean;
-    early_window_seconds?: number;
+    early_window_start?: number;
+    early_window_end?: number;
     early_quant_gate_min_sample?: number;
     early_quant_gate_min_edge_pct?: number;
     early_quant_gate_edge_vs_ask_enabled?: boolean;
@@ -125,7 +132,8 @@ export interface SettingsData {
     early_quant_gate_min_prob?: number;
     early_quant_gate_min_diff_pct?: number;
     late_window_enabled?: boolean;
-    late_window_seconds?: number;
+    late_window_start?: number;
+    late_window_end?: number;
     late_quant_gate_min_sample?: number;
     late_quant_gate_min_edge_pct?: number;
     late_quant_gate_edge_vs_ask_enabled?: boolean;
@@ -140,6 +148,7 @@ export interface SettingsData {
     bot_max_event_exposure_pct?: number;
     bot_max_ticker_exposure_pct?: number;
     bot_order_notional_cap_usd?: number;
+    bot_paper_mode?: boolean;
     pm_min_shares?: number;
     pm_min_notional_usd?: number;
     // Order book streaming controls
@@ -147,6 +156,8 @@ export interface SettingsData {
     order_book_min_broadcast_ms?: number;
     // Bot order controls
     bot_enforce_timeframe_filter?: boolean;
+    bot_min_seconds_before_end?: number;
+    bot_block_opposite_side?: boolean;
     keyboard_shortcuts_enabled?: boolean;
 }
 

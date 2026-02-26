@@ -152,19 +152,69 @@ def main() -> None:
     max_slot = 300 // slot_seconds
     df = df[(df["slot"] >= 1) & (df["slot"] <= max_slot)].copy()
 
+    # Keep full 5m data for event outcome labels (includes final slot).
+    df_all = df
+    slot_stats = df_all.groupby("_block_key", sort=False)["slot"].agg(
+        count="size", nunique="nunique", min="min", max="max"
+    )
+    invalid_blocks = slot_stats[
+        (slot_stats["count"] != max_slot)
+        | (slot_stats["nunique"] != max_slot)
+        | (slot_stats["min"] != 1)
+        | (slot_stats["max"] != max_slot)
+    ]
+    if not invalid_blocks.empty:
+        # Real-time exports can include the currently open 5m block at the end.
+        # Drop only that trailing incomplete block; keep strict validation otherwise.
+        last_block_key = int(df_all["_block_key"].max())
+        trailing_incomplete = invalid_blocks[
+            (invalid_blocks.index == last_block_key)
+            & (
+                (invalid_blocks["count"] < max_slot)
+                | (invalid_blocks["nunique"] < max_slot)
+                | (invalid_blocks["max"] < max_slot)
+            )
+        ]
+        if not trailing_incomplete.empty:
+            df_all = df_all[df_all["_block_key"] != last_block_key].copy()
+            slot_stats = df_all.groupby("_block_key", sort=False)["slot"].agg(
+                count="size", nunique="nunique", min="min", max="max"
+            )
+            invalid_blocks = slot_stats[
+                (slot_stats["count"] != max_slot)
+                | (slot_stats["nunique"] != max_slot)
+                | (slot_stats["min"] != 1)
+                | (slot_stats["max"] != max_slot)
+            ]
+    if not invalid_blocks.empty:
+        sample_keys = invalid_blocks.index.astype(str).tolist()[:5]
+        raise ValueError(
+            "Detected invalid 5m blocks before aggregation: "
+            f"expected unique slots 1..{max_slot} in every block, got mismatches in "
+            f"{len(invalid_blocks)} block(s). Sample block keys: {sample_keys}"
+        )
+
+    ref_price_all = df_all.groupby("_block_key", sort=False)["open"].transform("first")
+    final_close_all = df_all.groupby("_block_key", sort=False)["close"].transform(
+        "last"
+    )
+
     if args.exclude_last_slot:
-        df = df[df["slot"] != max_slot].copy()
+        df = df_all[df_all["slot"] != max_slot].copy()
+    else:
+        df = df_all.copy()
 
     df["ref_price"] = df.groupby("_block_key", sort=False)["open"].transform("first")
     df["price_move"] = df["close"] - df["ref_price"]
     df["inf_range"], df["sup_range"] = build_ranges(df["price_move"], step=step)
 
     if args.prob_source == "event_outcome":
-        final_close = df.groupby("_block_key", sort=False)["close"].transform("last")
+        final_close_event = final_close_all.loc[df.index]
+        ref_price_event = ref_price_all.loc[df.index]
         df["prob_up_event"] = np.where(
-            final_close > df["ref_price"],
+            final_close_event > ref_price_event,
             1.0,
-            np.where(final_close < df["ref_price"], 0.0, 0.5),
+            np.where(final_close_event < ref_price_event, 0.0, 0.5),
         )
         df["prob_down_event"] = 1.0 - df["prob_up_event"]
         prob_up_col = "prob_up_event"

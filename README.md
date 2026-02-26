@@ -494,6 +494,16 @@ Para preguntas o issues, abrir un issue en GitHub o contactar directamente.
 
 ⚡ **Desarrollado con** Python, Polymarket API, LangChain
 
+## 📈 Pipeline Quant — Actualización Diaria
+
+Al finalizar cada jornada de trading, regenera las tablas de probabilidades históricas:
+
+```bash
+bash scripts/update_quant.sh
+```
+
+Descarga datos frescos de Binance, recalcula rangos por slot y hace hot-reload en el backend sin reiniciar. Ver documentación completa en **[docs/QUANT_PIPELINE.md](docs/QUANT_PIPELINE.md)**.
+
 ## 🧮 Agregación de rangos PM (15m)
 
 El script `aggregate_pm_15m_ranges.py` agrega datos de `1min` desde un `.xlsx` a buckets por minuto dentro del bloque de 15 minutos y por rango de movimiento de precio.

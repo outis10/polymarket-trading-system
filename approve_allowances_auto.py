@@ -3,6 +3,7 @@
 Script para aprobar allowances en Polymarket (versión automática)
 """
 from py_clob_client.client import ClobClient
+from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
 import sys
 from dotenv import load_dotenv
 import os
@@ -100,26 +101,45 @@ def main():
 
         print()
 
+        # Params requeridos por la version actual de py_clob_client
+        bal_params = BalanceAllowanceParams(
+            asset_type=AssetType.COLLATERAL,
+            signature_type=0,
+        )
+
         # Verificar allowances actuales
         print("Verificando allowances actuales...")
         try:
-            allowance = client.get_balance_allowance()
+            allowance = client.get_balance_allowance(bal_params)
             print(f"  Allowance actual: {allowance}")
             print()
 
-            # Verificar si ya está aprobado (allowance > 0 significa aprobado)
-            if allowance and int(allowance) > 0:
-                print("✓ El allowance ya está aprobado!")
-                print("  No es necesario aprobar nuevamente.")
-                print()
-                print("=" * 60)
-                print("✓ LISTO PARA USAR")
-                print("=" * 60)
-                print()
-                print("Puedes continuar con:")
-                print("  python test_setup.py")
-                print()
-                sys.exit(0)
+            # Extraer valor numerico del resultado
+            raw_val = None
+            if hasattr(allowance, "allowance"):
+                raw_val = allowance.allowance
+            elif isinstance(allowance, dict):
+                raw_val = allowance.get("allowance") or allowance.get("balance")
+            elif isinstance(allowance, (int, float, str)):
+                raw_val = allowance
+
+            if raw_val is not None:
+                try:
+                    numeric = int(str(raw_val).split(".")[0])
+                    if numeric > 0:
+                        print("✓ El allowance ya está aprobado!")
+                        print("  No es necesario aprobar nuevamente.")
+                        print()
+                        print("=" * 60)
+                        print("✓ LISTO PARA USAR")
+                        print("=" * 60)
+                        print()
+                        print("Puedes continuar con:")
+                        print("  python test_setup.py")
+                        print()
+                        sys.exit(0)
+                except (ValueError, TypeError):
+                    pass
 
         except Exception as e:
             print(f"  Advertencia: No se pudo verificar allowance actual: {e}")
@@ -130,7 +150,7 @@ def main():
         print("⏳ Esto puede tardar unos segundos (esperando confirmación en blockchain)...")
         print()
 
-        result = client.update_balance_allowance()
+        result = client.update_balance_allowance(bal_params)
 
         print(f"✓ Allowance aprobado exitosamente!")
         print(f"  Resultado: {result}")
@@ -139,7 +159,7 @@ def main():
         # Verificar nuevamente
         print("Verificando allowance final...")
         try:
-            allowance = client.get_balance_allowance()
+            allowance = client.get_balance_allowance(bal_params)
             print(f"  ✓ Allowance: {allowance}")
             print()
         except Exception as e:

@@ -44,12 +44,15 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
         message: string;
     } | null>(null);
     // Derived from real positions so it persists across page reloads
-    const [boughtSide, setBoughtSide] = useState<"up" | "down" | "both" | null>(null);
+    const [boughtSide, setBoughtSide] = useState<"up" | "down" | "both" | null>(
+        null,
+    );
     useEffect(() => {
         apiFetch(`/api/positions/${eventId}`)
-            .then((r) => r.ok ? r.json() : null)
+            .then((r) => (r.ok ? r.json() : null))
             .then((data) => {
-                const positions: Array<{ outcome: string }> = data?.positions ?? [];
+                const positions: Array<{ outcome: string }> =
+                    data?.positions ?? [];
                 const outcomes = positions.map((p) => p.outcome.toLowerCase());
                 const hasUp = outcomes.includes("up");
                 const hasDown = outcomes.includes("down");
@@ -62,18 +65,22 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
                 }
             })
             .catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [eventId]);
 
     // Show toast when backend bot places an order automatically
     const botLastOrder = (event as Record<string, unknown>)._bot_last_order as
         | Record<string, unknown>
         | undefined;
-    const botLastOrderRef = useRef<Record<string, unknown> | undefined>(undefined);
+    const botLastOrderRef = useRef<Record<string, unknown> | undefined>(
+        undefined,
+    );
     useEffect(() => {
         if (!botLastOrder || botLastOrder === botLastOrderRef.current) return;
         botLastOrderRef.current = botLastOrder;
-        const side = String(botLastOrder.side ?? "").toLowerCase() as "up" | "down";
+        const side = String(botLastOrder.side ?? "").toLowerCase() as
+            | "up"
+            | "down";
         const sideUpper = side.toUpperCase();
         const shares = Number(botLastOrder.shares ?? 0).toFixed(2);
         const price = Number(botLastOrder.price ?? 0).toFixed(4);
@@ -84,9 +91,7 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
         });
         if (side === "up" || side === "down") {
             setBoughtSide((prev) =>
-                prev === null ? side :
-                prev === side ? side :
-                "both"
+                prev === null ? side : prev === side ? side : "both",
             );
         }
         const t = setTimeout(() => setBotTradeResult(null), 6000);
@@ -121,7 +126,10 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
     const tradingMode = settings.trading_mode || "manual";
     const kellyEnabled = settings.kelly_enabled ?? true;
     const kellyFraction = Math.max(0, settings.kelly_fraction ?? 0.25);
-    const bankrollManual = Math.max(0, settings.kelly_bankroll ?? 100);
+    const bankrollManual = Math.max(
+        0,
+        settings.kelly_live_bankroll_usd ?? settings.kelly_bankroll ?? 100,
+    );
     const bankroll = Math.max(0, bankrollReal ?? bankrollManual);
     const minEdgePct = Math.max(0, settings.kelly_min_edge_pct ?? 0.5);
     const maxBetPct = Math.max(0, settings.kelly_max_bet_pct ?? 25) / 100;
@@ -293,16 +301,16 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
         kellySharesUp >= minShares && effectiveStakeUpUsd >= minNotionalUsd;
     const minConstraintDownOk =
         kellySharesDown >= minShares && effectiveStakeDownUsd >= minNotionalUsd;
+    const blockOppositeSide = settings.bot_block_opposite_side ?? true;
     const canBuyUp =
         (gateUp ? gateUp.enabled : false) &&
         minConstraintUpOk &&
-        boughtSide !== "down" &&
-        boughtSide !== "both";
+        (!blockOppositeSide ||
+            (boughtSide !== "down" && boughtSide !== "both"));
     const canBuyDown =
         (gateDown ? gateDown.enabled : false) &&
         minConstraintDownOk &&
-        boughtSide !== "up" &&
-        boughtSide !== "both";
+        (!blockOppositeSide || (boughtSide !== "up" && boughtSide !== "both"));
     const localBlockReasonUp = !minConstraintUpOk
         ? `blocked by exchange min (${minShares} shares, $${minNotionalUsd})`
         : "";
@@ -388,9 +396,11 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
                         }),
                     );
                     setBoughtSide((prev) =>
-                        prev === null ? outcome :
-                        prev === outcome ? outcome :
-                        "both"
+                        prev === null
+                            ? outcome
+                            : prev === outcome
+                              ? outcome
+                              : "both",
                     );
                     setBotTradeResult({
                         type: "success",
@@ -455,11 +465,17 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
                 </div>
                 <div className="event-header-mode">
                     {tradingMode === "bot" ? (
-                        <span className="trading-mode-badge trading-mode-badge-bot" title="Bot Trader activo — las órdenes se ejecutan automáticamente">
+                        <span
+                            className="trading-mode-badge trading-mode-badge-bot"
+                            title="Bot Trader activo — las órdenes se ejecutan automáticamente"
+                        >
                             ⚡ Bot
                         </span>
                     ) : (
-                        <span className="trading-mode-badge trading-mode-badge-manual" title="Modo manual — las órdenes requieren confirmación">
+                        <span
+                            className="trading-mode-badge trading-mode-badge-manual"
+                            title="Modo manual — las órdenes requieren confirmación"
+                        >
                             Manual
                         </span>
                     )}
@@ -686,14 +702,12 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
                                     </span>
                                 </div>
                                 <div className="bot-trade-ks-inline">
-                                    <span
-                                        title={ksTooltip(kellyUp.edgePct)}
-                                    >
+                                    <span title={ksTooltip(kellyUp.edgePct)}>
                                         KS {kellyUp.pct.toFixed(2)}%
                                     </span>
                                     <span className="bot-trade-ks-amount">
-                                        (${formatUsd(effectiveStakeUpUsd)} -
-                                        sh {kellySharesUp.toFixed(2)})
+                                        (${formatUsd(effectiveStakeUpUsd)} - sh{" "}
+                                        {kellySharesUp.toFixed(2)})
                                     </span>
                                 </div>
                             </div>
@@ -729,14 +743,12 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
                                     </span>
                                 </div>
                                 <div className="bot-trade-ks-inline">
-                                    <span
-                                        title={ksTooltip(kellyDown.edgePct)}
-                                    >
+                                    <span title={ksTooltip(kellyDown.edgePct)}>
                                         KS {kellyDown.pct.toFixed(2)}%
                                     </span>
                                     <span className="bot-trade-ks-amount">
-                                        (${formatUsd(effectiveStakeDownUsd)}{" "}
-                                        - sh {kellySharesDown.toFixed(2)})
+                                        (${formatUsd(effectiveStakeDownUsd)} -
+                                        sh {kellySharesDown.toFixed(2)})
                                     </span>
                                 </div>
                             </div>

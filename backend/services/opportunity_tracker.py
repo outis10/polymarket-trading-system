@@ -473,6 +473,12 @@ class OpportunityTracker:
         }
 
         if blocked_reason:
+            estimated_stake_usd = (
+                float(stake_usd_override)
+                if isinstance(stake_usd_override, (int, float))
+                and float(stake_usd_override) > 0
+                else ""
+            )
             blocked_row = {
                 "blocked_id": str(uuid.uuid4()),
                 "detected_at_utc": now_utc.isoformat(),
@@ -481,7 +487,7 @@ class OpportunityTracker:
                 "timeframe_minutes": int(event_dict.get("timeframe_minutes", 15) or 15),
                 "side": side,
                 "blocked_reason": str(blocked_reason),
-                "estimated_stake_usd": signal["stake_usd"],
+                "estimated_stake_usd": estimated_stake_usd,
                 "estimated_shares": (
                     float(estimated_shares)
                     if isinstance(estimated_shares, (float, int))

@@ -495,16 +495,85 @@ export default function Sidebar({ send }: SidebarProps) {
                         Enable Kelly
                     </label>
 
-                    <label className="field-label">Bankroll ($)</label>
+                    <label className="field-label">
+                        Live Manual Bankroll ($)
+                    </label>
                     <input
                         className="sidebar-number-input"
                         type="number"
                         min={1}
                         step={1}
-                        value={settings.kelly_bankroll ?? 100}
+                        value={
+                            settings.kelly_live_bankroll_usd ??
+                            settings.kelly_bankroll ??
+                            100
+                        }
                         onChange={(e) =>
                             handleKellySettingChange({
-                                kelly_bankroll: Number(e.target.value || 0),
+                                kelly_live_bankroll_usd: Number(
+                                    e.target.value || 0,
+                                ),
+                            })
+                        }
+                    />
+
+                    <label className="field-label">Paper Bankroll ($)</label>
+                    <input
+                        className="sidebar-number-input"
+                        type="number"
+                        min={1}
+                        step={1}
+                        value={
+                            settings.kelly_paper_bankroll_usd ??
+                            settings.kelly_live_bankroll_usd ??
+                            settings.kelly_bankroll ??
+                            100
+                        }
+                        onChange={(e) =>
+                            handleKellySettingChange({
+                                kelly_paper_bankroll_usd: Number(
+                                    e.target.value || 0,
+                                ),
+                            })
+                        }
+                    />
+
+                    <label
+                        className="chart-option"
+                        title="Si está activo, el bankroll paper se actualiza con el pnl simulado de cada trade resuelto."
+                    >
+                        <input
+                            type="checkbox"
+                            checked={settings.paper_compound_enabled ?? true}
+                            onChange={(e) =>
+                                handleKellySettingChange({
+                                    paper_compound_enabled: e.target.checked,
+                                })
+                            }
+                        />
+                        Paper Compound Bankroll
+                    </label>
+
+                    <label className="field-label">
+                        Paper Current Bankroll ($)
+                    </label>
+                    <input
+                        className="sidebar-number-input"
+                        type="number"
+                        min={0}
+                        step={1}
+                        value={
+                            settings.paper_current_bankroll_usd ??
+                            settings.kelly_paper_bankroll_usd ??
+                            settings.kelly_live_bankroll_usd ??
+                            settings.kelly_bankroll ??
+                            100
+                        }
+                        onChange={(e) =>
+                            handleKellySettingChange({
+                                paper_current_bankroll_usd: Number(
+                                    e.target.value || 0,
+                                ),
                             })
                         }
                     />
@@ -602,18 +671,74 @@ export default function Sidebar({ send }: SidebarProps) {
                     >
                         <input
                             type="checkbox"
-                            checked={settings.bot_enforce_timeframe_filter ?? true}
+                            checked={
+                                settings.bot_enforce_timeframe_filter ?? true
+                            }
                             onChange={(e) =>
                                 handleKellySettingChange({
-                                    bot_enforce_timeframe_filter: e.target.checked,
+                                    bot_enforce_timeframe_filter:
+                                        e.target.checked,
                                 })
                             }
                         />
                         Enforce Timeframe Filter (Bot)
                     </label>
 
+                    <label
+                        className="chart-option"
+                        title="Paper mode: el bot no manda orden real; solo registra decision, outcome y pnl simulado en paper_trades.csv."
+                    >
+                        <input
+                            type="checkbox"
+                            checked={settings.bot_paper_mode ?? false}
+                            onChange={(e) =>
+                                handleKellySettingChange({
+                                    bot_paper_mode: e.target.checked,
+                                })
+                            }
+                        />
+                        Paper Mode (No Real Orders)
+                    </label>
+
+                    <label
+                        className="chart-option"
+                        title="Si está activo, bloquea comprar el lado contrario si ya compraste UP o DOWN en ese evento hoy."
+                    >
+                        <input
+                            type="checkbox"
+                            checked={settings.bot_block_opposite_side ?? true}
+                            onChange={(e) =>
+                                handleKellySettingChange({
+                                    bot_block_opposite_side: e.target.checked,
+                                })
+                            }
+                        />
+                        Block Opposite Side (Bot)
+                    </label>
+
+                    <label
+                        className="field-label"
+                        title="Bloquea compras cuando quedan menos de N segundos para que termine el evento. 0 = desactivado."
+                    >
+                        Min Seconds Before End
+                    </label>
+                    <input
+                        className="sidebar-number-input"
+                        type="number"
+                        min={0}
+                        step={5}
+                        value={settings.bot_min_seconds_before_end ?? 30}
+                        onChange={(e) =>
+                            handleKellySettingChange({
+                                bot_min_seconds_before_end: Number(
+                                    e.target.value || 0,
+                                ),
+                            })
+                        }
+                    />
+
                     <label className="field-label">
-                        Max Buys / Event-Side (day)
+                        Max Buys / Event (day)
                     </label>
                     <input
                         className="sidebar-number-input"
@@ -630,9 +755,7 @@ export default function Sidebar({ send }: SidebarProps) {
                         }
                     />
 
-                    <label className="field-label">
-                        Cooldown Event-Side (s)
-                    </label>
+                    <label className="field-label">Cooldown Event (s)</label>
                     <input
                         className="sidebar-number-input"
                         type="number"
@@ -857,7 +980,9 @@ export default function Sidebar({ send }: SidebarProps) {
                         defaultValue={Math.round(
                             (settings.quant_gate_min_prob ?? 0) * 100,
                         )}
-                        key={Math.round((settings.quant_gate_min_prob ?? 0) * 100)}
+                        key={Math.round(
+                            (settings.quant_gate_min_prob ?? 0) * 100,
+                        )}
                         onBlur={(e) =>
                             handleKellySettingChange({
                                 quant_gate_min_prob:
@@ -877,7 +1002,9 @@ export default function Sidebar({ send }: SidebarProps) {
                         type="number"
                         min={1}
                         step={1}
-                        value={settings.quant_gate_min_sample_strong_signal ?? 20}
+                        value={
+                            settings.quant_gate_min_sample_strong_signal ?? 20
+                        }
                         onChange={(e) =>
                             handleKellySettingChange({
                                 quant_gate_min_sample_strong_signal: Number(
@@ -900,9 +1027,13 @@ export default function Sidebar({ send }: SidebarProps) {
                         max={100}
                         step={1}
                         defaultValue={Math.round(
-                            (settings.quant_gate_strong_signal_threshold ?? 0.72) * 100,
+                            (settings.quant_gate_strong_signal_threshold ??
+                                0.72) * 100,
                         )}
-                        key={Math.round((settings.quant_gate_strong_signal_threshold ?? 0.72) * 100)}
+                        key={Math.round(
+                            (settings.quant_gate_strong_signal_threshold ??
+                                0.72) * 100,
+                        )}
                         onBlur={(e) =>
                             handleKellySettingChange({
                                 quant_gate_strong_signal_threshold:
@@ -925,7 +1056,9 @@ export default function Sidebar({ send }: SidebarProps) {
                         value={settings.quant_gate_min_diff_pct ?? 0}
                         onChange={(e) =>
                             handleKellySettingChange({
-                                quant_gate_min_diff_pct: Number(e.target.value || 0),
+                                quant_gate_min_diff_pct: Number(
+                                    e.target.value || 0,
+                                ),
                             })
                         }
                     />
@@ -1073,38 +1206,39 @@ export default function Sidebar({ send }: SidebarProps) {
                         />
                         Enable Early Window
                     </label>
-                    <label className="field-label">Early Window Seconds</label>
-                    <input
-                        className="sidebar-number-input"
-                        type="number"
-                        min={1}
-                        step={1}
-                        value={settings.early_window_seconds ?? 50}
-                        onChange={(e) =>
-                            handleKellySettingChange({
-                                early_window_seconds: Number(
-                                    e.target.value || 0,
-                                ),
-                            })
-                        }
-                    />
                     <label
                         className="field-label"
-                        title="Diferencia mínima |precio - PTB| / PTB en %. Ticker-agnóstico. 0 = desactivado."
+                        title="Segundo desde inicio del evento donde comienza la ventana Early. Antes de este segundo el gate se bloquea."
                     >
-                        Early Min Diff (%)
+                        Early Start (s)
                     </label>
                     <input
                         className="sidebar-number-input"
                         type="number"
                         min={0}
-                        step={0.01}
-                        value={settings.early_quant_gate_min_diff_pct ?? 0}
+                        step={1}
+                        value={settings.early_window_start ?? 20}
                         onChange={(e) =>
                             handleKellySettingChange({
-                                early_quant_gate_min_diff_pct: Number(
-                                    e.target.value || 0,
-                                ),
+                                early_window_start: Number(e.target.value || 0),
+                            })
+                        }
+                    />
+                    <label
+                        className="field-label"
+                        title="Segundo desde inicio del evento donde termina la ventana Early."
+                    >
+                        Early End (s)
+                    </label>
+                    <input
+                        className="sidebar-number-input"
+                        type="number"
+                        min={0}
+                        step={1}
+                        value={settings.early_window_end ?? 120}
+                        onChange={(e) =>
+                            handleKellySettingChange({
+                                early_window_end: Number(e.target.value || 0),
                             })
                         }
                     />
@@ -1138,6 +1272,26 @@ export default function Sidebar({ send }: SidebarProps) {
                             })
                         }
                     />
+                    <label
+                        className="field-label"
+                        title="Diferencia mínima |precio - PTB| / PTB en %. 0 = desactivado."
+                    >
+                        Early Min Diff (%)
+                    </label>
+                    <input
+                        className="sidebar-number-input"
+                        type="number"
+                        min={0}
+                        step={0.01}
+                        value={settings.early_quant_gate_min_diff_pct ?? 0}
+                        onChange={(e) =>
+                            handleKellySettingChange({
+                                early_quant_gate_min_diff_pct: Number(
+                                    e.target.value || 0,
+                                ),
+                            })
+                        }
+                    />
 
                     <hr className="sidebar-divider" />
                     <div className="field-hint">Late Window Override</div>
@@ -1153,18 +1307,39 @@ export default function Sidebar({ send }: SidebarProps) {
                         />
                         Enable Late Window
                     </label>
-                    <label className="field-label">Late Window Seconds</label>
+                    <label
+                        className="field-label"
+                        title="Segundo desde inicio del evento donde comienza la ventana Late."
+                    >
+                        Late Start (s)
+                    </label>
                     <input
                         className="sidebar-number-input"
                         type="number"
-                        min={1}
+                        min={0}
                         step={1}
-                        value={settings.late_window_seconds ?? 120}
+                        value={settings.late_window_start ?? 180}
                         onChange={(e) =>
                             handleKellySettingChange({
-                                late_window_seconds: Number(
-                                    e.target.value || 0,
-                                ),
+                                late_window_start: Number(e.target.value || 0),
+                            })
+                        }
+                    />
+                    <label
+                        className="field-label"
+                        title="Segundo desde inicio del evento donde termina la ventana Late. Después de este segundo el gate se bloquea."
+                    >
+                        Late End (s)
+                    </label>
+                    <input
+                        className="sidebar-number-input"
+                        type="number"
+                        min={0}
+                        step={1}
+                        value={settings.late_window_end ?? 280}
+                        onChange={(e) =>
+                            handleKellySettingChange({
+                                late_window_end: Number(e.target.value || 0),
                             })
                         }
                     />
@@ -1200,7 +1375,7 @@ export default function Sidebar({ send }: SidebarProps) {
                     />
                     <label
                         className="field-label"
-                        title="Diferencia mínima |precio - PTB| / PTB en %. Ticker-agnóstico. 0 = desactivado."
+                        title="Diferencia mínima |precio - PTB| / PTB en %. 0 = desactivado."
                     >
                         Late Min Diff (%)
                     </label>

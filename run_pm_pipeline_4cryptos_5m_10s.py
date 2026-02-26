@@ -166,7 +166,6 @@ def main() -> None:
                 "1",
                 "--prior-beta",
                 "1",
-                "--exclude-last-slot",
             ]
         )
 
