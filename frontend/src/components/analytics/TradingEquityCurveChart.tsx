@@ -66,6 +66,7 @@ export default function TradingEquityCurveChart({
                 borderColor: "#2b3542",
                 timeVisible: true,
                 secondsVisible: false,
+                rightOffset: 8,
             },
             crosshair: { mode: 1 },
             handleScale: true,

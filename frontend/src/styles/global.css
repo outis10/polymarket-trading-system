@@ -1982,6 +1982,52 @@ body {
     padding: 10px 12px;
 }
 
+.about-page {
+    padding: 0 20px 20px 20px;
+    display: grid;
+    gap: 12px;
+}
+
+.about-card {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 12px;
+    padding: 14px;
+}
+
+.about-card h2,
+.about-card h3 {
+    margin-bottom: 8px;
+}
+
+.about-card p {
+    color: #c6d6e5;
+    line-height: 1.45;
+    margin-bottom: 8px;
+}
+
+.about-card ul {
+    margin: 0;
+    padding-left: 18px;
+    color: #c6d6e5;
+    display: grid;
+    gap: 6px;
+}
+
+.about-contact-list {
+    display: grid;
+    gap: 8px;
+}
+
+.about-contact-list a {
+    color: #79b8ff;
+    text-decoration: none;
+}
+
+.about-contact-list a:hover {
+    text-decoration: underline;
+}
+
 .analytics-kpis {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
