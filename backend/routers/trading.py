@@ -38,21 +38,6 @@ _ORDER_BLOCKED_LOG_PATH = os.path.normpath(
 )
 
 
-def _parse_timeframe_filter_to_minutes(raw: object) -> int | None:
-    value = str(raw or "").strip().lower()
-    if value == "5m":
-        return 5
-    if value == "15m":
-        return 15
-    if value == "1h":
-        return 60
-    return None
-
-
-def _quant_gate_reason_text(reasons: list[object]) -> str:
-    cleaned = [str(r).strip() for r in reasons if str(r).strip()]
-    return " | ".join(cleaned) if cleaned else "quant_gate_blocked"
-
 
 def _safe_float(value: object) -> float | None:
     try:
@@ -203,57 +188,40 @@ async def place_order(order: OrderRequest):
         )
         return HTTPException(status_code=403, detail=detail)
 
-    selected_tf = _parse_timeframe_filter_to_minutes(
-        event_manager.settings.get("timeframe_filter", "5m")
-    )
-    event_tf = int(event.get("timeframe_minutes", 15) or 15)
-    if not is_sell and selected_tf is not None and event_tf != selected_tf:
-        raise _blocked(
-            detail=(
-                f"Timeframe mismatch: selected={selected_tf}m, "
-                f"event={event_tf}m for event_id={order.event_id}"
-            ),
-            reason="timeframe_mismatch",
-        )
+    # Resolve bankroll early so evaluate_bot_order_candidate uses the real live balance.
+    # In demo mode the bankroll comes from event_manager internals; in live mode we
+    # fetch it from the Polymarket client before running eligibility checks.
+    live_client = None
+    if event_manager.mode != "demo":
+        live_client = get_client()
+        if not live_client:
+            raise HTTPException(status_code=503, detail="Polymarket client unavailable")
+        try:
+            balance = live_client.get_balance()
+            if isinstance(balance, (int, float)) and float(balance) > 0:
+                bankroll_usd = float(balance)
+        except Exception:
+            bankroll_usd = None
 
     if not is_sell:
-        min_secs_before_end = max(
-            0, int(event_manager.settings.get("bot_min_seconds_before_end", 30))
+        now_utc = datetime.now(tz=timezone.utc)
+        evaluation = event_manager.evaluate_bot_order_candidate(
+            event_id=order.event_id,
+            event_dict=event,
+            side=outcome_side,
+            now_utc=now_utc,
+            bankroll_usd=bankroll_usd,
         )
-        end_raw = event.get("event_end_utc")
-        if min_secs_before_end > 0 and end_raw:
-            try:
-                end_dt = datetime.fromisoformat(end_raw)
-                secs_remaining = (
-                    end_dt - datetime.now(tz=timezone.utc)
-                ).total_seconds()
-                if secs_remaining < min_secs_before_end:
-                    raise _blocked(
-                        detail=(
-                            f"Too close to event end: {int(secs_remaining)}s remaining, "
-                            f"min required={min_secs_before_end}s"
-                        ),
-                        reason="too_close_to_end",
-                    )
-            except HTTPException:
-                raise
-            except Exception:
-                pass
-
-    if not is_sell:
-        quant_gate = event.get("quant_buy_gate")
-        if isinstance(quant_gate, dict):
-            gate_side = quant_gate.get(outcome_side)
-            if isinstance(gate_side, dict) and not bool(
-                gate_side.get("enabled", False)
-            ):
-                reasons = gate_side.get("reasons", [])
-                reasons_list = reasons if isinstance(reasons, list) else [reasons]
+        if not evaluation["eligible"]:
+            reason_code = evaluation.get("reason") or "eligibility_blocked"
+            # Build a detailed message for quant_gate_blocked using existing debug info
+            if reason_code.startswith("quant_gate_blocked"):
                 ask_proxy_flag = (
                     " (proxy=mid)" if quant_debug.get("ask_is_proxy_at_check") else ""
                 )
+                gate_reasons = reason_code.split(":", 1)[1] if ":" in reason_code else reason_code
                 detail = (
-                    f"Quant gate blocked: {_quant_gate_reason_text(reasons_list)}"
+                    f"Quant gate blocked: {gate_reasons}"
                     f" | quant_prob={quant_debug.get('quant_prob_at_check')}"
                     f" ask={quant_debug.get('ask_price_at_check')}{ask_proxy_flag}"
                     f" market_prob={quant_debug.get('market_prob_at_check')}"
@@ -263,32 +231,28 @@ async def place_order(order: OrderRequest):
                     f" percentile={quant_debug.get('percentile_at_check')}"
                 )
                 raise _blocked(detail=detail, reason="quant_gate_blocked")
-
-    # Demo mode: simulate
-    if event_manager.mode == "demo":
-        if not is_sell:
-            allowed, reason = event_manager.validate_order_risk_guards(
-                event_id=order.event_id,
-                event=event,
-                outcome=outcome_side,
-                shares=float(effective_shares),
-                notional_usd=notional_usd,
-                now_utc=datetime.now(tz=timezone.utc),
-                bankroll_usd=bankroll_usd,
-            )
-            if not allowed:
+            elif reason_code in ("timeframe_mismatch", "too_close_to_end",
+                                 "ask_price_outside_range", "kelly_disabled",
+                                 "no_quant_prob", "edge_below_min",
+                                 "stake_non_positive", "invalid_side_price"):
+                raise _blocked(detail=reason_code, reason=reason_code)
+            else:
+                # risk_guard_blocked and any other guard reason
                 detailed = event_manager.format_risk_guard_block_reason(
-                    reason=reason,
+                    reason=reason_code,
                     event_id=order.event_id,
                     event=event,
                     notional_usd=notional_usd,
-                    now_utc=datetime.now(tz=timezone.utc),
+                    now_utc=now_utc,
                     bankroll_usd=bankroll_usd,
                 )
                 raise _blocked(
                     detail=f"Risk guard blocked: {detailed}",
                     reason="risk_guard_blocked",
                 )
+
+    # Demo mode: simulate
+    if event_manager.mode == "demo":
         event_manager.register_order_fill(
             event_id=order.event_id,
             event=event,
@@ -324,40 +288,8 @@ async def place_order(order: OrderRequest):
             order_id="demo-" + order.event_id[:8], status="FILLED", message=msg
         )
 
-    # Live mode: execute via Polymarket
-    client = get_client()
-    if not client:
-        raise HTTPException(status_code=503, detail="Polymarket client unavailable")
-    try:
-        balance = client.get_balance()
-        if isinstance(balance, (int, float)) and float(balance) > 0:
-            bankroll_usd = float(balance)
-    except Exception:
-        bankroll_usd = None
-
-    if not is_sell:
-        allowed, reason = event_manager.validate_order_risk_guards(
-            event_id=order.event_id,
-            event=event,
-            outcome=outcome_side,
-            shares=float(effective_shares),
-            notional_usd=notional_usd,
-            now_utc=datetime.now(tz=timezone.utc),
-            bankroll_usd=bankroll_usd,
-        )
-        if not allowed:
-            detailed = event_manager.format_risk_guard_block_reason(
-                reason=reason,
-                event_id=order.event_id,
-                event=event,
-                notional_usd=notional_usd,
-                now_utc=datetime.now(tz=timezone.utc),
-                bankroll_usd=bankroll_usd,
-            )
-            raise _blocked(
-                detail=f"Risk guard blocked: {detailed}",
-                reason="risk_guard_blocked",
-            )
+    # Live mode: execute via Polymarket (client already obtained above)
+    client = live_client
 
     token_id = (
         event.get("yes_token_id") if order.outcome == "up" else event.get("no_token_id")
