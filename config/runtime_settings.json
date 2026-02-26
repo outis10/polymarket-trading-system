@@ -9,8 +9,8 @@
     "bot_max_event_exposure_pct": 8,
     "bot_max_ticker_exposure_pct": 10,
     "bot_min_seconds_before_end": 15,
-    "bot_order_notional_cap_usd": 30,
-    "bot_paper_mode": true,
+    "bot_order_notional_cap_usd": 7,
+    "bot_paper_mode": false,
     "bot_risk_enabled": true,
     "chart_options": [
       "hide_probabilities_card"
@@ -42,15 +42,13 @@
     "late_window_end": 280,
     "late_window_start": 180,
     "live_equity_start_at_utc": "",
-    "live_equity_start_bankroll_usd": 0.0,
+    "live_equity_start_bankroll_usd": 0,
     "mode": "live",
-    "monitored_tickers": [
-      "BTC"
-    ],
+    "monitored_tickers": [],
     "order_book_max_levels": 8,
     "order_book_min_broadcast_ms": 120,
     "paper_compound_enabled": true,
-    "paper_current_bankroll_usd": 2041.14659,
+    "paper_current_bankroll_usd": 2523.628478,
     "pm_min_notional_usd": 1,
     "pm_min_shares": 5,
     "quant_gate_edge_vs_ask_enabled": true,
@@ -69,7 +67,7 @@
     "quant_gate_use_percentile": false,
     "refresh_rate": 1,
     "timeframe_filter": "5m",
-    "trading_mode": "bot"
+    "trading_mode": "manual"
   },
-  "updated_at_utc": "2026-02-26T18:35:20.197299+00:00"
+  "updated_at_utc": "2026-02-26T23:12:34.595218+00:00"
 }

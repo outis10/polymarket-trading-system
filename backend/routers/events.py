@@ -1,18 +1,59 @@
 """REST endpoints for events data."""
 
 import csv
+import io
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 
 from ..config import get_trading_config, get_ui_config, load_events_config
 from ..services.event_manager import event_manager
 from ..ws.manager import manager
 
 router = APIRouter(prefix="/api", tags=["events"])
+
+
+def _load_bot_orders_rows(
+    *,
+    ticker: str | None,
+    days: int,
+) -> list[dict[str, Any]]:
+    root = Path("backtest_output")
+    rows: list[dict[str, Any]] = []
+    ticker_filter = ticker.upper() if ticker else None
+    cutoff_day = datetime.now(tz=timezone.utc).date() - timedelta(
+        days=max(1, int(days)) - 1
+    )
+    pattern = re.compile(r"^bot_orders_(\d{4}-\d{2}-\d{2})\.csv$")
+
+    candidates: list[tuple[datetime, Path]] = []
+    for path in root.glob("bot_orders_*.csv"):
+        m = pattern.match(path.name)
+        if not m:
+            continue
+        try:
+            day = datetime.strptime(m.group(1), "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if day < cutoff_day:
+            continue
+        candidates.append((datetime.combine(day, datetime.min.time()), path))
+
+    for _, path in sorted(candidates, key=lambda x: x[0]):
+        try:
+            with open(path, newline="") as f:
+                for row in csv.DictReader(f):
+                    row_ticker = str(row.get("ticker", "")).upper()
+                    if ticker_filter and row_ticker != ticker_filter:
+                        continue
+                    rows.append(row)
+        except FileNotFoundError:
+            continue
+    rows.sort(key=lambda r: str(r.get("placed_at_utc", "")))
+    return rows
 
 
 @router.get("/events")
@@ -263,41 +304,8 @@ async def get_bot_orders_raw(
     days: int = 7,
 ):
     """Return raw bot order rows from daily bot_orders_YYYY-MM-DD.csv logs."""
-    root = Path("backtest_output")
-    rows: list[dict[str, Any]] = []
     ticker_filter = ticker.upper() if ticker else None
-    cutoff_day = datetime.now(tz=timezone.utc).date() - timedelta(
-        days=max(1, int(days)) - 1
-    )
-    pattern = re.compile(r"^bot_orders_(\d{4}-\d{2}-\d{2})\.csv$")
-
-    candidates: list[tuple[datetime, Path]] = []
-    for path in root.glob("bot_orders_*.csv"):
-        m = pattern.match(path.name)
-        if not m:
-            continue
-        try:
-            day = datetime.strptime(m.group(1), "%Y-%m-%d").date()
-        except ValueError:
-            continue
-        if day < cutoff_day:
-            continue
-        candidates.append((datetime.combine(day, datetime.min.time()), path))
-
-    for _, path in sorted(candidates, key=lambda x: x[0]):
-        try:
-            with open(path, newline="") as f:
-                for row in csv.DictReader(f):
-                    row_ticker = str(row.get("ticker", "")).upper()
-                    if ticker_filter and row_ticker != ticker_filter:
-                        continue
-                    rows.append(row)
-        except FileNotFoundError:
-            continue
-
-    rows.sort(
-        key=lambda r: str(r.get("placed_at_utc", "")),
-    )
+    rows = _load_bot_orders_rows(ticker=ticker, days=days)
     rows = rows[-max(1, int(limit)) :]
     return {
         "count": len(rows),
@@ -305,6 +313,60 @@ async def get_bot_orders_raw(
         "days": max(1, int(days)),
         "rows": rows,
     }
+
+
+@router.get("/stats/bot-orders/export.csv")
+async def export_bot_orders_csv(
+    ticker: str | None = None,
+    days: int = 7,
+):
+    """Export bot order rows as CSV."""
+    rows = _load_bot_orders_rows(ticker=ticker, days=days)
+    if rows:
+        fieldnames = list(rows[0].keys())
+    else:
+        fieldnames = [
+            "placed_at_utc",
+            "event_id",
+            "ticker",
+            "side",
+            "token_id",
+            "shares",
+            "price",
+            "notional_usd",
+            "order_id",
+            "quant_prob",
+            "edge_pct",
+            "price_source_at_send",
+            "price_to_beat_at_send",
+            "current_price_at_send",
+            "diff_vs_ptb_at_send",
+            "best_bid_at_send",
+            "best_ask_at_send",
+            "mid_at_send",
+            "spread_at_send",
+            "spread_pct_at_send",
+            "fill_price_real",
+            "edge_at_fill_pct",
+            "kelly_pct",
+            "bankroll_usd",
+            "percentile_at_signal",
+            "status",
+        ]
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=fieldnames)
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({k: row.get(k, "") for k in fieldnames})
+
+    date_tag = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+    ticker_tag = ticker.upper() if ticker else "ALL"
+    filename = f"bot_orders_export_{ticker_tag}_{date_tag}.csv"
+    return Response(
+        content=buffer.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/stats/pipeline/ev-curve")

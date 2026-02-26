@@ -48,6 +48,14 @@ _BOT_ORDERS_FIELDNAMES = [
     "quant_prob",
     "edge_pct",
     "price_source_at_send",
+    "price_to_beat_at_send",
+    "current_price_at_send",
+    "diff_vs_ptb_at_send",
+    "best_bid_at_send",
+    "best_ask_at_send",
+    "mid_at_send",
+    "spread_at_send",
+    "spread_pct_at_send",
     "fill_price_real",
     "edge_at_fill_pct",
     "kelly_pct",
@@ -67,6 +75,8 @@ _PAPER_TRADES_FIELDNAMES = [
     "ticker",
     "event_end_utc",
     "price_to_beat_at_decision",
+    "current_price_at_decision",
+    "diff_vs_ptb_at_decision",
     "close_price_at_resolution",
     "stake_usd",
     "shares_simulated",
@@ -1329,6 +1339,18 @@ class EventManager:
                     pass
         return side_price, True, "proxy_mid"
 
+    @staticmethod
+    def _event_best_bid_price(event_dict: dict, side: str) -> float | None:
+        bids = (
+            (event_dict.get("order_book_yes") or {}).get("bids", [])
+            if side == "up"
+            else (event_dict.get("order_book_no") or {}).get("bids", [])
+        )
+        if isinstance(bids, list) and bids:
+            raw = bids[0].get("price") if isinstance(bids[0], dict) else None
+            return _as_float(raw)
+        return None
+
     def evaluate_bot_order_candidate(
         self,
         *,
@@ -1548,8 +1570,30 @@ class EventManager:
         range_label = ""
         idx = histogram.get("current_bin_index")
         bins = histogram.get("bins")
-        if isinstance(idx, int) and isinstance(bins, list) and 0 <= idx < len(bins):
-            row = bins[idx] if isinstance(bins[idx], dict) else {}
+        resolved_idx: int | None = idx if isinstance(idx, int) else None
+        if (
+            resolved_idx is None
+            and isinstance(bins, list)
+            and bins
+            and isinstance(histogram.get("current_diff"), (int, float))
+        ):
+            # Histogram percentiles handle out-of-range diffs, but index may be None.
+            # Clamp to first/last bin so paper CSV keeps a concrete range label.
+            current_diff = float(histogram.get("current_diff"))
+            first = bins[0] if isinstance(bins[0], dict) else {}
+            last = bins[-1] if isinstance(bins[-1], dict) else {}
+            first_inf = first.get("inf_range")
+            last_sup = last.get("sup_range")
+            if isinstance(first_inf, (int, float)) and current_diff < float(first_inf):
+                resolved_idx = 0
+            elif isinstance(last_sup, (int, float)) and current_diff >= float(last_sup):
+                resolved_idx = len(bins) - 1
+        if (
+            isinstance(resolved_idx, int)
+            and isinstance(bins, list)
+            and 0 <= resolved_idx < len(bins)
+        ):
+            row = bins[resolved_idx] if isinstance(bins[resolved_idx], dict) else {}
             inf_v = row.get("inf_range")
             sup_v = row.get("sup_range")
             if isinstance(inf_v, (int, float)) and isinstance(sup_v, (int, float)):
@@ -1580,6 +1624,9 @@ class EventManager:
         q = max(0.0, float(market_prob_at_decision))
         stake = max(0.0, float(stake_usd))
         side_norm = "up" if str(side).lower() == "up" else "down"
+        price_to_beat = float(event_dict.get("price_to_beat", 0) or 0)
+        current_price = float(event_dict.get("current_price", 0) or 0)
+        diff_vs_ptb = current_price - price_to_beat
         best_bid = None
         if side_norm == "up":
             bids = (event_dict.get("order_book_yes") or {}).get("bids", [])
@@ -1608,7 +1655,9 @@ class EventManager:
             "event_id": event_id,
             "ticker": ticker,
             "event_end_utc": str(event_dict.get("event_end_utc", "") or ""),
-            "price_to_beat_at_decision": float(event_dict.get("price_to_beat", 0) or 0),
+            "price_to_beat_at_decision": price_to_beat,
+            "current_price_at_decision": round(current_price, 6),
+            "diff_vs_ptb_at_decision": round(diff_vs_ptb, 6),
             "close_price_at_resolution": "",
             "stake_usd": round(stake, 6),
             "shares_simulated": round((stake / q), 6) if q > 0 else "",
@@ -1702,9 +1751,9 @@ class EventManager:
             spread_component = max(0.0, spread_pct or 0.0) * 0.5
             friction_rate = max(
                 0.0,
-                float(fee_pct_used)
+                (float(fee_pct_used) / 100.0)
                 + float(spread_component)
-                + float(slippage_buffer_pct_used),
+                + (float(slippage_buffer_pct_used) / 100.0),
             )
             friction_cost = stake * friction_rate
             pnl_adjusted = pnl - friction_cost
@@ -3058,6 +3107,29 @@ class EventManager:
             price_source_at_send = str(
                 evaluation.get("price_source_at_send") or "proxy_mid"
             )
+            price_to_beat_at_send = _as_float(event_dict.get("price_to_beat"))
+            current_price_at_send = _as_float(event_dict.get("current_price"))
+            diff_vs_ptb_at_send = (
+                float(current_price_at_send) - float(price_to_beat_at_send)
+                if isinstance(current_price_at_send, float)
+                and isinstance(price_to_beat_at_send, float)
+                else None
+            )
+            best_bid_at_send = self._event_best_bid_price(event_dict, side)
+            best_ask_at_send = ask_price if ask_price > 0 else None
+            mid_at_send = None
+            spread_at_send = None
+            spread_pct_at_send = None
+            if (
+                isinstance(best_bid_at_send, float)
+                and isinstance(best_ask_at_send, float)
+                and best_bid_at_send > 0
+                and best_ask_at_send > 0
+            ):
+                mid_at_send = (best_bid_at_send + best_ask_at_send) / 2.0
+                spread_at_send = max(0.0, best_ask_at_send - best_bid_at_send)
+                if mid_at_send > 0:
+                    spread_pct_at_send = spread_at_send / mid_at_send
 
             if paper_mode_enabled:
                 # Keep guard behavior aligned with live mode: once a paper decision is
@@ -3149,6 +3221,30 @@ class EventManager:
                         "quant_prob": round(quant_prob, 6),
                         "edge_pct": round((quant_prob - ask_price) * 100, 4),
                         "price_source_at_send": price_source_at_send,
+                        "price_to_beat_at_send": round(price_to_beat_at_send, 6)
+                        if isinstance(price_to_beat_at_send, float)
+                        else "",
+                        "current_price_at_send": round(current_price_at_send, 6)
+                        if isinstance(current_price_at_send, float)
+                        else "",
+                        "diff_vs_ptb_at_send": round(diff_vs_ptb_at_send, 6)
+                        if isinstance(diff_vs_ptb_at_send, float)
+                        else "",
+                        "best_bid_at_send": round(best_bid_at_send, 6)
+                        if isinstance(best_bid_at_send, float)
+                        else "",
+                        "best_ask_at_send": round(best_ask_at_send, 6)
+                        if isinstance(best_ask_at_send, float)
+                        else "",
+                        "mid_at_send": round(mid_at_send, 6)
+                        if isinstance(mid_at_send, float)
+                        else "",
+                        "spread_at_send": round(spread_at_send, 6)
+                        if isinstance(spread_at_send, float)
+                        else "",
+                        "spread_pct_at_send": round(spread_pct_at_send, 6)
+                        if isinstance(spread_pct_at_send, float)
+                        else "",
                         "fill_price_real": round(fill_price_real, 6)
                         if isinstance(fill_price_real, float)
                         else "",
@@ -3228,6 +3324,30 @@ class EventManager:
                         "quant_prob": round(quant_prob, 6),
                         "edge_pct": round((quant_prob - ask_price) * 100, 4),
                         "price_source_at_send": price_source_at_send,
+                        "price_to_beat_at_send": round(price_to_beat_at_send, 6)
+                        if isinstance(price_to_beat_at_send, float)
+                        else "",
+                        "current_price_at_send": round(current_price_at_send, 6)
+                        if isinstance(current_price_at_send, float)
+                        else "",
+                        "diff_vs_ptb_at_send": round(diff_vs_ptb_at_send, 6)
+                        if isinstance(diff_vs_ptb_at_send, float)
+                        else "",
+                        "best_bid_at_send": round(best_bid_at_send, 6)
+                        if isinstance(best_bid_at_send, float)
+                        else "",
+                        "best_ask_at_send": round(best_ask_at_send, 6)
+                        if isinstance(best_ask_at_send, float)
+                        else "",
+                        "mid_at_send": round(mid_at_send, 6)
+                        if isinstance(mid_at_send, float)
+                        else "",
+                        "spread_at_send": round(spread_at_send, 6)
+                        if isinstance(spread_at_send, float)
+                        else "",
+                        "spread_pct_at_send": round(spread_pct_at_send, 6)
+                        if isinstance(spread_pct_at_send, float)
+                        else "",
                         "fill_price_real": "",
                         "edge_at_fill_pct": "",
                         "kelly_pct": round(kelly_pct * 100, 4)

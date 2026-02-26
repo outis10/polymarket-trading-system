@@ -74,6 +74,9 @@ interface RawPaperTrade {
     event_id: string;
     ticker: string;
     event_end_utc: string;
+    price_to_beat_at_decision?: string;
+    current_price_at_decision?: string;
+    diff_vs_ptb_at_decision?: string;
     stake_usd: string;
     shares_simulated?: string;
     slot: string;
@@ -106,6 +109,14 @@ interface RawBotOrder {
     quant_prob: string;
     edge_pct: string;
     price_source_at_send?: string;
+    price_to_beat_at_send?: string;
+    current_price_at_send?: string;
+    diff_vs_ptb_at_send?: string;
+    best_bid_at_send?: string;
+    best_ask_at_send?: string;
+    mid_at_send?: string;
+    spread_at_send?: string;
+    spread_pct_at_send?: string;
     fill_price_real?: string;
     edge_at_fill_pct?: string;
     kelly_pct?: string;
@@ -1450,7 +1461,8 @@ export default function OpportunitiesDashboard() {
                         <li>CSV file: `backtest_output/paper_trades.csv`</li>
                         <li>
                             Focus columns: `decision_time`, `slot`, `range`,
-                            `prob_up`, `marketProb_at_decision`, `QuantumEdge`,
+                            `diff_vs_ptb_at_decision`, `prob_up`,
+                            `marketProb_at_decision`, `QuantumEdge`,
                             `side_taken`, `event_outcome_real`, `pnl_simulated`.
                         </li>
                     </ul>
@@ -1462,6 +1474,7 @@ export default function OpportunitiesDashboard() {
                             <th>Ticker</th>
                             <th>Slot</th>
                             <th>Range</th>
+                            <th>Diff vs PTB</th>
                             <th>Prob UP</th>
                             <th>Prob Side</th>
                             <th>Market Prob</th>
@@ -1496,6 +1509,15 @@ export default function OpportunitiesDashboard() {
                                         <td>{row.ticker}</td>
                                         <td>{row.slot || "n/a"}</td>
                                         <td>{row.range || "n/a"}</td>
+                                        <td>
+                                            {row.diff_vs_ptb_at_decision !==
+                                                undefined &&
+                                            row.diff_vs_ptb_at_decision !== ""
+                                                ? `${asNumber(
+                                                      row.diff_vs_ptb_at_decision,
+                                                  ).toFixed(2)}`
+                                                : "n/a"}
+                                        </td>
                                         <td>{probUp.toFixed(4)}</td>
                                         <td>{probSide.toFixed(4)}</td>
                                         <td>
@@ -1555,6 +1577,10 @@ export default function OpportunitiesDashboard() {
                             Source: `backtest_output/bot_orders_YYYY-MM-DD.csv`.
                         </li>
                         <li>
+                            Export CSV: `GET
+                            /api/stats/bot-orders/export.csv?days=7&ticker=BTC`.
+                        </li>
+                        <li>
                             `edge_pct` is edge at send; `edge_at_fill_pct` is
                             edge versus actual fill price when available.
                         </li>
@@ -1579,6 +1605,8 @@ export default function OpportunitiesDashboard() {
                             <th>Ticker</th>
                             <th>Side</th>
                             <th>Price Send</th>
+                            <th>Diff vs PTB</th>
+                            <th>Spread %</th>
                             <th>Fill Price</th>
                             <th>Edge Send</th>
                             <th>Edge Fill</th>
@@ -1606,6 +1634,25 @@ export default function OpportunitiesDashboard() {
                                         {String(row.side || "").toUpperCase()}
                                     </td>
                                     <td>{asNumber(row.price).toFixed(4)}</td>
+                                    <td>
+                                        {row.diff_vs_ptb_at_send !==
+                                            undefined &&
+                                        row.diff_vs_ptb_at_send !== ""
+                                            ? asNumber(
+                                                  row.diff_vs_ptb_at_send,
+                                              ).toFixed(2)
+                                            : "n/a"}
+                                    </td>
+                                    <td>
+                                        {row.spread_pct_at_send !== undefined &&
+                                        row.spread_pct_at_send !== ""
+                                            ? `${(
+                                                  asNumber(
+                                                      row.spread_pct_at_send,
+                                                  ) * 100
+                                              ).toFixed(2)}%`
+                                            : "n/a"}
+                                    </td>
                                     <td>
                                         {asNumber(row.fill_price_real) > 0
                                             ? asNumber(
