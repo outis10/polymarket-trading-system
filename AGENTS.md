@@ -29,6 +29,12 @@ Actualízalo cuando cambien decisiones, scripts o flujos importantes.
   - frontend: migrar label/UI,
   - runtime/settings: plan de migración sin romper clientes existentes.
 
+### TODO Analytics UI (naming columnas Paper Decisions)
+- Revisar nomenclatura de probabilidades en tabla `Paper Decisions (Raw)`:
+  - columnas actuales: `Prob UP`, `Prob Side`,
+  - agregar columna explícita `Prob Down`,
+  - evaluar renombre para evitar ambigüedad por `side` (`UP/DOWN`).
+
 ### TODO arquitectura (single source of truth de reglas)
 - Revisar y consolidar validaciones de elegibilidad/riesgo en una sola función fuente de verdad.
 - Evitar duplicidad entre:
@@ -226,6 +232,7 @@ Cuando se pida "usar contexto previo", revisar primero:
 1. `AGENTS.md`
 2. `README.md`
 3. `GUIA_EXPORT_BINANCE.md`
+4. `docs/TUTORIAL_NUEVA_CUENTA_METAMASK_POLYMARKET.md` (si el tema es onboarding de cuenta nueva)
 
 Si hay discrepancias, priorizar el código fuente y luego actualizar este archivo.
 

@@ -6,15 +6,18 @@ import Header from "./components/layout/Header";
 import Sidebar from "./components/layout/Sidebar";
 import EventCard from "./components/EventCard";
 import OpportunitiesDashboard from "./components/analytics/OpportunitiesDashboard";
+import AboutPage from "./components/AboutPage";
 import SystemToastBanner from "./components/SystemToastBanner";
 import { inferTicker } from "./utils/ticker";
 
-type AppRoute = "live" | "analytics";
+type AppRoute = "live" | "analytics" | "about";
 
 const getRouteFromPath = (): AppRoute =>
     window.location.pathname === "/analytics/opportunities"
         ? "analytics"
-        : "live";
+        : window.location.pathname === "/about"
+          ? "about"
+          : "live";
 
 export default function App() {
     const { send } = useWebSocket();
@@ -37,7 +40,11 @@ export default function App() {
 
     const handleNavigate = (nextRoute: AppRoute) => {
         const nextPath =
-            nextRoute === "analytics" ? "/analytics/opportunities" : "/";
+            nextRoute === "analytics"
+                ? "/analytics/opportunities"
+                : nextRoute === "about"
+                  ? "/about"
+                  : "/";
         if (window.location.pathname !== nextPath) {
             window.history.pushState({}, "", nextPath);
         }
@@ -124,6 +131,8 @@ export default function App() {
 
             {route === "analytics" ? (
                 <OpportunitiesDashboard />
+            ) : route === "about" ? (
+                <AboutPage />
             ) : (
                 <>
                     {settings.mode === "demo" && (
@@ -140,14 +149,16 @@ export default function App() {
                                     : `No demo ${selectedTimeframe} events available.`}
                             </div>
                         ) : (
-                            orderedVisibleEvents.map(([eventId, eventData], index) => (
-                                <EventCard
-                                    key={eventId}
-                                    eventId={eventId}
-                                    event={eventData}
-                                    isFirstCard={index === 0}
-                                />
-                            ))
+                            orderedVisibleEvents.map(
+                                ([eventId, eventData], index) => (
+                                    <EventCard
+                                        key={eventId}
+                                        eventId={eventId}
+                                        event={eventData}
+                                        isFirstCard={index === 0}
+                                    />
+                                ),
+                            )
                         )}
                     </div>
                 </>
