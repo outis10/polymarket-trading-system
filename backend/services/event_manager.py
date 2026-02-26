@@ -58,6 +58,8 @@ _BOT_ORDERS_FIELDNAMES = [
 _PAPER_TRADES_LOG_PATH = os.path.normpath(
     os.path.join(_BOT_ORDERS_LOG_DIR, "paper_trades.csv")
 )
+_PAPER_FEE_PCT_DEFAULT = 2.0
+_PAPER_SLIPPAGE_BUFFER_PCT_DEFAULT = 3.0
 _PAPER_TRADES_FIELDNAMES = [
     "decision_id",
     "decision_time",
@@ -72,7 +74,19 @@ _PAPER_TRADES_FIELDNAMES = [
     "range",
     "prob_up",
     "marketProb_at_decision",
+    "price_source_at_decision",
+    "best_bid_at_decision",
+    "best_ask_at_decision",
+    "mid_at_decision",
+    "spread_at_decision",
+    "spread_pct_at_decision",
+    "fill_price_real",
     "QuantumEdge",
+    "edge_at_fill_pct",
+    "friction_cost_usd",
+    "pnl_sim_adjusted",
+    "fee_pct_used",
+    "slippage_buffer_pct_used",
     "side_taken",
     "event_outcome_real",
     "pnl_simulated",
@@ -1551,6 +1565,7 @@ class EventManager:
         stake_usd: float,
         market_prob_at_decision: float,
         quantum_edge: float,
+        price_source_at_decision: str = "unknown",
         now_utc: datetime,
     ) -> None:
         _ensure_paper_trades_csv()
@@ -1564,6 +1579,29 @@ class EventManager:
         )
         q = max(0.0, float(market_prob_at_decision))
         stake = max(0.0, float(stake_usd))
+        side_norm = "up" if str(side).lower() == "up" else "down"
+        best_bid = None
+        if side_norm == "up":
+            bids = (event_dict.get("order_book_yes") or {}).get("bids", [])
+        else:
+            bids = (event_dict.get("order_book_no") or {}).get("bids", [])
+        if isinstance(bids, list) and bids:
+            raw_bid = bids[0].get("price") if isinstance(bids[0], dict) else None
+            best_bid = _as_float(raw_bid)
+        best_ask = q if q > 0 else None
+        mid = None
+        spread = None
+        spread_pct = None
+        if (
+            best_bid is not None
+            and best_ask is not None
+            and best_bid > 0
+            and best_ask > 0
+        ):
+            mid = (best_bid + best_ask) / 2.0
+            spread = max(0.0, best_ask - best_bid)
+            if mid > 0:
+                spread_pct = spread / mid
         row = {
             "decision_id": decision_id,
             "decision_time": now_utc.isoformat(),
@@ -1578,7 +1616,25 @@ class EventManager:
             "range": range_label,
             "prob_up": round(prob_up, 6) if prob_up is not None else "",
             "marketProb_at_decision": round(q, 6),
+            "price_source_at_decision": str(price_source_at_decision or "unknown"),
+            "best_bid_at_decision": round(best_bid, 6)
+            if isinstance(best_bid, (int, float))
+            else "",
+            "best_ask_at_decision": round(q, 6),
+            "mid_at_decision": round(mid, 6) if isinstance(mid, (int, float)) else "",
+            "spread_at_decision": round(spread, 6)
+            if isinstance(spread, (int, float))
+            else "",
+            "spread_pct_at_decision": round(spread_pct, 6)
+            if isinstance(spread_pct, (int, float))
+            else "",
+            "fill_price_real": round(q, 6),
             "QuantumEdge": round(float(quantum_edge), 6),
+            "edge_at_fill_pct": round(float(quantum_edge) * 100.0, 4),
+            "friction_cost_usd": "",
+            "pnl_sim_adjusted": "",
+            "fee_pct_used": "",
+            "slippage_buffer_pct_used": "",
             "side_taken": side,
             "event_outcome_real": "",
             "pnl_simulated": "",
@@ -1640,10 +1696,26 @@ class EventManager:
             event_outcome_real = "up" if close_price >= ptb else "down"
             won = event_outcome_real == side
             pnl = (stake * (1.0 / q - 1.0)) if won else (-stake)
+            spread_pct = _as_float(row.get("spread_pct_at_decision"))
+            fee_pct_used = _PAPER_FEE_PCT_DEFAULT
+            slippage_buffer_pct_used = _PAPER_SLIPPAGE_BUFFER_PCT_DEFAULT
+            spread_component = max(0.0, spread_pct or 0.0) * 0.5
+            friction_rate = max(
+                0.0,
+                float(fee_pct_used)
+                + float(spread_component)
+                + float(slippage_buffer_pct_used),
+            )
+            friction_cost = stake * friction_rate
+            pnl_adjusted = pnl - friction_cost
 
             row["close_price_at_resolution"] = f"{close_price:.6f}"
             row["event_outcome_real"] = event_outcome_real
             row["pnl_simulated"] = f"{pnl:.6f}"
+            row["friction_cost_usd"] = f"{friction_cost:.6f}"
+            row["pnl_sim_adjusted"] = f"{pnl_adjusted:.6f}"
+            row["fee_pct_used"] = f"{fee_pct_used:.6f}"
+            row["slippage_buffer_pct_used"] = f"{slippage_buffer_pct_used:.6f}"
             row["status"] = "resolved"
             changed = True
             resolved_pnl_delta += pnl
@@ -3006,6 +3078,7 @@ class EventManager:
                     stake_usd=notional_usd,
                     market_prob_at_decision=ask_price,
                     quantum_edge=(quant_prob - ask_price),
+                    price_source_at_decision=price_source_at_send,
                     now_utc=now_utc,
                 )
                 logger.info(

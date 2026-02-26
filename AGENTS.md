@@ -53,6 +53,19 @@ Actualízalo cuando cambien decisiones, scripts o flujos importantes.
   - UI muestra claramente etiqueta `Out-of-Sample (Walk-Forward)`.
   - Incluye KPIs: `final_equity`, `max_drawdown`, `avg_ev_per_trade`.
 
+### TODO Analytics (Live Friction Stats) — pendiente
+- Objetivo: medir fricción real de ejecución en live sin modificar la lógica de trading.
+- Fuente propuesta:
+  - `backtest_output/bot_orders_YYYY-MM-DD.csv` (campos `price`, `fill_price_real`, `notional_usd`, `shares`, `edge_pct`, `edge_at_fill_pct`).
+- Métricas sugeridas:
+  - `slippage_abs` y `slippage_bps` por orden (buy/sell),
+  - `implementation_shortfall_usd`,
+  - `% orders with fill_price_real`,
+  - p50/p95/p99 slippage por ticker/side/timeframe,
+  - `delta_edge_pct = edge_at_fill_pct - edge_pct`.
+- UI sugerida:
+  - panel nuevo en Analytics: `Live Friction Stats` con KPIs + tabla por bucket/ticker.
+
 ### TODO discusión mañana (métrica EV de pipeline) — pendiente
 - Aclaración: la curva `Pipeline EV Curve (In-Sample)` actual (con `2*p-1`) no representa EV de trading real contra mercado.
 - Propuesta para discutir/implementar:
@@ -890,3 +903,26 @@ Implementar modulo Kelly configurable desde Settings:
 - Control manual:
   - nuevo boton `Reset Live Baseline` en analytics con `confirm(...)` antes de ejecutar.
   - resetea `live_equity_start_bankroll_usd` y `live_equity_start_at_utc` via `POST /api/settings`.
+
+## Estado actualizado (2026-02-25, trazabilidad de precios en paper_trades)
+
+- `paper_trades.csv` ahora incluye columnas nuevas para auditoria de ejecucion simulada:
+  - `price_source_at_decision`
+  - `best_ask_at_decision`
+  - `fill_price_real`
+  - `edge_at_fill_pct`
+- En paper mode:
+  - `best_ask_at_decision` y `fill_price_real` usan el precio de decision (`marketProb_at_decision`) como proxy.
+  - `edge_at_fill_pct` refleja `QuantumEdge * 100`.
+
+## Estado actualizado (2026-02-25, friccion minima en paper pnl)
+
+- `paper_trades.csv` agrega campos de microestructura y ajuste de PnL:
+  - `best_bid_at_decision`, `mid_at_decision`, `spread_at_decision`, `spread_pct_at_decision`,
+  - `friction_cost_usd`, `pnl_sim_adjusted`, `fee_pct_used`, `slippage_buffer_pct_used`.
+- Ajuste aplicado al resolver paper:
+  - `friction_rate = fee_pct + 0.5 * spread_pct + slippage_buffer_pct`
+  - `pnl_sim_adjusted = pnl_simulated - stake_usd * friction_rate`
+- Defaults actuales (constantes backend):
+  - `fee_pct = 0.0`
+  - `slippage_buffer_pct = 1.0%`

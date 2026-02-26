@@ -50,7 +50,7 @@
     "order_book_max_levels": 8,
     "order_book_min_broadcast_ms": 120,
     "paper_compound_enabled": true,
-    "paper_current_bankroll_usd": 2013.973349,
+    "paper_current_bankroll_usd": 1956.325785,
     "pm_min_notional_usd": 1,
     "pm_min_shares": 5,
     "quant_gate_edge_vs_ask_enabled": true,
@@ -71,5 +71,5 @@
     "timeframe_filter": "5m",
     "trading_mode": "bot"
   },
-  "updated_at_utc": "2026-02-26T02:20:13.471551+00:00"
+  "updated_at_utc": "2026-02-26T15:35:06.633668+00:00"
 }
