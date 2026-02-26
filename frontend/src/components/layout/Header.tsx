@@ -5,8 +5,8 @@ import { useEventsStore } from "../../stores/useEventsStore";
 import { useAccountStore } from "../../stores/useAccountStore";
 
 interface HeaderProps {
-    route: "live" | "analytics";
-    onNavigate: (route: "live" | "analytics") => void;
+    route: "live" | "analytics" | "about";
+    onNavigate: (route: "live" | "analytics" | "about") => void;
 }
 
 function toFiniteNumber(value: unknown): number | null {
@@ -133,9 +133,9 @@ export default function Header({ route, onNavigate }: HeaderProps) {
     return (
         <header className="app-header">
             <div className="app-header-left">
-                <span className="app-header-title">Polymarket Monitor</span>
+                <span className="app-header-title">Kalitron Edge</span>
                 <span className="app-header-subtitle">
-                    Real-time Prediction Markets
+                    Quantitative Engine for Event Markets
                 </span>
             </div>
             <div className="app-header-center">
@@ -205,6 +205,12 @@ export default function Header({ route, onNavigate }: HeaderProps) {
                         <span className="nav-icon-bar nav-icon-bar-3" />
                     </span>
                     <span className="nav-btn-label">Analytics</span>
+                </button>
+                <button
+                    className={`nav-btn ${route === "about" ? "nav-btn-active" : ""}`}
+                    onClick={() => onNavigate("about")}
+                >
+                    <span className="nav-btn-label">About</span>
                 </button>
                 <button className="settings-btn" onClick={toggleSidebar}>
                     <span className="settings-btn-text">Settings</span>
