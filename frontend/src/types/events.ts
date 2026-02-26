@@ -51,6 +51,7 @@ export interface EventData {
     quant_source?: string | null;
     quant_range_histogram?: QuantRangeHistogram | null;
     quant_buy_gate?: QuantBuyGate | null;
+    _bot_last_order?: Record<string, unknown> | null;
 }
 
 export interface QuantRangeHistogramBin {
@@ -168,7 +169,9 @@ export interface WSMessage {
         | "orderbook_update"
         | "quant_metrics_update"
         | "settings_update"
-        | "balance_update";
+        | "balance_update"
+        | "quant_reload"
+        | "bot_order_placed";
     event_id: string;
     data: Record<string, unknown>;
 }
