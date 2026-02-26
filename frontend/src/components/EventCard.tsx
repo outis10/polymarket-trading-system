@@ -69,9 +69,7 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
     }, [eventId]);
 
     // Show toast when backend bot places an order automatically
-    const botLastOrder = (event as Record<string, unknown>)._bot_last_order as
-        | Record<string, unknown>
-        | undefined;
+    const botLastOrder = event._bot_last_order ?? undefined;
     const botLastOrderRef = useRef<Record<string, unknown> | undefined>(
         undefined,
     );
