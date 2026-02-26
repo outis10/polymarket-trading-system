@@ -1,6 +1,9 @@
 """REST endpoints for events data."""
 
 import csv
+import re
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -63,6 +66,33 @@ async def save_settings(payload: dict[str, Any]):
     return {"ok": True, "updated_keys": updated, "settings": event_manager.settings}
 
 
+@router.get("/debug/streams")
+async def debug_streams():
+    """Diagnose price streamer health."""
+    from datetime import datetime, timezone
+
+    now = datetime.now(tz=timezone.utc)
+    last_tick = event_manager._last_price_tick_at
+    seconds_since_tick = (now - last_tick).total_seconds() if last_tick else None
+    return {
+        "binance_streamers": len(event_manager._binance_streamers),
+        "chainlink_streamers": len(event_manager._chainlink_streamers),
+        "binance_tasks": [
+            {"index": i, "done": t.done(), "cancelled": t.cancelled()}
+            for i, t in enumerate(event_manager._binance_stream_tasks)
+        ],
+        "chainlink_tasks": [
+            {"index": i, "done": t.done(), "cancelled": t.cancelled()}
+            for i, t in enumerate(event_manager._chainlink_stream_tasks)
+        ],
+        "last_price_tick_at": last_tick.isoformat() if last_tick else None,
+        "seconds_since_last_tick": round(seconds_since_tick, 1)
+        if seconds_since_tick is not None
+        else None,
+        "streamer_stalled": seconds_since_tick is not None and seconds_since_tick > 10,
+    }
+
+
 @router.get("/pm-ranges/{ticker}")
 async def get_pm_ranges(ticker: str):
     """Return the quantitative PM probability table for a given ticker."""
@@ -107,6 +137,20 @@ async def refresh_live_events(force: bool = True):
             )
         raise HTTPException(status_code=500, detail=f"Live refresh failed: {reason}")
 
+    return result
+
+
+@router.post("/quant/reload")
+async def reload_quant_ranges():
+    """Hot-reload the merged PM 5m slot ranges CSV without restarting the backend."""
+    result = event_manager.reload_quant_ranges()
+    await manager.broadcast(
+        {
+            "type": "quant_reload",
+            "event_id": "",
+            "data": result,
+        }
+    )
     return result
 
 
@@ -187,4 +231,187 @@ async def get_opportunity_blocked_raw(limit: int = 200, ticker: str | None = Non
         "count": len(rows),
         "ticker_filter": ticker.upper() if ticker else None,
         "rows": rows,
+    }
+
+
+@router.get("/stats/paper/raw")
+async def get_paper_trades_raw(limit: int = 500, ticker: str | None = None):
+    """Return raw paper-mode decision rows."""
+    path = Path("backtest_output/paper_trades.csv")
+    rows: list[dict[str, Any]] = []
+    try:
+        with open(path, newline="") as f:
+            for row in csv.DictReader(f):
+                row_ticker = str(row.get("ticker", "")).upper()
+                if ticker and row_ticker != ticker.upper():
+                    continue
+                rows.append(row)
+    except FileNotFoundError:
+        rows = []
+    rows = rows[-max(1, int(limit)) :]
+    return {
+        "count": len(rows),
+        "ticker_filter": ticker.upper() if ticker else None,
+        "rows": rows,
+    }
+
+
+@router.get("/stats/bot-orders/raw")
+async def get_bot_orders_raw(
+    limit: int = 500,
+    ticker: str | None = None,
+    days: int = 7,
+):
+    """Return raw bot order rows from daily bot_orders_YYYY-MM-DD.csv logs."""
+    root = Path("backtest_output")
+    rows: list[dict[str, Any]] = []
+    ticker_filter = ticker.upper() if ticker else None
+    cutoff_day = datetime.now(tz=timezone.utc).date() - timedelta(
+        days=max(1, int(days)) - 1
+    )
+    pattern = re.compile(r"^bot_orders_(\d{4}-\d{2}-\d{2})\.csv$")
+
+    candidates: list[tuple[datetime, Path]] = []
+    for path in root.glob("bot_orders_*.csv"):
+        m = pattern.match(path.name)
+        if not m:
+            continue
+        try:
+            day = datetime.strptime(m.group(1), "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if day < cutoff_day:
+            continue
+        candidates.append((datetime.combine(day, datetime.min.time()), path))
+
+    for _, path in sorted(candidates, key=lambda x: x[0]):
+        try:
+            with open(path, newline="") as f:
+                for row in csv.DictReader(f):
+                    row_ticker = str(row.get("ticker", "")).upper()
+                    if ticker_filter and row_ticker != ticker_filter:
+                        continue
+                    rows.append(row)
+        except FileNotFoundError:
+            continue
+
+    rows.sort(
+        key=lambda r: str(r.get("placed_at_utc", "")),
+    )
+    rows = rows[-max(1, int(limit)) :]
+    return {
+        "count": len(rows),
+        "ticker_filter": ticker_filter,
+        "days": max(1, int(days)),
+        "rows": rows,
+    }
+
+
+@router.get("/stats/pipeline/ev-curve")
+async def get_pipeline_ev_curve(
+    ticker: str | None = None,
+    min_count: int = 20,
+):
+    """Return an in-sample EV curve derived only from the merged pipeline CSV."""
+    path = Path("backtest_output/merged_pm_5m_slot_ranges_4cryptos.csv")
+    if not path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Pipeline CSV not found: {path}",
+        )
+
+    ticker_filter = ticker.upper() if ticker else None
+    rows: list[dict[str, Any]] = []
+    total_samples = 0
+    weighted_ev_sum = 0.0
+
+    try:
+        with open(path, newline="") as f:
+            for row in csv.DictReader(f):
+                row_ticker = str(row.get("ticker", "")).upper()
+                if ticker_filter and row_ticker != ticker_filter:
+                    continue
+
+                try:
+                    count = int(float(row.get("count_of_klines_inside_range", 0)))
+                    slot = int(float(row.get("slot", 0)))
+                    inf_range = float(row.get("inf_range", 0.0))
+                    sup_range = float(row.get("sup_range", 0.0))
+                    prob_up = float(row.get("prob_up", 0.5))
+                    prob_down = float(row.get("prob_down", 0.5))
+                except (TypeError, ValueError):
+                    continue
+
+                if count < max(1, int(min_count)):
+                    continue
+                if slot <= 0:
+                    continue
+
+                p_side = max(prob_up, prob_down)
+                # EV per $1 risked assuming fair 50c entry for chosen side.
+                ev_per_trade = (2.0 * p_side) - 1.0
+                weighted_ev = ev_per_trade * count
+
+                total_samples += count
+                weighted_ev_sum += weighted_ev
+                rows.append(
+                    {
+                        "ticker": row_ticker or "UNKNOWN",
+                        "slot": slot,
+                        "inf_range": inf_range,
+                        "sup_range": sup_range,
+                        "count": count,
+                        "ev_per_trade_pct": ev_per_trade * 100.0,
+                        "weighted_ev": weighted_ev,
+                    }
+                )
+    except FileNotFoundError:
+        rows = []
+
+    rows.sort(
+        key=lambda x: (
+            int(x["slot"]),
+            float(x["inf_range"]),
+            str(x["ticker"]),
+        )
+    )
+
+    cumulative_ev = 0.0
+    peak_ev = 0.0
+    points: list[dict[str, Any]] = []
+    max_drawdown_pct = 0.0
+    for idx, row in enumerate(rows, start=1):
+        cumulative_ev += float(row["weighted_ev"])
+        peak_ev = max(peak_ev, cumulative_ev)
+        drawdown_pct = (
+            ((cumulative_ev - peak_ev) / peak_ev * 100.0) if peak_ev > 0 else 0.0
+        )
+        max_drawdown_pct = min(max_drawdown_pct, drawdown_pct)
+        points.append(
+            {
+                "idx": idx,
+                "ticker": row["ticker"],
+                "slot": row["slot"],
+                "inf_range": row["inf_range"],
+                "sup_range": row["sup_range"],
+                "count": row["count"],
+                "ev_per_trade_pct": row["ev_per_trade_pct"],
+                "cumulative_ev": cumulative_ev,
+                "drawdown_pct": drawdown_pct,
+            }
+        )
+
+    avg_ev_per_trade_pct = (
+        (weighted_ev_sum / total_samples) * 100.0 if total_samples > 0 else 0.0
+    )
+    return {
+        "source": str(path),
+        "ticker_filter": ticker_filter,
+        "min_count": max(1, int(min_count)),
+        "points_count": len(points),
+        "total_samples": total_samples,
+        "avg_ev_per_trade_pct": avg_ev_per_trade_pct,
+        "final_cumulative_ev": cumulative_ev,
+        "max_drawdown_pct": max_drawdown_pct,
+        "points": points,
     }

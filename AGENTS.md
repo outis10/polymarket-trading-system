@@ -11,6 +11,61 @@ Actualízalo cuando cambien decisiones, scripts o flujos importantes.
 - Configurar reverse proxy con Certbot (Let's Encrypt) en EC2/VPS.
 - Con HTTPS activo, cambiar WS URL de `ws://` a `wss://` (ya está automático en el código).
 
+### Analytics KPI pendiente (paper vs live sizing)
+- Agregar KPI en Analytics para comparar sizing entre modos:
+  - `avg stake paper` (desde `paper_trades.csv`)
+  - `avg stake live fallback` (estimado por settings/órdenes)
+- Objetivo: detectar divergencias de stake entre simulación paper y ejecución live fallback.
+
+### TODO técnico (deuda de compatibilidad bankroll)
+- Evaluar remover fallback legado `kelly_bankroll` después de validar que:
+  - `kelly_live_bankroll_usd` y `kelly_paper_bankroll_usd` ya están presentes en runtime/settings,
+  - no hay clientes/UI antiguos enviando solo `kelly_bankroll`.
+
+### TODO técnico (naming guardrail max buys)
+- El setting `bot_max_buys_per_event_side` hoy se aplica por **evento total** (no por `event+side`).
+- Evaluar renombre a algo semánticamente correcto (ej. `bot_max_buys_per_event`) manteniendo compatibilidad backward:
+  - backend: aceptar ambos campos durante transición,
+  - frontend: migrar label/UI,
+  - runtime/settings: plan de migración sin romper clientes existentes.
+
+### TODO arquitectura (single source of truth de reglas)
+- Revisar y consolidar validaciones de elegibilidad/riesgo en una sola función fuente de verdad.
+- Evitar duplicidad entre:
+  - flujo de tracking/analytics (`_evaluate_trackable_side_for_tracking`)
+  - flujo de ejecución (`_bot_maybe_place_order` + `validate_order_risk_guards`).
+- Objetivo: que señales, paper y ejecución real usen exactamente la misma decisión.
+
+### TODO Analytics (Out-of-Sample / Walk-Forward) — pendiente
+- Objetivo: validar si hay negocio real del modelo quant sin sesgo in-sample.
+- Alcance:
+  1. Agregar endpoint backend para curva `pipeline_oos` (walk-forward).
+  2. Calcular `train/test` por ventanas temporales usando solo CSV del pipeline.
+  3. Exponer en frontend chart separado de `Pipeline EV Curve (In-Sample)`.
+- Reglas mínimas propuestas:
+  - `train_days=14`, `test_days=1`, rolling diario.
+  - Entrenar solo con pasado, evaluar solo en bloque futuro inmediato.
+  - Unir todos los bloques test y graficar equity/drawdown OOS.
+- Input esperado:
+  - `backtest_output/merged_pm_5m_slot_ranges_4cryptos.csv`
+- Criterios de aceptación:
+  - El chart OOS no reutiliza filas del mismo bloque para entrenar y evaluar.
+  - UI muestra claramente etiqueta `Out-of-Sample (Walk-Forward)`.
+  - Incluye KPIs: `final_equity`, `max_drawdown`, `avg_ev_per_trade`.
+
+### TODO discusión mañana (métrica EV de pipeline) — pendiente
+- Aclaración: la curva `Pipeline EV Curve (In-Sample)` actual (con `2*p-1`) no representa EV de trading real contra mercado.
+- Propuesta para discutir/implementar:
+  1. Renombrar curva actual a `Model Confidence Curve (In-Sample)`.
+  2. Nueva curva `Market-Anchored EV` usando precio de mercado `q`:
+     - `EV_yes = p_up - q_yes`
+     - `EV_no = (1 - p_up) - q_no`
+     - operar solo si `max(EV_yes, EV_no) > 0`.
+  3. Backtest real por trade con payoff de precio:
+     - YES: `+(1-q_yes)` / `-q_yes`
+     - NO:  `+(1-q_no)` / `-q_no`
+- Bloqueo actual: el CSV del pipeline no trae `q`; hay que definir fuente de `marketProb` (logs/snapshots/ask histórico por evento-slot).
+
 ## Seguridad implementada (2026-02-22)
 
 ### Arquitectura de seguridad
@@ -60,6 +115,32 @@ VITE_API_KEY=<misma key que el backend>
 
 ### Pendiente
 - HTTPS + Nginx en producción (ver sección arriba)
+
+## Actualización Quant diaria (2026-02-22)
+
+### Flujo
+Al finalizar cada día de trading correr el pipeline para regenerar el CSV de rangos
+con los datos más frescos de Binance (últimos 7 días).
+
+### Comando rápido
+```bash
+cd /home/narciso/dev/projects/polymarket-trading-system
+bash scripts/update_quant.sh
+```
+
+El script hace:
+1. Corre `run_pm_pipeline_4cryptos_5m_10s.py` con lookback 7 días
+2. Llama a `POST /api/quant/reload` — hot-reload sin reiniciar el backend
+
+### Variables opcionales
+```bash
+LOOKBACK_DAYS=14 bash scripts/update_quant.sh   # más historial
+API_KEY=<tu-key> bash scripts/update_quant.sh   # si la seguridad está activa
+```
+
+### Endpoint de reload
+`POST /api/quant/reload` — recarga `merged_pm_5m_slot_ranges_4cryptos.csv` en caliente.
+Implementado en `backend/routers/events.py` + `event_manager.reload_quant_ranges()`.
 
 ## Estado actual (2026-02-13)
 
@@ -593,6 +674,35 @@ Implementar modulo Kelly configurable desde Settings:
 - `_runtime_settings_path` en `EventManager.__init__` actualizado.
 - Docs `AGENTS.md` y `docs/BOT_AUTO_ORDER.md` actualizados.
 
+## Estado actualizado (2026-02-25, trazabilidad de precio real en bot orders)
+
+- `backtest_output/bot_orders_YYYY-MM-DD.csv` ahora agrega columnas:
+  - `price_source_at_send` (`best_ask` o `proxy_mid`),
+  - `fill_price_real` (si viene en response de exchange),
+  - `edge_at_fill_pct` (`quant_prob - fill_price_real` en %).
+- `edge_pct` existente se mantiene como referencia de envío (`quant_prob - ask_price_at_send`).
+- Se agregó extracción robusta de fill price desde respuesta de orden (`fills[]`, `avg_price`, `filled_price`, etc.).
+- Compatibilidad de logs:
+  - si existe archivo diario con header viejo, el backend migra automáticamente al nuevo schema antes de append.
+
+## Estado actualizado (2026-02-25, paper mode bot + bitácora de decisiones)
+
+- Nuevo setting runtime: `bot_paper_mode` (default `false`).
+  - Cuando `true` y `trading_mode=bot`, el bot NO envía orden real a exchange.
+  - En su lugar registra decisión simulada y mantiene guardrails/gating del flujo real.
+- Nuevo log:
+  - `backtest_output/paper_trades.csv`
+  - Campos principales:
+    - `decision_time`, `slot`, `range`, `prob_up`, `marketProb_at_decision`,
+      `QuantumEdge`, `side_taken`, `event_outcome_real`, `pnl_simulated`
+    - + metadatos (`event_id`, `ticker`, `stake_usd`, `status`, etc.)
+- Reconciliación automática:
+  - al cierre del evento, backend completa `event_outcome_real` y `pnl_simulated`
+    sobre filas `pending` en `paper_trades.csv`.
+  - `close_price` usa `current_price` al cierre (con cache de fallback).
+- Endpoint nuevo:
+  - `GET /api/stats/paper/raw?limit=500&ticker=BTC` para leer filas de paper mode.
+
 ### Script de bitácora
 - Nuevo script: `scripts/bitacora.py`.
 - Genera `backtest_output/bitacora_trades.csv` cruzando:
@@ -608,3 +718,175 @@ Implementar modulo Kelly configurable desde Settings:
   python3 scripts/bitacora.py --date 2026-02-21  # filtra por fecha UTC
   python3 scripts/bitacora.py --dir /ruta/logs   # directorio personalizado
   ```
+
+## Estado actualizado (2026-02-25, split de bankroll live/paper)
+
+- Se separó el bankroll manual en dos settings:
+  - `kelly_live_bankroll_usd`: sizing manual en live (fallback cuando no hay balance API).
+  - `kelly_paper_bankroll_usd`: sizing para `bot_paper_mode`.
+- Compatibilidad:
+  - `kelly_bankroll` se mantiene como campo legado y fallback.
+  - Si `runtime_settings.json` viejo solo trae `kelly_bankroll`, backend migra ese valor en memoria a los dos nuevos campos.
+- UI Sidebar:
+  - `Kelly Settings` ahora muestra `Live Manual Bankroll ($)` y `Paper Bankroll ($)`.
+
+## Estado actualizado (2026-02-25, paper compounding bankroll)
+
+- Paper mode ahora soporta compounding de bankroll:
+  - setting `paper_compound_enabled` (default `true`),
+  - setting `paper_current_bankroll_usd` (se actualiza con `pnl_simulated` al resolver trades paper).
+- Sizing en paper:
+  - si compounding está ON: usa `paper_current_bankroll_usd`,
+  - si está OFF: usa `kelly_paper_bankroll_usd` fijo.
+- Persistencia:
+  - `paper_current_bankroll_usd` se guarda en `config/runtime_settings.json`.
+- Sidebar:
+  - nuevo toggle `Paper Compound Bankroll`,
+  - input `Paper Current Bankroll ($)` para reset/manual override.
+
+## Estado actualizado (2026-02-25, paridad guardrails paper/live)
+
+- En `bot_paper_mode`, cuando una decisión paper pasa validaciones, ahora también se registra internamente como fill (`register_order_fill`).
+- Efecto:
+  - cooldown global (`bot_global_min_seconds_between_orders`),
+  - cooldown por evento (`bot_cooldown_seconds_per_event_side`),
+  - máximo compras por evento (`bot_max_buys_per_event_side`),
+  - bloqueo de lado opuesto (`bot_block_opposite_side`),
+  - caps de exposición event/ticker
+  funcionan con memoria entre decisiones paper, igual que en live.
+
+## Estado actualizado (2026-02-25, paridad de filtros en Recent Outcomes)
+
+- `_track_opportunities_for_event` ahora evalúa elegibilidad con:
+  - check de timeframe del bot (`bot_enforce_timeframe_filter`),
+  - `validate_order_risk_guards(...)` (cooldowns, max buys, lado opuesto, caps, mínimos).
+- Objetivo: que `Recent Outcomes` se alinee mejor con lo realmente ejecutable por el bot.
+
+## Estado actualizado (2026-02-25, script reset de logs para paper)
+
+- Nuevo script: `scripts/reset_logs_for_paper.sh`
+- Objetivo: arrancar una corrida paper con logs limpios sin tocar config ni CSV del pipeline.
+- Hace backup previo en `backtest_output/archive_YYYY-MM-DD_HHMMSS/` y luego limpia:
+  - `paper_trades.csv`
+  - `opportunities_log.csv`
+  - `opportunity_outcomes.csv`
+  - `opportunity_blocked.csv`
+  - `order_blocked_log.csv`
+  - `bot_orders_YYYY-MM-DD.csv` (todos los archivos diarios `bot_orders_*.csv`)
+- Uso:
+  ```bash
+  bash scripts/reset_logs_for_paper.sh
+  bash scripts/reset_logs_for_paper.sh --include-backend-log
+  ```
+
+## Estado actualizado (2026-02-25, bot orders en Analytics)
+
+- Nuevo endpoint backend:
+  - `GET /api/stats/bot-orders/raw?limit=5000&days=7&ticker=BTC`
+  - Lee `backtest_output/bot_orders_YYYY-MM-DD.csv` en ventana multi-día.
+- Dashboard analytics:
+  - Nuevo panel `Bot Orders (Execution Log)` en `/analytics/opportunities`.
+  - Muestra tabla con:
+    - `placed_at_utc`, `ticker`, `side`, `price` (send), `fill_price_real`,
+      `edge_pct`, `edge_at_fill_pct`, `notional_usd`, `status`, `event_id`.
+  - KPIs rápidos:
+    - `total rows`, `placed`, `failed`, `with fill price`,
+      `avg edge@send`, `avg edge@fill`.
+
+## Estado actualizado (2026-02-25, shares_simulated en paper trades)
+
+- `paper_trades.csv` agrega columna `shares_simulated` (`stake_usd / marketProb_at_decision`).
+- Se agregó migración de schema para `paper_trades.csv` existente (header viejo -> nuevo).
+- Analytics (`Paper Decisions`) ahora muestra columnas:
+  - `Stake $`
+  - `Shares`
+
+## Estado actualizado (2026-02-25, fix label event_outcome con exclude-last-slot)
+
+- Script afectado: `aggregate_pm_5m_slot_ranges.py`.
+- Bug corregido:
+  - antes, al usar `--exclude-last-slot`, se removía slot 30 y luego `event_outcome`
+    se calculaba con `final_close` del último slot restante (slot 29).
+  - resultado: label desplazado a ~4:50 en vez de cierre real 5:00.
+- Comportamiento nuevo:
+  - se mantiene `df_all` (slots 1..max_slot) para calcular `ref_price_all` + `final_close_all`.
+  - `--exclude-last-slot` ahora solo filtra el dataset operable/exportado.
+  - `prob_up_event/prob_down_event` se calculan con cierre real del evento (`final_close_all`)
+    alineado al índice de filas exportadas.
+- Efecto esperado:
+  - con `--exclude-last-slot`: salida de slots operables (1..29), pero label de outcome a cierre 5m real.
+  - sin `--exclude-last-slot`: se exportan slots completos incluyendo slot 30.
+- Guardrails agregados en el script:
+  - falla si detecta bloques 5m incompletos/duplicados (`count != max_slot`),
+  - falla si `--exclude-last-slot` está desactivado y falta el slot final del bloque.
+
+## Estado actualizado (2026-02-25, single source of truth de elegibilidad bot/tracking)
+
+- Nuevo método backend en `EventManager`:
+  - `evaluate_bot_order_candidate(...)` centraliza decisión y sizing por `event_id + side`.
+- Cobertura de reglas unificadas (mismo orden de decisión):
+  1. `timeframe_filter` (si `bot_enforce_timeframe_filter=true`),
+  2. guardrail por cercanía a cierre (`bot_min_seconds_before_end`),
+  3. `quant_buy_gate` del lado (`up/down`),
+  4. rango de precio permitido (`quant_gate_min_price_c` / `quant_gate_max_price_c`),
+  5. requisito duro `kelly_enabled=true`,
+  6. sizing Kelly + cap por orden (`bot_order_notional_cap_usd`),
+  7. `validate_order_risk_guards(...)` (mínimos, cooldowns, max buys, lado opuesto, caps).
+- Integración aplicada:
+  - tracking (`_evaluate_trackable_side_for_tracking`) ahora usa el método unificado,
+  - ejecución bot (`_bot_maybe_place_order`) también usa el método unificado.
+- Resultado:
+  - señales analytics, paper y live quedan alineadas a la misma elegibilidad efectiva.
+
+## Estado actualizado (2026-02-25, badge paper bankroll en header)
+
+- Header live ahora muestra, en `bot_paper_mode`, un badge adicional:
+  - `Paper $...` usando `settings.paper_current_bankroll_usd`.
+- Ubicación:
+  - en la zona central del header, inmediatamente a la izquierda del badge `PAPER MODE`.
+- Si el valor no está disponible, el badge muestra `Paper $N/A`.
+
+## Estado actualizado (2026-02-25, blocked stake como N/A)
+
+- `Blocked Opportunities` ya no usa fallback `$100` cuando la señal se bloquea antes de sizing accionable.
+- Backend (`OpportunityTracker.track_gate_transition`):
+  - `estimated_stake_usd` en bloqueados se guarda vacío si `stake_usd_override` no es `> 0`.
+- Frontend (`OpportunitiesDashboard`):
+  - columna `Est. Stake` muestra `N/A` cuando `estimated_stake_usd` no tiene valor positivo.
+
+## Estado actualizado (2026-02-25, caps de exposición en paper usan bankroll paper)
+
+- Ajuste en `_bot_maybe_place_order`:
+  - cuando `bot_paper_mode=true`, ya no se consulta ni usa `client.get_balance()` para guardrails.
+  - la evaluación (`evaluate_bot_order_candidate`) usa bankroll paper efectivo (`paper_current_bankroll_usd` / `kelly_paper_bankroll_usd`) para caps.
+- Resultado:
+  - evita bloqueos paper por `event_exposure_cap_reached` causados por balance live.
+
+## Estado actualizado (2026-02-25, nuevas curvas Trading Equity en Analytics)
+
+- Dashboard analytics agrega dos graficas nuevas (linea de equity):
+  1. `Paper Trading Equity Curve`
+  2. `Live Trading Equity Curve`
+- Implementacion frontend:
+  - nuevo componente `frontend/src/components/analytics/TradingEquityCurveChart.tsx`.
+  - integradas en `OpportunitiesDashboard.tsx` dentro de la grilla de charts.
+  - refresh automatico de analytics cada 15s para actualizar curvas en runtime.
+- Fuente de calculo:
+  - Paper: `paper_trades` filtrado por `days/ticker/regime` (equity acumulada desde `kelly_paper_bankroll_usd`).
+  - Live: `bot_orders` (`status=placed`) cruzado con outcomes resueltos del evento para estimar PnL por orden.
+
+## Estado actualizado (2026-02-25, baseline inicial de bankroll para live equity)
+
+- Nuevos settings persistentes:
+  - `live_equity_start_bankroll_usd`
+  - `live_equity_start_at_utc`
+- Comportamiento:
+  - se capturan automaticamente en el primer fill real live (no paper).
+  - fuente del snapshot: `bankroll_snapshot_usd` del fill (balance API live); fallback a `kelly_live_bankroll_usd`.
+  - una vez seteados, no se sobreescriben automaticamente en fills siguientes.
+- Uso en analytics:
+  - `Live Trading Equity Curve` arranca desde este baseline persistido.
+  - fallback: `kelly_live_bankroll_usd` cuando aun no existe snapshot.
+- Control manual:
+  - nuevo boton `Reset Live Baseline` en analytics con `confirm(...)` antes de ejecutar.
+  - resetea `live_equity_start_bankroll_usd` y `live_equity_start_at_utc` via `POST /api/settings`.

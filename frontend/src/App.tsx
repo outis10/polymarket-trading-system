@@ -6,6 +6,7 @@ import Header from "./components/layout/Header";
 import Sidebar from "./components/layout/Sidebar";
 import EventCard from "./components/EventCard";
 import OpportunitiesDashboard from "./components/analytics/OpportunitiesDashboard";
+import SystemToastBanner from "./components/SystemToastBanner";
 import { inferTicker } from "./utils/ticker";
 
 type AppRoute = "live" | "analytics";
@@ -20,7 +21,13 @@ export default function App() {
     const events = useEventsStore((s) => s.events);
     const settings = useEventsStore((s) => s.settings);
     const [route, setRoute] = useState<AppRoute>(getRouteFromPath());
+    const [nowMs, setNowMs] = useState(() => Date.now());
     const lastAutoRefreshAtRef = useRef(0);
+
+    useEffect(() => {
+        const timer = setInterval(() => setNowMs(Date.now()), 1000);
+        return () => clearInterval(timer);
+    }, []);
 
     useEffect(() => {
         const onPopState = () => setRoute(getRouteFromPath());
@@ -36,7 +43,6 @@ export default function App() {
         }
         setRoute(nextRoute);
     };
-    const nowMs = Date.now();
     const rawTimeframe =
         typeof settings.timeframe_filter === "string"
             ? settings.timeframe_filter
@@ -114,6 +120,7 @@ export default function App() {
         <>
             <Header route={route} onNavigate={handleNavigate} />
             <Sidebar send={send} />
+            <SystemToastBanner />
 
             {route === "analytics" ? (
                 <OpportunitiesDashboard />

@@ -17,7 +17,7 @@ export function useWebSocket() {
     const wsRef = useRef<WebSocket | null>(null);
     const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
     const shouldReconnectRef = useRef(true);
-    const { setEvents, setSettings, updateEvent } = useEventsStore();
+    const { setEvents, setSettings, updateEvent, showSystemToast } = useEventsStore();
     const setBankrollReal = useAccountStore((s) => s.setBankrollReal);
 
     const connect = useCallback(() => {
@@ -83,6 +83,16 @@ export function useWebSocket() {
                         setBankrollReal(Number.isFinite(n) ? n : null);
                         break;
                     }
+                    case "quant_reload": {
+                        const d = msg.data as Record<string, unknown>;
+                        if (d?.ok) {
+                            const tickers = (d.slot_ranges_tickers as string[] | undefined)?.join(", ") ?? "";
+                            showSystemToast(`Quant tables updated (${tickers})`, "success");
+                        } else {
+                            showSystemToast("Quant reload failed — check backend logs", "error");
+                        }
+                        break;
+                    }
                     case "bot_order_placed": {
                         // Inject bot order result into event state so EventCard can show toast
                         const d = msg.data as Record<string, unknown>;
@@ -92,6 +102,15 @@ export function useWebSocket() {
                         }
                         if (msg.event_id) {
                             updateEvent(msg.event_id, { _bot_last_order: d } as Partial<EventData>);
+                            // Delay refresh to give CLOB time to register the trade
+                            const eid = msg.event_id;
+                            setTimeout(() => {
+                                window.dispatchEvent(
+                                    new CustomEvent("positions_refresh", {
+                                        detail: { eventId: eid },
+                                    })
+                                );
+                            }, 3000);
                         }
                         break;
                     }
@@ -110,7 +129,7 @@ export function useWebSocket() {
         ws.onerror = () => {
             ws.close();
         };
-    }, [setEvents, setSettings, setBankrollReal, updateEvent]);
+    }, [setEvents, setSettings, setBankrollReal, updateEvent, showSystemToast]);
 
     const send = useCallback((msg: Record<string, unknown>) => {
         if (wsRef.current?.readyState === WebSocket.OPEN) {
