@@ -22,11 +22,16 @@ from .chainlink import (
     ChainlinkPriceStreamer,
     normalize_symbol,
 )
-from .price_provider import get_price_fetcher, get_price_streamer, get_single_price_fetcher
 from .demo import load_demo_events, update_demo_prices
 from .event_discovery import discover_live_events
+from .kraken import fetch_kraken_candle_open, fetch_kraken_klines
 from .opportunity_tracker import OpportunityTracker
 from .polymarket import PolymarketStreamer, fetch_real_prices, get_client
+from .price_provider import (
+    get_price_fetcher,
+    get_price_streamer,
+    get_single_price_fetcher,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -276,9 +281,7 @@ def _extract_fills_detail(result: Any) -> tuple[int, float, float, str]:
     for f in fills:
         if not isinstance(f, dict):
             continue
-        p = _as_float(
-            f.get("price") or f.get("fill_price") or f.get("executed_price")
-        )
+        p = _as_float(f.get("price") or f.get("fill_price") or f.get("executed_price"))
         s = _as_float(
             f.get("size")
             or f.get("shares")
@@ -2605,20 +2608,31 @@ class EventManager:
             if bsym and est:
                 start_ms = parse_event_start_ms(est)
                 if start_ms:
-                    kh = fetch_binance_klines(bsym, start_ms)
+                    price_source = str(
+                        self.settings.get("price_source", "binance")
+                    ).lower()
+                    fetch_klines = fetch_binance_klines
+                    fetch_candle_open = fetch_binance_candle_open
+                    source_prefix = "binance"
+                    if price_source == "kraken":
+                        fetch_klines = fetch_kraken_klines
+                        fetch_candle_open = fetch_kraken_candle_open
+                        source_prefix = "kraken"
+
+                    kh = fetch_klines(bsym, start_ms)
                     if kh:
                         event_dict["price_history"] = kh
                         if event_dict.get("price_to_beat", 0) <= 0:
                             event_dict["price_to_beat"] = kh[0]["price_to_beat"]
-                            event_dict["price_to_beat_source"] = "binance_klines"
+                            event_dict["price_to_beat_source"] = (
+                                f"{source_prefix}_klines"
+                            )
                         event_dict["current_price"] = kh[-1]["price"]
                     else:
-                        op = fetch_binance_candle_open(
-                            bsym, start_ms, timeframe_minutes
-                        )
+                        op = fetch_candle_open(bsym, start_ms, timeframe_minutes)
                         if op and event_dict.get("price_to_beat", 0) <= 0:
                             event_dict["price_to_beat"] = op
-                            event_dict["price_to_beat_source"] = "binance_open"
+                            event_dict["price_to_beat_source"] = f"{source_prefix}_open"
 
             events[event_id] = event_dict
             self._live_event_configs[event_id] = event_config
@@ -3380,9 +3394,12 @@ class EventManager:
                     or str(result)[:16]
                 )
                 fill_price_real = _extract_fill_price_from_result(result)
-                fill_count, filled_notional_usd_real, filled_shares_real, fills_detail_json = (
-                    _extract_fills_detail(result)
-                )
+                (
+                    fill_count,
+                    filled_notional_usd_real,
+                    filled_shares_real,
+                    fills_detail_json,
+                ) = _extract_fills_detail(result)
                 slippage_pct = (
                     (fill_price_real - ask_price) / ask_price * 100.0
                     if isinstance(fill_price_real, float)

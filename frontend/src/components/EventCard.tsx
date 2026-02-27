@@ -30,6 +30,8 @@ const PTB_SOURCE_META: Record<string, { badge: string; label: string }> = {
     config: { badge: "C", label: "Local config/static value" },
     binance_klines: { badge: "B", label: "Binance (first kline open)" },
     binance_open: { badge: "B", label: "Binance (candle open fallback)" },
+    kraken_klines: { badge: "K", label: "Kraken (first kline open)" },
+    kraken_open: { badge: "K", label: "Kraken (candle open fallback)" },
     unknown: { badge: "U", label: "Unknown source" },
 };
 

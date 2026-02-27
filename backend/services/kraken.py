@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Any, Callable, Coroutine, Optional
 
 import websockets
@@ -27,6 +28,8 @@ KRAKEN_REST_API = "https://api.kraken.com/0/public"
 KRAKEN_WS_V2 = "wss://ws.kraken.com/v2"
 
 _price_cache: TTLCache = TTLCache(maxsize=64, ttl=0.5)
+_candle_open_cache: TTLCache = TTLCache(maxsize=64, ttl=60)
+_klines_cache: TTLCache = TTLCache(maxsize=64, ttl=30)
 
 # ---------------------------------------------------------------------------
 # Symbol conversion helpers
@@ -177,6 +180,131 @@ def fetch_kraken_prices(symbols: list[str]) -> dict[str, float]:
         return out
 
 
+def fetch_kraken_candle_open(
+    symbol: str, start_time_ms: int, timeframe_minutes: int = 15
+) -> Optional[float]:
+    """Fetch candle open price from Kraken OHLC at event start."""
+    import requests
+
+    interval = (
+        int(timeframe_minutes) if int(timeframe_minutes) in (1, 5, 15, 60) else 15
+    )
+    cache_key = (symbol.upper(), int(start_time_ms), interval)
+    if cache_key in _candle_open_cache:
+        return _candle_open_cache[cache_key]
+
+    pair = _to_kraken_pair(symbol)
+    since_sec = max(0, int(start_time_ms // 1000) - (interval * 60))
+    try:
+        resp = requests.get(
+            f"{KRAKEN_REST_API}/OHLC",
+            params={"pair": pair, "interval": interval, "since": since_sec},
+            timeout=8,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("error"):
+            return None
+        result = data.get("result", {})
+        rows = result.get(pair) or []
+        if not rows:
+            # Kraken may return a canonical pair key (e.g. XXBTZUSD).
+            for key, value in result.items():
+                if key != "last" and isinstance(value, list):
+                    rows = value
+                    if rows:
+                        break
+        if not rows:
+            return None
+
+        start_sec = int(start_time_ms // 1000)
+        selected = None
+        for row in rows:
+            try:
+                t0 = int(float(row[0]))
+            except Exception:
+                continue
+            if t0 <= start_sec < (t0 + interval * 60):
+                selected = row
+                break
+        if selected is None:
+            selected = rows[0]
+
+        price = float(selected[1])  # open
+        _candle_open_cache[cache_key] = price
+        return price
+    except Exception:
+        return None
+
+
+def fetch_kraken_klines(symbol: str, start_time_ms: int) -> list[dict]:
+    """Fetch 1-minute OHLC from Kraken and normalize to PriceHistoryPoint-like rows."""
+    import requests
+
+    cache_key = (symbol.upper(), int(start_time_ms))
+    if cache_key in _klines_cache:
+        return _klines_cache[cache_key]
+
+    pair = _to_kraken_pair(symbol)
+    since_sec = max(0, int(start_time_ms // 1000) - 60)
+    try:
+        resp = requests.get(
+            f"{KRAKEN_REST_API}/OHLC",
+            params={"pair": pair, "interval": 1, "since": since_sec},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("error"):
+            return []
+        result = data.get("result", {})
+        rows = result.get(pair) or []
+        if not rows:
+            for key, value in result.items():
+                if key != "last" and isinstance(value, list):
+                    rows = value
+                    if rows:
+                        break
+        if not rows:
+            return []
+
+        start_sec = int(start_time_ms // 1000)
+        window_end = start_sec + 3600
+        filtered: list[list[Any]] = []
+        for row in rows:
+            try:
+                t0 = int(float(row[0]))
+            except Exception:
+                continue
+            if start_sec <= t0 < window_end:
+                filtered.append(row)
+        if not filtered:
+            return []
+
+        open_price = float(filtered[0][1])
+        history = []
+        for row in filtered:
+            ts = datetime.fromtimestamp(float(row[0]), tz=timezone.utc)
+            close = float(row[4])
+            pct = ((close - open_price) / open_price * 100) if open_price else 0.0
+            prob_swing = (close - open_price) / open_price * 20 if open_price else 0.0
+            yes_p = max(0.01, min(0.99, 0.50 + prob_swing))
+            history.append(
+                {
+                    "timestamp": ts.isoformat(),
+                    "price": close,
+                    "yes_price": yes_p,
+                    "no_price": 1 - yes_p,
+                    "percent_change": pct,
+                    "price_to_beat": open_price,
+                }
+            )
+        _klines_cache[cache_key] = history
+        return history
+    except Exception:
+        return []
+
+
 # ---------------------------------------------------------------------------
 # WebSocket streamer (same interface as BinanceStreamer)
 # ---------------------------------------------------------------------------
@@ -214,20 +342,24 @@ class KrakenStreamer:
     async def start(self):
         """Connect and stream trade events."""
         self._running = True
-        subscribe_msg = json.dumps({
-            "method": "subscribe",
-            "params": {
-                "channel": "trade",
-                "symbol": [self._ws_symbol],
-                "snapshot": False,
-            },
-        })
+        subscribe_msg = json.dumps(
+            {
+                "method": "subscribe",
+                "params": {
+                    "channel": "trade",
+                    "symbol": [self._ws_symbol],
+                    "snapshot": False,
+                },
+            }
+        )
 
         while self._running:
             try:
                 async with websockets.connect(KRAKEN_WS_V2) as ws:
                     self._ws = ws
-                    logger.info("Kraken WS connected: %s (%s)", KRAKEN_WS_V2, self._ws_symbol)
+                    logger.info(
+                        "Kraken WS connected: %s (%s)", KRAKEN_WS_V2, self._ws_symbol
+                    )
                     await ws.send(subscribe_msg)
                     ping_task = asyncio.create_task(self._ping_loop(ws))
                     try:
