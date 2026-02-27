@@ -329,7 +329,10 @@ async def export_bot_orders_csv(
             "placed_at_utc",
             "event_id",
             "ticker",
+            "slot",
+            "range",
             "side",
+            "event_end_utc_at_send",
             "token_id",
             "shares",
             "price",
@@ -351,6 +354,11 @@ async def export_bot_orders_csv(
             "kelly_pct",
             "bankroll_usd",
             "percentile_at_signal",
+            "close_price_at_resolution",
+            "event_outcome_real",
+            "won",
+            "pnl_simulated",
+            "resolution_status",
             "status",
         ]
     buffer = io.StringIO()

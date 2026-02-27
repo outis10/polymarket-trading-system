@@ -100,7 +100,10 @@ interface RawBotOrder {
     placed_at_utc: string;
     event_id: string;
     ticker: string;
+    slot?: string;
+    range?: string;
     side: "up" | "down";
+    event_end_utc_at_send?: string;
     token_id: string;
     shares: string;
     price: string;
@@ -122,6 +125,11 @@ interface RawBotOrder {
     kelly_pct?: string;
     bankroll_usd?: string;
     percentile_at_signal?: string;
+    close_price_at_resolution?: string;
+    event_outcome_real?: "up" | "down" | "";
+    won?: string;
+    pnl_simulated?: string;
+    resolution_status?: "pending" | "resolved" | "";
     status: string;
 }
 
@@ -911,6 +919,21 @@ export default function OpportunitiesDashboard() {
         const failed = filteredBotOrderRows.filter(
             (r) => String(r.status).toLowerCase() === "failed",
         ).length;
+        const resolvedRows = filteredBotOrderRows.filter(
+            (r) =>
+                String(r.resolution_status || "").toLowerCase() === "resolved",
+        );
+        const resolved = resolvedRows.length;
+        const wins = resolvedRows.filter(
+            (r) => String(r.won || "") === "1",
+        ).length;
+        const losses = Math.max(0, resolved - wins);
+        const winRate = resolved > 0 ? (wins / resolved) * 100 : 0;
+        const totalPnlSim = resolvedRows.reduce(
+            (acc, r) => acc + asNumber(r.pnl_simulated),
+            0,
+        );
+        const avgPnlPerResolved = resolved > 0 ? totalPnlSim / resolved : 0;
         const withFill = filteredBotOrderRows.filter(
             (r) => asNumber(r.fill_price_real) > 0,
         ).length;
@@ -927,7 +950,20 @@ export default function OpportunitiesDashboard() {
                       0,
                   ) / withFill
                 : 0;
-        return { total, placed, failed, withFill, avgEdgeSend, avgEdgeFill };
+        return {
+            total,
+            placed,
+            failed,
+            resolved,
+            wins,
+            losses,
+            winRate,
+            totalPnlSim,
+            avgPnlPerResolved,
+            withFill,
+            avgEdgeSend,
+            avgEdgeFill,
+        };
     }, [filteredBotOrderRows]);
 
     return (
@@ -1584,12 +1620,28 @@ export default function OpportunitiesDashboard() {
                             `edge_pct` is edge at send; `edge_at_fill_pct` is
                             edge versus actual fill price when available.
                         </li>
+                        <li>
+                            `WON` and `PnL` are populated after event close
+                            (`resolution_status=resolved`); before that they
+                            show `pending` / `n/a`.
+                        </li>
                     </ul>
                 </div>
                 <div className="analytics-mini-kpis">
                     <span>Total rows: {botOrderMetrics.total}</span>
                     <span>Placed: {botOrderMetrics.placed}</span>
                     <span>Failed: {botOrderMetrics.failed}</span>
+                    <span>Resolved: {botOrderMetrics.resolved}</span>
+                    <span>Wins: {botOrderMetrics.wins}</span>
+                    <span>Losses: {botOrderMetrics.losses}</span>
+                    <span>Win Rate: {botOrderMetrics.winRate.toFixed(2)}%</span>
+                    <span>
+                        Total PnL Sim: ${botOrderMetrics.totalPnlSim.toFixed(2)}
+                    </span>
+                    <span>
+                        Avg PnL/Resolved: $
+                        {botOrderMetrics.avgPnlPerResolved.toFixed(2)}
+                    </span>
                     <span>With fill price: {botOrderMetrics.withFill}</span>
                     <span>
                         Avg Edge@Send: {botOrderMetrics.avgEdgeSend.toFixed(2)}%
@@ -1601,16 +1653,21 @@ export default function OpportunitiesDashboard() {
                 <table className="analytics-table">
                     <thead>
                         <tr>
-                            <th>Placed (UTC)</th>
+                            <th>Decision (UTC)</th>
                             <th>Ticker</th>
+                            <th>Slot</th>
+                            <th>Range</th>
+                            <th>Prob UP</th>
+                            <th>Prob Side</th>
+                            <th>Market Prob</th>
+                            <th>Stake $</th>
+                            <th>Shares</th>
+                            <th>QE</th>
                             <th>Side</th>
-                            <th>Price Send</th>
                             <th>Diff vs PTB</th>
                             <th>Spread %</th>
-                            <th>Fill Price</th>
-                            <th>Edge Send</th>
-                            <th>Edge Fill</th>
-                            <th>Notional</th>
+                            <th>WON</th>
+                            <th>PnL</th>
                             <th>Status</th>
                             <th>Event</th>
                         </tr>
@@ -1620,63 +1677,104 @@ export default function OpportunitiesDashboard() {
                             .slice()
                             .reverse()
                             .slice(0, 50)
-                            .map((row, idx) => (
-                                <tr
-                                    key={`${row.placed_at_utc}-${row.event_id}-${idx}`}
-                                >
-                                    <td>
-                                        {row.placed_at_utc
-                                            .replace("T", " ")
-                                            .slice(0, 19)}
-                                    </td>
-                                    <td>{row.ticker}</td>
-                                    <td>
-                                        {String(row.side || "").toUpperCase()}
-                                    </td>
-                                    <td>{asNumber(row.price).toFixed(4)}</td>
-                                    <td>
-                                        {row.diff_vs_ptb_at_send !==
-                                            undefined &&
-                                        row.diff_vs_ptb_at_send !== ""
-                                            ? asNumber(
-                                                  row.diff_vs_ptb_at_send,
-                                              ).toFixed(2)
-                                            : "n/a"}
-                                    </td>
-                                    <td>
-                                        {row.spread_pct_at_send !== undefined &&
-                                        row.spread_pct_at_send !== ""
-                                            ? `${(
-                                                  asNumber(
-                                                      row.spread_pct_at_send,
-                                                  ) * 100
-                                              ).toFixed(2)}%`
-                                            : "n/a"}
-                                    </td>
-                                    <td>
-                                        {asNumber(row.fill_price_real) > 0
-                                            ? asNumber(
-                                                  row.fill_price_real,
-                                              ).toFixed(4)
-                                            : "n/a"}
-                                    </td>
-                                    <td>
-                                        {asNumber(row.edge_pct).toFixed(2)}%
-                                    </td>
-                                    <td>
-                                        {asNumber(row.fill_price_real) > 0
-                                            ? `${asNumber(row.edge_at_fill_pct).toFixed(2)}%`
-                                            : "n/a"}
-                                    </td>
-                                    <td>
-                                        ${asNumber(row.notional_usd).toFixed(2)}
-                                    </td>
-                                    <td>{row.status}</td>
-                                    <td className="analytics-event-id">
-                                        {row.event_id}
-                                    </td>
-                                </tr>
-                            ))}
+                            .map((row, idx) => {
+                                const side = String(
+                                    row.side || "",
+                                ).toLowerCase();
+                                const probSide = asNumber(row.quant_prob);
+                                const probUp =
+                                    side === "down" ? 1 - probSide : probSide;
+                                const outcome = String(
+                                    row.event_outcome_real || "",
+                                ).toLowerCase();
+                                const won = String(row.won || "") === "1";
+                                const resolutionStatus =
+                                    String(row.status).toLowerCase() ===
+                                    "failed"
+                                        ? "failed"
+                                        : row.resolution_status || "pending";
+                                return (
+                                    <tr
+                                        key={`${row.placed_at_utc}-${row.event_id}-${idx}`}
+                                    >
+                                        <td>
+                                            {row.placed_at_utc
+                                                .replace("T", " ")
+                                                .slice(0, 19)}
+                                        </td>
+                                        <td>{row.ticker}</td>
+                                        <td>{row.slot || "n/a"}</td>
+                                        <td>{row.range || "n/a"}</td>
+                                        <td>
+                                            {Number.isFinite(probUp)
+                                                ? probUp.toFixed(4)
+                                                : "n/a"}
+                                        </td>
+                                        <td>
+                                            {Number.isFinite(probSide)
+                                                ? probSide.toFixed(4)
+                                                : "n/a"}
+                                        </td>
+                                        <td>
+                                            {asNumber(row.price).toFixed(4)}
+                                        </td>
+                                        <td>
+                                            $
+                                            {asNumber(row.notional_usd).toFixed(
+                                                2,
+                                            )}
+                                        </td>
+                                        <td>
+                                            {asNumber(row.shares).toFixed(4)}
+                                        </td>
+                                        <td>
+                                            {asNumber(row.edge_pct).toFixed(2)}%
+                                        </td>
+                                        <td>
+                                            {String(
+                                                row.side || "",
+                                            ).toUpperCase()}
+                                        </td>
+                                        <td>
+                                            {row.diff_vs_ptb_at_send !==
+                                                undefined &&
+                                            row.diff_vs_ptb_at_send !== ""
+                                                ? asNumber(
+                                                      row.diff_vs_ptb_at_send,
+                                                  ).toFixed(2)
+                                                : "n/a"}
+                                        </td>
+                                        <td>
+                                            {row.spread_pct_at_send !==
+                                                undefined &&
+                                            row.spread_pct_at_send !== ""
+                                                ? `${(
+                                                      asNumber(
+                                                          row.spread_pct_at_send,
+                                                      ) * 100
+                                                  ).toFixed(2)}%`
+                                                : "n/a"}
+                                        </td>
+                                        <td>
+                                            {outcome
+                                                ? won
+                                                    ? "YES"
+                                                    : "NO"
+                                                : "pending"}
+                                        </td>
+                                        <td>
+                                            {row.pnl_simulated !== undefined &&
+                                            row.pnl_simulated !== ""
+                                                ? `$${asNumber(row.pnl_simulated).toFixed(2)}`
+                                                : "n/a"}
+                                        </td>
+                                        <td>{resolutionStatus}</td>
+                                        <td className="analytics-event-id">
+                                            {row.event_id}
+                                        </td>
+                                    </tr>
+                                );
+                            })}
                     </tbody>
                 </table>
             </section>

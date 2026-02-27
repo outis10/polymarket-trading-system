@@ -39,7 +39,10 @@ _BOT_ORDERS_FIELDNAMES = [
     "placed_at_utc",
     "event_id",
     "ticker",
+    "slot",
+    "range",
     "side",
+    "event_end_utc_at_send",
     "token_id",
     "shares",
     "price",
@@ -61,6 +64,11 @@ _BOT_ORDERS_FIELDNAMES = [
     "kelly_pct",
     "bankroll_usd",
     "percentile_at_signal",
+    "close_price_at_resolution",
+    "event_outcome_real",
+    "won",
+    "pnl_simulated",
+    "resolution_status",
     "status",
 ]
 _PAPER_TRADES_LOG_PATH = os.path.normpath(
@@ -404,6 +412,7 @@ class EventManager:
         )
         self._persisted_setting_keys = set(self.settings.keys())
         self._last_paper_reconcile_at: datetime | None = None
+        self._last_bot_orders_reconcile_at: datetime | None = None
         self._paper_event_cache: dict[str, dict[str, Any]] = {}
 
     def _load_order_guard_records_from_csv(self) -> list[dict]:
@@ -1785,6 +1794,110 @@ class EventManager:
                 self.settings["paper_current_bankroll_usd"] = round(new_value, 6)
                 self.persist_runtime_settings()
 
+    def _reconcile_bot_orders(self, now_utc: datetime) -> None:
+        # Avoid rewriting CSVs too often.
+        if (
+            self._last_bot_orders_reconcile_at is not None
+            and (now_utc - self._last_bot_orders_reconcile_at).total_seconds() < 15
+        ):
+            return
+        self._last_bot_orders_reconcile_at = now_utc
+
+        root = os.path.normpath(
+            os.path.join(os.path.dirname(__file__), "..", "..", "backtest_output")
+        )
+        if not os.path.isdir(root):
+            return
+
+        pattern = re.compile(r"^bot_orders_(\d{4}-\d{2}-\d{2})\.csv$")
+        cutoff_day = now_utc.date() - timedelta(days=14)
+        targets: list[str] = []
+        for name in os.listdir(root):
+            m = pattern.match(name)
+            if not m:
+                continue
+            try:
+                day = datetime.strptime(m.group(1), "%Y-%m-%d").date()
+            except ValueError:
+                continue
+            if day < cutoff_day:
+                continue
+            targets.append(os.path.join(root, name))
+
+        for path in sorted(targets):
+            try:
+                with open(path, newline="") as f:
+                    rows = list(csv.DictReader(f))
+            except FileNotFoundError:
+                continue
+            if not rows:
+                continue
+
+            changed = False
+            for row in rows:
+                status = str(row.get("status", "")).strip().lower()
+                if status != "placed":
+                    continue
+                if str(row.get("resolution_status", "")).strip().lower() == "resolved":
+                    continue
+
+                event_id = str(row.get("event_id", "")).strip()
+                if not event_id:
+                    continue
+                event = self.events.get(event_id)
+                end_raw = str(row.get("event_end_utc_at_send", "")).strip()
+                if not end_raw and isinstance(event, dict):
+                    end_raw = str(event.get("event_end_utc", "")).strip()
+                try:
+                    end_dt = datetime.fromisoformat(end_raw) if end_raw else None
+                except Exception:
+                    end_dt = None
+                if end_dt is None or now_utc < end_dt:
+                    continue
+
+                close_price = 0.0
+                if isinstance(event, dict):
+                    close_price = float(event.get("current_price", 0) or 0)
+                if close_price <= 0:
+                    cached = self._paper_event_cache.get(event_id, {})
+                    close_price = float(cached.get("close_price", 0) or 0)
+
+                ptb = _as_float(row.get("price_to_beat_at_send"))
+                q = _as_float(row.get("fill_price_real"))
+                if q is None or q <= 0:
+                    q = _as_float(row.get("price"))
+                stake = _as_float(row.get("notional_usd"))
+                side = str(row.get("side", "")).strip().lower()
+                if (
+                    close_price <= 0
+                    or ptb is None
+                    or q is None
+                    or q <= 0
+                    or stake is None
+                    or side not in {"up", "down"}
+                ):
+                    continue
+
+                event_outcome_real = "up" if close_price >= ptb else "down"
+                won = event_outcome_real == side
+                pnl = (stake * (1.0 / q - 1.0)) if won else (-stake)
+
+                row["close_price_at_resolution"] = f"{close_price:.6f}"
+                row["event_outcome_real"] = event_outcome_real
+                row["won"] = "1" if won else "0"
+                row["pnl_simulated"] = f"{pnl:.6f}"
+                row["resolution_status"] = "resolved"
+                changed = True
+
+            if changed:
+                with open(path, "w", newline="") as f:
+                    writer = csv.DictWriter(f, fieldnames=_BOT_ORDERS_FIELDNAMES)
+                    writer.writeheader()
+                    for row in rows:
+                        writer.writerow(
+                            {k: row.get(k, "") for k in _BOT_ORDERS_FIELDNAMES}
+                        )
+
     @staticmethod
     def _clean_old_order_records(records: list[dict], now_utc: datetime) -> list[dict]:
         cutoff = now_utc - timedelta(days=2)
@@ -3061,6 +3174,7 @@ class EventManager:
 
             histogram = event_dict.get("quant_range_histogram")
             percentile_at_signal: float | None = None
+            slot_at_send, range_at_send = self._paper_current_slot_and_range(event_dict)
             paper_mode_enabled = bool(self.settings.get("bot_paper_mode", False))
             if isinstance(histogram, dict):
                 raw_pct = histogram.get("current_percentile")
@@ -3212,7 +3326,12 @@ class EventManager:
                         "placed_at_utc": now_utc.isoformat(),
                         "event_id": event_id,
                         "ticker": self._extract_event_ticker(event_id, event_dict),
+                        "slot": slot_at_send if slot_at_send is not None else "",
+                        "range": range_at_send or "",
                         "side": side,
+                        "event_end_utc_at_send": str(
+                            event_dict.get("event_end_utc", "") or ""
+                        ),
                         "token_id": token_id,
                         "shares": round(shares, 6),
                         "price": round(ask_price, 6),
@@ -3260,6 +3379,11 @@ class EventManager:
                         "percentile_at_signal": percentile_at_signal
                         if percentile_at_signal is not None
                         else "",
+                        "close_price_at_resolution": "",
+                        "event_outcome_real": "",
+                        "won": "",
+                        "pnl_simulated": "",
+                        "resolution_status": "pending",
                         "status": "placed",
                     }
                 )
@@ -3315,7 +3439,12 @@ class EventManager:
                         "placed_at_utc": now_utc.isoformat(),
                         "event_id": event_id,
                         "ticker": self._extract_event_ticker(event_id, event_dict),
+                        "slot": slot_at_send if slot_at_send is not None else "",
+                        "range": range_at_send or "",
                         "side": side,
+                        "event_end_utc_at_send": str(
+                            event_dict.get("event_end_utc", "") or ""
+                        ),
                         "token_id": token_id,
                         "shares": round(shares, 6),
                         "price": round(ask_price, 6),
@@ -3359,6 +3488,11 @@ class EventManager:
                         "percentile_at_signal": percentile_at_signal
                         if percentile_at_signal is not None
                         else "",
+                        "close_price_at_resolution": "",
+                        "event_outcome_real": "",
+                        "won": "",
+                        "pnl_simulated": "",
+                        "resolution_status": "",
                         "status": "failed",
                     }
                 )
@@ -3513,6 +3647,7 @@ class EventManager:
             self.events, datetime.now(tz=timezone.utc)
         )
         self._reconcile_paper_trades(datetime.now(tz=timezone.utc))
+        self._reconcile_bot_orders(datetime.now(tz=timezone.utc))
 
         # 2) Slow path in round-robin: refresh Polymarket books/prices for a subset.
         if not client or not event_ids:
