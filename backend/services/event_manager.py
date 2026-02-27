@@ -14,17 +14,15 @@ from typing import Any, Optional
 from ..config import load_events_config
 from ..ws.manager import manager
 from .binance import (
-    BinanceStreamer,
     fetch_binance_candle_open,
     fetch_binance_klines,
-    fetch_binance_price,
-    fetch_binance_prices,
     parse_event_start_ms,
 )
 from .chainlink import (
     ChainlinkPriceStreamer,
     normalize_symbol,
 )
+from .price_provider import get_price_fetcher, get_price_streamer, get_single_price_fetcher
 from .demo import load_demo_events, update_demo_prices
 from .event_discovery import discover_live_events
 from .opportunity_tracker import OpportunityTracker
@@ -401,11 +399,12 @@ class EventManager:
             "bot_enforce_timeframe_filter": True,
             "bot_block_opposite_side": True,
             "bot_min_seconds_before_end": 30,
+            "price_source": "binance",
         }
         self._config: dict = {}
         self._task: Optional[asyncio.Task] = None
-        self._binance_streamers: list[BinanceStreamer] = []
-        self._binance_stream_tasks: list[asyncio.Task] = []
+        self._price_streamers: list = []
+        self._price_stream_tasks: list[asyncio.Task] = []
         self._chainlink_streamers: list[ChainlinkPriceStreamer] = []
         self._chainlink_stream_tasks: list[asyncio.Task] = []
         self._polymarket_streamers: list[PolymarketStreamer] = []
@@ -2469,22 +2468,22 @@ class EventManager:
             streamer._running = True
             self._chainlink_stream_tasks[i] = asyncio.create_task(streamer.start())
 
-        # Binance tasks
-        dead_binance: list[int] = []
-        for i, task in enumerate(self._binance_stream_tasks):
+        # Price streamer tasks (source-agnostic)
+        dead_price: list[int] = []
+        for i, task in enumerate(self._price_stream_tasks):
             if task.done():
                 exc = task.exception() if not task.cancelled() else None
                 logger.warning(
-                    "Binance stream task[%d] died (cancelled=%s, exc=%s) — restarting",
+                    "Price stream task[%d] died (cancelled=%s, exc=%s) — restarting",
                     i,
                     task.cancelled(),
                     exc,
                 )
-                dead_binance.append(i)
-        for i in reversed(dead_binance):
-            streamer = self._binance_streamers[i]
+                dead_price.append(i)
+        for i in reversed(dead_price):
+            streamer = self._price_streamers[i]
             streamer._running = True
-            self._binance_stream_tasks[i] = asyncio.create_task(streamer.start())
+            self._price_stream_tasks[i] = asyncio.create_task(streamer.start())
 
     def _update_demo(self):
         """Update all demo events with simulated data."""
@@ -2808,23 +2807,23 @@ class EventManager:
 
     async def _stop_streams(self) -> None:
         """Stop all WS streamers and their tasks."""
-        for s in self._binance_streamers:
+        for s in self._price_streamers:
             await s.stop()
         for s in self._chainlink_streamers:
             await s.stop()
         for s in self._polymarket_streamers:
             await s.stop()
-        self._binance_streamers.clear()
+        self._price_streamers.clear()
         self._chainlink_streamers.clear()
         self._polymarket_streamers.clear()
 
-        for task in self._binance_stream_tasks:
+        for task in self._price_stream_tasks:
             task.cancel()
         for task in self._chainlink_stream_tasks:
             task.cancel()
         for task in self._polymarket_stream_tasks:
             task.cancel()
-        self._binance_stream_tasks.clear()
+        self._price_stream_tasks.clear()
         self._chainlink_stream_tasks.clear()
         self._polymarket_stream_tasks.clear()
         self._polymarket_asset_map.clear()
@@ -2847,16 +2846,16 @@ class EventManager:
         # Stop any existing price streamers first.
         for s in self._chainlink_streamers:
             await s.stop()
-        for s in self._binance_streamers:
+        for s in self._price_streamers:
             await s.stop()
         for task in self._chainlink_stream_tasks:
             task.cancel()
-        for task in self._binance_stream_tasks:
+        for task in self._price_stream_tasks:
             task.cancel()
         self._chainlink_streamers.clear()
         self._chainlink_stream_tasks.clear()
-        self._binance_streamers.clear()
-        self._binance_stream_tasks.clear()
+        self._price_streamers.clear()
+        self._price_stream_tasks.clear()
 
         source = str(self._live_pricing.get("source", "chainlink")).lower()
         cl_url = str(self._live_pricing.get("chainlink_stream_url", "")).strip()
@@ -2878,19 +2877,23 @@ class EventManager:
             await self._sync_polymarket_streams()
             return
 
-        # Fallback to Binance streaming.
+        # Fallback to price source streaming.
         if symbols:
+            price_source = str(self.settings.get("price_source", "binance"))
             for symbol in symbols:
-                # Binance streamer expects market symbol format (e.g. BTCUSDT).
+                # Streamers expect market symbol format (e.g. BTCUSDT).
                 market_symbol = f"{symbol}USDT"
-                streamer = BinanceStreamer(
+                streamer = get_price_streamer(
+                    source=price_source,
                     symbol=market_symbol,
                     on_price=self._on_binance_price,
                 )
-                self._binance_streamers.append(streamer)
-                self._binance_stream_tasks.append(asyncio.create_task(streamer.start()))
+                self._price_streamers.append(streamer)
+                self._price_stream_tasks.append(asyncio.create_task(streamer.start()))
 
-            logger.info("Started Binance WS streams for symbols: %s", symbols)
+            logger.info(
+                "Started %s WS streams for symbols: %s", price_source.upper(), symbols
+            )
         await self._sync_polymarket_streams()
 
     def _live_polymarket_assets(self) -> set[str]:
@@ -3603,7 +3606,7 @@ class EventManager:
                 symbols.append(ref)
         # Use polling if no streamers exist, OR if streamer hasn't sent a tick in >10s (stall)
         streamer_stalled = (
-            (self._binance_streamers or self._chainlink_streamers)
+            (self._price_streamers or self._chainlink_streamers)
             and self._last_price_tick_at is not None
             and (
                 datetime.now(tz=timezone.utc) - self._last_price_tick_at
@@ -3611,7 +3614,7 @@ class EventManager:
             > 10
         )
         use_polling_prices = (
-            not self._binance_streamers and not self._chainlink_streamers
+            not self._price_streamers and not self._chainlink_streamers
         ) or streamer_stalled
         if streamer_stalled:
             now_check = datetime.now(tz=timezone.utc)
@@ -3626,12 +3629,13 @@ class EventManager:
         elif self._streamer_stall_logged_at is not None:
             logger.info("Price streamer recovered — resuming WS ticks")
             self._streamer_stall_logged_at = None
+        price_source = str(self.settings.get("price_source", "binance"))
+        _fetch_prices = get_price_fetcher(price_source)
+        _fetch_price = get_single_price_fetcher(price_source)
         market_symbols = [f"{s}USDT" for s in symbols]
-        prices_by_symbol = (
-            fetch_binance_prices(market_symbols) if use_polling_prices else {}
-        )
+        prices_by_symbol = _fetch_prices(market_symbols) if use_polling_prices else {}
 
-        # 1) Fast path every tick: update Binance current_price for all events.
+        # 1) Fast path every tick: update current_price for all events.
         for event_id in event_ids:
             event_dict = self.events[event_id]
             ecfg = self._live_event_configs.get(event_id)
@@ -3648,7 +3652,7 @@ class EventManager:
             if market_symbol and use_polling_prices:
                 lp = prices_by_symbol.get(market_symbol)
                 if lp is None:
-                    lp = fetch_binance_price(market_symbol)
+                    lp = _fetch_price(market_symbol)
                 if lp:
                     old = event_dict.get("current_price", 0)
                     event_dict["current_price"] = lp
