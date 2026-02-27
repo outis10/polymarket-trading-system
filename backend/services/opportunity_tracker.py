@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import logging
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -110,11 +111,33 @@ class OpportunityTracker:
 
     @staticmethod
     def _ensure_csv(path: str, headers: list[str]) -> None:
-        if os.path.exists(path):
+        """Create CSV with header if missing, or prepend header if file exists without one."""
+        header_line = ",".join(headers) + "\n"
+
+        if not os.path.exists(path):
+            with open(path, "w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=headers)
+                writer.writeheader()
             return
+
+        # File exists — check if first line is already the correct header.
+        with open(path, "r", newline="") as f:
+            first_line = f.readline()
+
+        if first_line.strip() == ",".join(headers):
+            return  # Header already present and correct.
+
+        # Header missing or wrong — prepend it, preserving all existing data.
+        logging.getLogger(__name__).warning(
+            "CSV %s missing header — prepending. First line was: %s",
+            path,
+            first_line.strip()[:80],
+        )
+        with open(path, "r", newline="") as f:
+            existing = f.read()
         with open(path, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=headers)
-            writer.writeheader()
+            f.write(header_line)
+            f.write(existing)
 
     @staticmethod
     def _to_float(value: Any) -> float | None:
