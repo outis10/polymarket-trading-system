@@ -60,6 +60,11 @@ _BOT_ORDERS_FIELDNAMES = [
     "spread_at_send",
     "spread_pct_at_send",
     "fill_price_real",
+    "slippage_pct",
+    "filled_notional_usd_real",
+    "filled_shares_real",
+    "fill_count",
+    "fills_detail_json",
     "edge_at_fill_pct",
     "kelly_pct",
     "bankroll_usd",
@@ -227,12 +232,68 @@ def _extract_fill_price_from_result(result: Any) -> float | None:
             if nested_price is not None:
                 return nested_price
 
-    # 4) Last resort: plain "price" from result payload.
+    # 4) Polymarket FAK: derive avg price from makingAmount / takingAmount.
+    #    makingAmount = USD spent, takingAmount = shares received.
+    making = _as_float(result.get("makingAmount"))
+    taking = _as_float(result.get("takingAmount"))
+    if making and taking and making > 0 and taking > 0:
+        return making / taking
+
+    # 5) Last resort: plain "price" from result payload.
     plain_price = _as_float(result.get("price"))
     if plain_price is not None and plain_price > 0:
         return plain_price
 
     return None
+
+
+def _extract_fills_detail(result: Any) -> tuple[int, float, float, str]:
+    """
+    Extract fill instrumentation from a CLOB order result.
+    Returns (fill_count, filled_notional_usd_real, filled_shares_real, fills_detail_json).
+
+    Polymarket FAK response fields:
+      makingAmount = USD spent (what we pay)   ← notional real
+      takingAmount = shares received            ← shares real
+    When a fills list is present, values are computed from individual fills.
+    """
+    if result is None:
+        return 0, 0.0, 0.0, ""
+    if not isinstance(result, dict):
+        obj_dict = getattr(result, "__dict__", None)
+        result = obj_dict if isinstance(obj_dict, dict) else {}
+
+    fills = result.get("fills")
+    if not isinstance(fills, list) or not fills:
+        making = _as_float(result.get("makingAmount"))
+        taking = _as_float(result.get("takingAmount"))
+        real_notional = making if making and making > 0 else 0.0
+        real_shares = taking if taking and taking > 0 else 0.0
+        return 0, real_notional, real_shares, ""
+
+    fill_count = len(fills)
+    total_notional = 0.0
+    total_shares = 0.0
+    detail: list[dict] = []
+    for f in fills:
+        if not isinstance(f, dict):
+            continue
+        p = _as_float(
+            f.get("price") or f.get("fill_price") or f.get("executed_price")
+        )
+        s = _as_float(
+            f.get("size")
+            or f.get("shares")
+            or f.get("quantity")
+            or f.get("filled_size")
+        )
+        if p and s and p > 0 and s > 0:
+            total_notional += p * s
+            total_shares += s
+            detail.append({"price": round(p, 6), "size": round(s, 6)})
+
+    fills_json = json.dumps(detail) if detail else ""
+    return fill_count, round(total_notional, 6), round(total_shares, 6), fills_json
 
 
 def _ensure_paper_trades_csv() -> None:
@@ -3316,6 +3377,16 @@ class EventManager:
                     or str(result)[:16]
                 )
                 fill_price_real = _extract_fill_price_from_result(result)
+                fill_count, filled_notional_usd_real, filled_shares_real, fills_detail_json = (
+                    _extract_fills_detail(result)
+                )
+                slippage_pct = (
+                    (fill_price_real - ask_price) / ask_price * 100.0
+                    if isinstance(fill_price_real, float)
+                    and fill_price_real > 0
+                    and ask_price > 0
+                    else None
+                )
                 edge_at_fill_pct = (
                     (quant_prob - fill_price_real) * 100.0
                     if isinstance(fill_price_real, float) and fill_price_real > 0
@@ -3367,6 +3438,17 @@ class EventManager:
                         "fill_price_real": round(fill_price_real, 6)
                         if isinstance(fill_price_real, float)
                         else "",
+                        "slippage_pct": round(slippage_pct, 4)
+                        if isinstance(slippage_pct, float)
+                        else "",
+                        "filled_notional_usd_real": round(filled_notional_usd_real, 4)
+                        if filled_notional_usd_real > 0
+                        else "",
+                        "filled_shares_real": round(filled_shares_real, 6)
+                        if filled_shares_real > 0
+                        else "",
+                        "fill_count": fill_count if fill_count > 0 else "",
+                        "fills_detail_json": fills_detail_json,
                         "edge_at_fill_pct": round(edge_at_fill_pct, 4)
                         if isinstance(edge_at_fill_pct, float)
                         else "",

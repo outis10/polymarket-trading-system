@@ -121,6 +121,11 @@ interface RawBotOrder {
     spread_at_send?: string;
     spread_pct_at_send?: string;
     fill_price_real?: string;
+    slippage_pct?: string;
+    filled_notional_usd_real?: string;
+    filled_shares_real?: string;
+    fill_count?: string;
+    fills_detail_json?: string;
     edge_at_fill_pct?: string;
     kelly_pct?: string;
     bankroll_usd?: string;
@@ -867,7 +872,10 @@ export default function OpportunitiesDashboard() {
             const actual = outcomeByEvent.get(eventId);
             if (!actual) continue;
             const side = String(row.side || "").toLowerCase();
-            const stake = asNumber(row.notional_usd);
+            const stake =
+                asNumber(row.filled_notional_usd_real) > 0
+                    ? asNumber(row.filled_notional_usd_real)
+                    : asNumber(row.notional_usd);
             const q =
                 asNumber(row.fill_price_real) > 0
                     ? asNumber(row.fill_price_real)
@@ -1660,12 +1668,13 @@ export default function OpportunitiesDashboard() {
                             <th>Prob UP</th>
                             <th>Prob Side</th>
                             <th>Market Prob</th>
-                            <th>Stake $</th>
+                            <th>Stake $ (real)</th>
                             <th>Shares</th>
                             <th>QE</th>
                             <th>Side</th>
                             <th>Diff vs PTB</th>
                             <th>Spread %</th>
+                            <th>Slippage %</th>
                             <th>WON</th>
                             <th>PnL</th>
                             <th>Status</th>
@@ -1719,10 +1728,11 @@ export default function OpportunitiesDashboard() {
                                             {asNumber(row.price).toFixed(4)}
                                         </td>
                                         <td>
-                                            $
-                                            {asNumber(row.notional_usd).toFixed(
-                                                2,
-                                            )}
+                                            {asNumber(
+                                                row.filled_notional_usd_real,
+                                            ) > 0
+                                                ? `$${asNumber(row.filled_notional_usd_real).toFixed(2)}`
+                                                : `$${asNumber(row.notional_usd).toFixed(2)}~`}
                                         </td>
                                         <td>
                                             {asNumber(row.shares).toFixed(4)}
@@ -1753,6 +1763,12 @@ export default function OpportunitiesDashboard() {
                                                           row.spread_pct_at_send,
                                                       ) * 100
                                                   ).toFixed(2)}%`
+                                                : "n/a"}
+                                        </td>
+                                        <td>
+                                            {row.slippage_pct !== undefined &&
+                                            row.slippage_pct !== ""
+                                                ? `${asNumber(row.slippage_pct).toFixed(4)}%`
                                                 : "n/a"}
                                         </td>
                                         <td>
