@@ -2599,8 +2599,12 @@ class EventManager:
                 if isinstance(event_config.get("settings", {}), dict)
                 else None
             )
-            if isinstance(configured_ptb, (int, float)) and float(configured_ptb) > 0:
-                event_dict["price_to_beat"] = float(configured_ptb)
+            try:
+                configured_ptb_f = float(configured_ptb)
+            except (TypeError, ValueError):
+                configured_ptb_f = 0.0
+            if configured_ptb_f > 0:
+                event_dict["price_to_beat"] = configured_ptb_f
                 event_dict["price_to_beat_source"] = (
                     "gamma" if str(event_config.get("slug", "")).strip() else "config"
                 )
