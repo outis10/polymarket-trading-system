@@ -6,7 +6,7 @@
     "bot_enforce_timeframe_filter": true,
     "bot_global_min_seconds_between_orders": 4,
     "bot_max_buys_per_event_side": 2,
-    "bot_max_event_exposure_pct": 8,
+    "bot_max_event_exposure_pct": 3,
     "bot_max_ticker_exposure_pct": 10,
     "bot_min_seconds_before_end": 15,
     "bot_order_notional_cap_usd": 7,
@@ -30,7 +30,7 @@
     "kelly_live_bankroll_usd": 100,
     "kelly_max_bet_pct": 25,
     "kelly_max_event_exposure_pct": 25,
-    "kelly_min_edge_pct": 4,
+    "kelly_min_edge_pct": 7,
     "kelly_paper_bankroll_usd": 1000,
     "late_quant_gate_edge_vs_ask_enabled": false,
     "late_quant_gate_min_diff_pct": 0,
@@ -53,12 +53,13 @@
     "paper_current_bankroll_usd": 2523.628478,
     "pm_min_notional_usd": 1,
     "pm_min_shares": 5,
+    "price_source": "binance",
     "quant_gate_edge_vs_ask_enabled": true,
     "quant_gate_enabled": true,
     "quant_gate_max_price_c": 90,
     "quant_gate_min_diff_pct": 0,
-    "quant_gate_min_edge_pct": 4,
-    "quant_gate_min_edge_vs_ask_pct": 4,
+    "quant_gate_min_edge_pct": 7,
+    "quant_gate_min_edge_vs_ask_pct": 7,
     "quant_gate_min_price_c": 10,
     "quant_gate_min_prob": 0,
     "quant_gate_min_sample": 30,
@@ -71,5 +72,5 @@
     "timeframe_filter": "5m",
     "trading_mode": "bot"
   },
-  "updated_at_utc": "2026-02-27T00:01:06.833148+00:00"
+  "updated_at_utc": "2026-02-28T00:00:41.021110+00:00"
 }

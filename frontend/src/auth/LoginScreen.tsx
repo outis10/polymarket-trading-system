@@ -28,7 +28,7 @@ export default function LoginScreen({ onSuccess }: LoginScreenProps) {
         <div className="login-screen">
             <div className="login-card">
                 <div className="login-logo">⚡</div>
-                <h1 className="login-title">Polymarket Bot</h1>
+                <h1 className="login-title">Kalitron Edge</h1>
                 <form className="login-form" onSubmit={handleSubmit}>
                     <input
                         className={`login-input${error ? " login-input-error" : ""}`}

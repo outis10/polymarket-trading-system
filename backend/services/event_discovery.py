@@ -13,6 +13,7 @@ import requests
 logger = logging.getLogger(__name__)
 
 GAMMA_API = "https://gamma-api.polymarket.com/events"
+GAMMA_MARKETS_API = "https://gamma-api.polymarket.com/markets"
 
 SYMBOL_HINTS: dict[str, tuple[str, ...]] = {
     "BTC": ("bitcoin", "btc"),
@@ -229,6 +230,63 @@ def _extract_window_from_slug(
     return timeframe_minutes, start_as_end, end_as_end
 
 
+def _load_markets_fallback_by_slug(
+    *,
+    symbols: set[str],
+    now: datetime,
+    horizon: datetime,
+) -> dict[str, dict[str, Any]]:
+    """Best-effort fallback index from Gamma /markets keyed by slug."""
+    out: dict[str, dict[str, Any]] = {}
+    limit = 500
+    offset = 0
+    pages = 0
+    max_pages = 6
+
+    while pages < max_pages:
+        params = {
+            "active": "true",
+            "closed": "false",
+            "archived": "false",
+            "limit": limit,
+            "offset": offset,
+            "ascending": "true",
+            "order": "endDate",
+        }
+        resp = requests.get(GAMMA_MARKETS_API, params=params, timeout=20)
+        resp.raise_for_status()
+        payload = resp.json()
+        if not isinstance(payload, list) or not payload:
+            break
+
+        for market in payload:
+            if not isinstance(market, dict):
+                continue
+            slug = str(market.get("slug") or "").strip()
+            if not slug:
+                continue
+            question = str(market.get("question") or "")
+            symbol = _detect_symbol(question, symbols) or _detect_symbol(slug, symbols)
+            if not symbol:
+                continue
+            if not _symbol_matches_text(
+                symbol, question, slug, market.get("description", "")
+            ):
+                continue
+            end_dt = _parse_iso_utc(market.get("endDateIso") or market.get("endDate"))
+            if end_dt and (end_dt < now or end_dt > horizon):
+                continue
+            out[slug] = market
+
+        if len(payload) < limit:
+            break
+        offset += limit
+        pages += 1
+
+    logger.info("Gamma markets fallback index loaded: %d slugs", len(out))
+    return out
+
+
 def discover_live_events(config: dict[str, Any]) -> list[dict[str, Any]]:
     """
     Discover active crypto events from Gamma and convert to events.yaml schema.
@@ -255,6 +313,7 @@ def discover_live_events(config: dict[str, Any]) -> list[dict[str, Any]]:
     horizon = now + timedelta(days=lookahead_days)
     discovered: list[dict[str, Any]] = []
     seen_conditions: set[str] = set()
+    markets_fallback_by_slug: dict[str, dict[str, Any]] | None = None
 
     limit = 200
     offset = 0
@@ -365,17 +424,71 @@ def discover_live_events(config: dict[str, Any]) -> list[dict[str, Any]]:
                 if timeframe_minutes is None:
                     continue
 
-                condition_id = str(market.get("conditionId") or "").strip()
+                condition_id_raw = str(market.get("conditionId") or "").strip()
+                axis_price_raw = _parse_float(market.get("xAxisValue"))
+                condition_id = condition_id_raw
+                axis_price = axis_price_raw
+                token_ids = _parse_json_list(market.get("clobTokenIds"))
+                fallback_market: dict[str, Any] | None = None
+
+                if (
+                    not condition_id or axis_price is None or len(token_ids) < 2
+                ) and market_slug:
+                    if markets_fallback_by_slug is None:
+                        try:
+                            markets_fallback_by_slug = _load_markets_fallback_by_slug(
+                                symbols=symbols, now=now, horizon=horizon
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "Could not load Gamma markets fallback: %s", exc
+                            )
+                            markets_fallback_by_slug = {}
+                    fallback_market = markets_fallback_by_slug.get(market_slug)
+                    if fallback_market:
+                        if not condition_id:
+                            condition_id = str(
+                                fallback_market.get("conditionId") or ""
+                            ).strip()
+                        if axis_price is None:
+                            axis_price = _parse_float(fallback_market.get("xAxisValue"))
+                        if len(token_ids) < 2:
+                            token_ids = _parse_json_list(
+                                fallback_market.get("clobTokenIds")
+                            )
+
                 if not condition_id or condition_id in seen_conditions:
                     continue
-
-                token_ids = _parse_json_list(market.get("clobTokenIds"))
                 if len(token_ids) < 2:
                     continue
 
                 desc_short = description.split(".")[0].strip() or question
                 desc_short = re.sub(r"\s+", " ", desc_short)[:140]
-                axis_price = _parse_float(market.get("xAxisValue"))
+                resolution_source = str(
+                    market.get("resolutionSource")
+                    or (fallback_market or {}).get("resolutionSource")
+                    or ""
+                )
+                axis_from = (
+                    "events"
+                    if axis_price_raw is not None
+                    else ("markets_fallback" if axis_price is not None else "missing")
+                )
+                cid_from = (
+                    "events"
+                    if condition_id_raw
+                    else ("markets_fallback" if condition_id else "missing")
+                )
+                logger.info(
+                    "Gamma resolve market slug=%s symbol=%s tf=%sm cid=%s(%s) axis=%s(%s)",
+                    market_slug,
+                    market_symbol,
+                    timeframe_minutes,
+                    "yes" if condition_id else "no",
+                    cid_from,
+                    "yes" if axis_price is not None else "no",
+                    axis_from,
+                )
 
                 discovered.append(
                     {
@@ -388,7 +501,7 @@ def discover_live_events(config: dict[str, Any]) -> list[dict[str, Any]]:
                             "yes": str(token_ids[0]),
                             "no": str(token_ids[1]),
                         },
-                        "resolution_source": str(market.get("resolutionSource") or ""),
+                        "resolution_source": resolution_source,
                         "event_start_time": (
                             start_dt.isoformat().replace("+00:00", "Z")
                             if start_dt

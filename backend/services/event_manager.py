@@ -1496,6 +1496,12 @@ class EventManager:
                 )
                 return result
 
+        # Hard block when ask price is only a proxy (mid fallback). This keeps
+        # execution/analytics from using synthetic spread context as actionable.
+        if bool(ask_is_proxy):
+            result["reason"] = "no_ask_price"
+            return result
+
         max_price_c = float(self.settings.get("quant_gate_max_price_c", 90.0))
         min_price_c = float(self.settings.get("quant_gate_min_price_c", 10.0))
         ask_price_c = ask_price * 100.0
