@@ -1573,6 +1573,55 @@ class EventManager:
                 if bool(self.settings.get("bot_paper_mode", False))
                 else self._get_live_manual_bankroll_usd()
             )
+        # Respect remaining exposure budget by clipping size to remnant.
+        if bool(self.settings.get("bot_risk_enabled", True)):
+            base_bankroll_guard = max(1.0, float(guard_bankroll or 0.0))
+            event_cap_usd = (
+                base_bankroll_guard
+                * max(0.0, float(self.settings.get("bot_max_event_exposure_pct", 15.0)))
+                / 100.0
+            )
+            ticker_cap_usd = (
+                base_bankroll_guard
+                * max(
+                    0.0, float(self.settings.get("bot_max_ticker_exposure_pct", 25.0))
+                )
+                / 100.0
+            )
+            start_day = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+            self._order_guard_records = self._clean_old_order_records(
+                self._order_guard_records, now_utc
+            )
+            ticker = self._extract_event_ticker(event_id, event_dict)
+            event_spend = sum(
+                float(r.get("notional_usd", 0.0))
+                for r in self._order_guard_records
+                if r.get("event_id") == event_id and r.get("at_utc") >= start_day
+            )
+            ticker_spend = sum(
+                float(r.get("notional_usd", 0.0))
+                for r in self._order_guard_records
+                if r.get("ticker") == ticker and r.get("at_utc") >= start_day
+            )
+            remaining_event = event_cap_usd - event_spend
+            remaining_ticker = ticker_cap_usd - ticker_spend
+            if remaining_event <= 0:
+                result["reason"] = "event_exposure_cap_reached"
+                return result
+            if remaining_ticker <= 0:
+                result["reason"] = "ticker_exposure_cap_reached"
+                return result
+            capped_notional = min(notional_usd, remaining_event, remaining_ticker)
+            if capped_notional <= 0:
+                result["reason"] = "event_exposure_cap_reached"
+                return result
+            if capped_notional < notional_usd:
+                notional_usd = capped_notional
+                stake_usd = capped_notional
+                shares = stake_usd / ask_price
+                result["stake_usd"] = stake_usd
+                result["shares"] = shares
+                result["notional_usd"] = notional_usd
         allowed, guard_reason = self.validate_order_risk_guards(
             event_id=event_id,
             event=event_dict,
@@ -2058,7 +2107,6 @@ class EventManager:
         if hard_order_cap > 0:
             if notional_usd > hard_order_cap:
                 return False, f"order_notional_above_cap_{hard_order_cap:g}"
-            return True, ""
 
         base_bankroll = (
             float(bankroll_usd)

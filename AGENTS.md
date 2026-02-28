@@ -933,3 +933,12 @@ Implementar modulo Kelly configurable desde Settings:
 - Defaults actuales (constantes backend):
   - `fee_pct = 0.0`
   - `slippage_buffer_pct = 1.0%`
+
+## Git pull sin perder runtime settings
+
+- Si se va a hacer `git pull` y se quiere conservar el estado local de runtime:
+  1. `git stash push -m "tmp-runtime" config/runtime_settings.json`
+  2. `git pull`
+  3. `git stash pop`
+- Nota:
+  - el path correcto es `config/runtime_settings.json` (no `config/config/...`).
