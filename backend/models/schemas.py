@@ -165,7 +165,8 @@ class SettingsData(BaseModel):
     bot_cooldown_seconds_per_event_side: int = 60
     bot_global_min_seconds_between_orders: int = 2
     bot_max_event_exposure_pct: float = 15.0
-    bot_max_ticker_exposure_pct: float = 25.0
+    bot_drawdown_enabled: bool = True
+    bot_drawdown_stop_pct: float = 50.0
     bot_order_notional_cap_usd: float = 5.0
     bot_paper_mode: bool = False
     pm_min_shares: float = 5.0

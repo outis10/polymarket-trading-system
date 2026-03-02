@@ -250,6 +250,7 @@ class PolymarketClient:
         token_id: str,
         side: str,
         amount_usd: float,
+        hint_price: float = 0.0,
     ) -> Optional[Dict[str, Any]]:
         """
         Place a Fill-and-Kill (FAK) market order.
@@ -259,6 +260,9 @@ class PolymarketClient:
             token_id: The token ID to trade
             side: 'BUY' or 'SELL'
             amount_usd: Notional amount in USDC to spend/receive
+            hint_price: Pre-fetched best ask price. When provided, skips the internal
+                        get_order_book() call in create_market_order, reducing latency
+                        and the race-condition window with market makers.
 
         Returns:
             Order result or None if rejected
@@ -266,12 +270,14 @@ class PolymarketClient:
         try:
             self.logger.info(
                 f"Placing FAK order: {side} ${amount_usd:.2f} for token {token_id[:8]}..."
+                + (f" hint_price={hint_price}" if hint_price > 0 else "")
             )
             order_args = MarketOrderArgs(
                 token_id=token_id,
                 amount=amount_usd,
                 side=side.upper(),
                 order_type=OrderType.FAK,
+                price=hint_price if hint_price > 0 else 0,
             )
             signed_order = self.client.create_market_order(order_args)
             result = self.client.post_order(signed_order, OrderType.FAK)

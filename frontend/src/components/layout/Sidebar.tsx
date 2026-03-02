@@ -813,19 +813,34 @@ export default function Sidebar({ send }: SidebarProps) {
                     />
 
                     <label className="field-label">
-                        Max Ticker Exposure (% bankroll)
+                        Drawdown Circuit Breaker
+                    </label>
+                    <label className="toggle-label">
+                        <input
+                            type="checkbox"
+                            checked={settings.bot_drawdown_enabled ?? true}
+                            onChange={(e) =>
+                                handleKellySettingChange({
+                                    bot_drawdown_enabled: e.target.checked,
+                                })
+                            }
+                        />
+                        Enabled
+                    </label>
+                    <label className="field-label">
+                        Drawdown Stop (% of start bankroll)
                     </label>
                     <input
                         className="sidebar-number-input"
                         type="number"
-                        min={0}
+                        min={1}
                         max={100}
-                        step={0.5}
-                        value={settings.bot_max_ticker_exposure_pct ?? 25}
+                        step={1}
+                        value={settings.bot_drawdown_stop_pct ?? 50}
                         onChange={(e) =>
                             handleKellySettingChange({
-                                bot_max_ticker_exposure_pct: Number(
-                                    e.target.value || 0,
+                                bot_drawdown_stop_pct: Number(
+                                    e.target.value || 50,
                                 ),
                             })
                         }

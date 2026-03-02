@@ -2441,3 +2441,179 @@ body {
     opacity: 0.4;
     cursor: not-allowed;
 }
+
+/* ── Order Diagnostic Modal ───────────────────────────────────────────────── */
+
+.order-diag-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.75);
+    z-index: 9000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+}
+
+.order-diag-modal {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 12px;
+    max-width: 640px;
+    width: 100%;
+    max-height: 85vh;
+    overflow-y: auto;
+    padding: 20px 24px;
+    position: relative;
+}
+
+.order-diag-header {
+    margin-bottom: 16px;
+}
+
+.order-diag-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: #e6edf3;
+    margin-bottom: 6px;
+}
+
+.order-diag-meta {
+    font-size: 11px;
+    color: #8b949e;
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.order-diag-section {
+    margin-bottom: 16px;
+}
+
+.order-diag-section-title {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: #8b949e;
+    margin-bottom: 8px;
+    border-bottom: 1px solid #21262d;
+    padding-bottom: 4px;
+}
+
+.order-diag-calc-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 8px;
+    font-size: 12px;
+    padding: 3px 0;
+    color: #c9d1d9;
+    font-family: "JetBrains Mono", monospace;
+}
+
+.order-diag-calc-row .label {
+    color: #8b949e;
+    flex-shrink: 0;
+}
+
+.order-diag-calc-row .value {
+    color: #e6edf3;
+    font-weight: 600;
+    text-align: right;
+}
+
+.order-diag-guard-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    font-size: 12px;
+    padding: 4px 0;
+    font-family: "JetBrains Mono", monospace;
+    border-bottom: 1px solid #0d1117;
+}
+
+.guard-pass {
+    color: #3fb950;
+    font-weight: 700;
+    flex-shrink: 0;
+    min-width: 14px;
+}
+
+.guard-fail {
+    color: #f85149;
+    font-weight: 700;
+    flex-shrink: 0;
+    min-width: 14px;
+}
+
+.guard-highlight {
+    background: rgba(248, 81, 73, 0.07);
+    border: 1px solid rgba(248, 81, 73, 0.25);
+    border-radius: 6px;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+}
+
+.order-diag-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+}
+
+.badge-placed   { background: rgba(63, 185, 80, 0.15);  color: #3fb950; }
+.badge-no_fill  { background: rgba(210, 153, 34, 0.15); color: #d2a900; }
+.badge-failed   { background: rgba(248, 81, 73, 0.15);  color: #f85149; }
+.badge-blocked  { background: rgba(248, 81, 73, 0.15);  color: #f85149; }
+.badge-sending  { background: rgba(139, 148, 158, 0.15); color: #8b949e; }
+.badge-up       { background: rgba(63, 185, 80, 0.12);  color: #3fb950; }
+.badge-down     { background: rgba(248, 81, 73, 0.12);  color: #f85149; }
+
+.order-diag-close {
+    position: absolute;
+    top: 14px;
+    right: 16px;
+    background: none;
+    border: none;
+    color: #8b949e;
+    font-size: 20px;
+    cursor: pointer;
+    line-height: 1;
+    padding: 4px 8px;
+    border-radius: 4px;
+}
+
+.order-diag-close:hover {
+    background: #21262d;
+    color: #e6edf3;
+}
+
+.order-diag-error-box {
+    background: rgba(248, 81, 73, 0.07);
+    border: 1px solid rgba(248, 81, 73, 0.22);
+    border-radius: 6px;
+    padding: 10px;
+    font-size: 11px;
+    font-family: "JetBrains Mono", monospace;
+    color: #f85149;
+    word-break: break-all;
+    line-height: 1.5;
+}
+
+.order-diag-error-explain {
+    margin-top: 8px;
+    font-size: 12px;
+    font-family: inherit;
+    color: #8b949e;
+    line-height: 1.5;
+}
+
+.analytics-table-row-clickable:hover {
+    background: rgba(56, 139, 253, 0.06);
+    cursor: pointer;
+}
+

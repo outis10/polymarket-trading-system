@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { apiFetch } from "../../auth/apiFetch";
 import { useEventsStore } from "../../stores/useEventsStore";
+import OrderDiagnosticModal, {
+    type DiagnosticTarget,
+    type RawBotOrderFull,
+    type RawBlockedFull,
+} from "./OrderDiagnosticModal";
 import EquityDrawdownChart, {
     EquityDrawdownPoint,
 } from "./EquityDrawdownChart";
@@ -51,15 +56,8 @@ interface RawSignalResponse {
     rows: RawSignal[];
 }
 
-interface RawBlocked {
-    blocked_id: string;
-    detected_at_utc: string;
-    event_id: string;
-    ticker: string;
-    timeframe_minutes: string;
+interface RawBlocked extends RawBlockedFull {
     side: "up" | "down";
-    blocked_reason: string;
-    estimated_stake_usd: string;
 }
 
 interface RawBlockedResponse {
@@ -254,6 +252,8 @@ export default function OpportunitiesDashboard() {
     );
     const [pipelineError, setPipelineError] = useState("");
     const [resettingLiveBaseline, setResettingLiveBaseline] = useState(false);
+    const [diagnosticTarget, setDiagnosticTarget] =
+        useState<DiagnosticTarget | null>(null);
 
     const loadData = async () => {
         setLoading(true);
@@ -925,7 +925,9 @@ export default function OpportunitiesDashboard() {
             (r) => String(r.status).toLowerCase() === "placed",
         ).length;
         const failed = filteredBotOrderRows.filter(
-            (r) => String(r.status).toLowerCase() === "failed",
+            (r) =>
+                String(r.status).toLowerCase() === "failed" ||
+                String(r.status).toLowerCase() === "no_fill",
         ).length;
         const resolvedRows = filteredBotOrderRows.filter(
             (r) =>
@@ -975,6 +977,7 @@ export default function OpportunitiesDashboard() {
     }, [filteredBotOrderRows]);
 
     return (
+        <>
         <main className="analytics-page">
             <section className="analytics-controls">
                 <label>
@@ -1697,14 +1700,25 @@ export default function OpportunitiesDashboard() {
                                     row.event_outcome_real || "",
                                 ).toLowerCase();
                                 const won = String(row.won || "") === "1";
+                                const statusLower = String(
+                                    row.status,
+                                ).toLowerCase();
                                 const resolutionStatus =
-                                    String(row.status).toLowerCase() ===
-                                    "failed"
+                                    statusLower === "failed"
                                         ? "failed"
-                                        : row.resolution_status || "pending";
+                                        : statusLower === "no_fill"
+                                          ? "no_fill"
+                                          : row.resolution_status || "pending";
                                 return (
                                     <tr
                                         key={`${row.placed_at_utc}-${row.event_id}-${idx}`}
+                                        className="analytics-table-row-clickable"
+                                        onClick={() =>
+                                            setDiagnosticTarget({
+                                                kind: "bot_order",
+                                                row: row as RawBotOrderFull,
+                                            })
+                                        }
                                     >
                                         <td>
                                             {row.placed_at_utc
@@ -1784,7 +1798,38 @@ export default function OpportunitiesDashboard() {
                                                 ? `$${asNumber(row.pnl_simulated).toFixed(2)}`
                                                 : "n/a"}
                                         </td>
-                                        <td>{resolutionStatus}</td>
+                                        <td
+                                            title={
+                                                (resolutionStatus === "failed" ||
+                                                    resolutionStatus ===
+                                                        "no_fill") &&
+                                                row.fills_detail_json
+                                                    ? row.fills_detail_json
+                                                    : undefined
+                                            }
+                                        >
+                                            {resolutionStatus}
+                                            {(resolutionStatus === "failed" ||
+                                                resolutionStatus ===
+                                                    "no_fill") &&
+                                                row.fills_detail_json && (
+                                                    <span
+                                                        style={{
+                                                            fontSize: "0.7em",
+                                                            opacity: 0.7,
+                                                            marginLeft: 4,
+                                                            display: "block",
+                                                        }}
+                                                    >
+                                                        {row.fills_detail_json
+                                                            .replace(
+                                                                /^error:/,
+                                                                "",
+                                                            )
+                                                            .slice(0, 80)}
+                                                    </span>
+                                                )}
+                                        </td>
                                         <td className="analytics-event-id">
                                             {row.event_id}
                                         </td>
@@ -1863,7 +1908,16 @@ export default function OpportunitiesDashboard() {
                             .reverse()
                             .slice(0, 50)
                             .map((row) => (
-                                <tr key={row.blocked_id}>
+                                <tr
+                                    key={row.blocked_id}
+                                    className="analytics-table-row-clickable"
+                                    onClick={() =>
+                                        setDiagnosticTarget({
+                                            kind: "blocked",
+                                            row: row as RawBlockedFull,
+                                        })
+                                    }
+                                >
                                     <td>
                                         {row.detected_at_utc
                                             .replace("T", " ")
@@ -1889,5 +1943,14 @@ export default function OpportunitiesDashboard() {
                 </table>
             </section>
         </main>
+
+        {diagnosticTarget && (
+            <OrderDiagnosticModal
+                target={diagnosticTarget}
+                settings={runtimeSettings as unknown as Record<string, unknown>}
+                onClose={() => setDiagnosticTarget(null)}
+            />
+        )}
+        </>
     );
 }

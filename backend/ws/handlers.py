@@ -251,9 +251,13 @@ async def websocket_events(websocket: WebSocket):
                         event_manager.settings["bot_max_event_exposure_pct"] = float(
                             settings["bot_max_event_exposure_pct"]
                         )
-                    if "bot_max_ticker_exposure_pct" in settings:
-                        event_manager.settings["bot_max_ticker_exposure_pct"] = float(
-                            settings["bot_max_ticker_exposure_pct"]
+                    if "bot_drawdown_enabled" in settings:
+                        event_manager.settings["bot_drawdown_enabled"] = bool(
+                            settings["bot_drawdown_enabled"]
+                        )
+                    if "bot_drawdown_stop_pct" in settings:
+                        event_manager.settings["bot_drawdown_stop_pct"] = float(
+                            settings["bot_drawdown_stop_pct"]
                         )
                     if "bot_order_notional_cap_usd" in settings:
                         event_manager.settings["bot_order_notional_cap_usd"] = float(

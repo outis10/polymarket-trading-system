@@ -152,18 +152,18 @@ async def place_order(order: OrderRequest):
     hard_cap_usd = max(
         0.0, float(event_manager.settings.get("bot_order_notional_cap_usd", 5.0))
     )
-    effective_shares = requested_shares
     cap_applied = False
-    # Notional cap only applies to buys — sells should exit the full position
-    if (
-        not is_sell
-        and hard_cap_usd > 0
-        and requested_notional_usd > hard_cap_usd
-        and order_price_ref > 0
-    ):
-        effective_shares = hard_cap_usd / order_price_ref
+    # Notional cap only applies to buys — sells should exit the full position.
+    # Cap is applied directly in USD (not derived from shares × ref_price) so that
+    # market orders sent as notional match exactly the cap regardless of fill price.
+    if not is_sell and hard_cap_usd > 0 and requested_notional_usd > hard_cap_usd:
+        notional_usd = hard_cap_usd
         cap_applied = True
-    notional_usd = order_price_ref * effective_shares
+    else:
+        notional_usd = requested_notional_usd
+    effective_shares = (
+        notional_usd / order_price_ref if order_price_ref > 0 else requested_shares
+    )
     bankroll_usd: float | None = None
     quant_debug = _build_quant_gate_debug(event=event, side=outcome_side)
 
@@ -362,7 +362,13 @@ async def place_order(order: OrderRequest):
             )
             result = client.place_order(token_id, side, sell_price, effective_shares)
         elif order.order_type == "market":
-            result = client.place_market_order(token_id, side, effective_shares)
+            # BUY market orders use place_fok_order (notional USD) — same as the bot
+            # auto-order path — so the cap is enforced at the exact USD amount
+            # regardless of fill price. SELL market orders stay share-based (exit full position).
+            if not is_sell:
+                result = client.place_fok_order(token_id, "BUY", notional_usd, ask_price)
+            else:
+                result = client.place_market_order(token_id, side, effective_shares)
         else:
             result = client.place_order(token_id, side, order.price, effective_shares)
 
@@ -541,19 +547,77 @@ async def get_balance():
         }
 
 
-_GAMMA_POSITIONS_URL = "https://gamma-api.polymarket.com/positions"
+_POSITIONS_URL = "https://data-api.polymarket.com/positions"
 _CLAIMABLE_CACHE: dict = {"ts": 0.0, "data": None}
 _CLAIMABLE_CACHE_TTL = 300.0  # 5 min — claimable changes only on market resolution
 
+# --- Redeem (on-chain) constants ---
+_CTF_ABI = [
+    {
+        "inputs": [
+            {"name": "collateralToken", "type": "address"},
+            {"name": "parentCollectionId", "type": "bytes32"},
+            {"name": "conditionId", "type": "bytes32"},
+            {"name": "indexSets", "type": "uint256[]"},
+        ],
+        "name": "redeemPositions",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function",
+    }
+]
+_CTF_ADDRESS = {
+    137: "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045",   # mainnet Polygon
+    80002: "0x69308FB512518e39F9b16112fA8d994F4e2Bf8bB",  # testnet Amoy
+}
+_GNOSIS_SAFE_ABI = [
+    {
+        "inputs": [],
+        "name": "nonce",
+        "outputs": [{"name": "", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [
+            {"name": "to", "type": "address"},
+            {"name": "value", "type": "uint256"},
+            {"name": "data", "type": "bytes"},
+            {"name": "operation", "type": "uint8"},
+            {"name": "safeTxGas", "type": "uint256"},
+            {"name": "baseGas", "type": "uint256"},
+            {"name": "gasPrice", "type": "uint256"},
+            {"name": "gasToken", "type": "address"},
+            {"name": "refundReceiver", "type": "address"},
+            {"name": "signatures", "type": "bytes"},
+        ],
+        "name": "execTransaction",
+        "outputs": [{"name": "success", "type": "bool"}],
+        "stateMutability": "payable",
+        "type": "function",
+    },
+]
+_COLLATERAL_ADDRESS = {
+    137: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",   # USDC PoS mainnet
+    80002: "0x9c4e1703476e875070ee25b56a58b008cfb8fa78",  # USDC testnet
+}
+_DEFAULT_RPC_URL = {
+    137: "https://rpc-mainnet.matic.quiknode.pro",
+    80002: "https://rpc-amoy.polygon.technology",
+}
+_PARENT_COLLECTION_ID = b"\x00" * 32  # root-level positions
+
 
 def _fetch_claimable_sync(wallet: str) -> dict:
-    """Query Gamma API for resolved positions with redeemable value."""
+    """Query data-api for resolved positions with redeemable value (currentValue > 0)."""
     try:
         resp = _requests.get(
-            _GAMMA_POSITIONS_URL,
-            params={"user": wallet, "sizeThreshold": "0", "limit": "500"},
+            _POSITIONS_URL,
+            params={"user": wallet},
             timeout=5,
         )
+        if resp.status_code == 404:
+            return {"claimable_usd": 0.0, "positions": [], "wallet": wallet}
         resp.raise_for_status()
         positions = resp.json()
     except Exception as e:
@@ -565,21 +629,20 @@ def _fetch_claimable_sync(wallet: str) -> dict:
     claimable_usd = 0.0
     claimable_positions = []
     for pos in positions:
-        # redeemable: market resolved and position has value (outcome won)
-        redeemable = pos.get("redeemable") or pos.get("isRedeemable") or False
-        if not redeemable:
+        if not pos.get("redeemable"):
             continue
-        size = float(pos.get("size", 0) or 0)
-        # resolved winning tokens are worth $1 each
-        value = float(pos.get("currentValue", size) or size)
+        value = float(pos.get("currentValue", 0) or 0)
         if value <= 0:
             continue
+        size = float(pos.get("size", 0) or 0)
         claimable_usd += value
         claimable_positions.append(
             {
-                "market": pos.get("market") or pos.get("conditionId", ""),
-                "title": pos.get("title") or pos.get("question", ""),
+                "condition_id": pos.get("conditionId", ""),
+                "title": pos.get("title", ""),
                 "outcome": pos.get("outcome", ""),
+                "outcome_index": int(pos.get("outcomeIndex", 0)),
+                "neg_risk": bool(pos.get("negativeRisk", False)),
                 "size": round(size, 4),
                 "value_usd": round(value, 4),
             }
@@ -617,6 +680,308 @@ async def get_claimable():
     _CLAIMABLE_CACHE["ts"] = now
     _CLAIMABLE_CACHE["data"] = result
     return result
+
+
+def _outcome_index_to_index_sets(outcome_index: int) -> list[int]:
+    """Convert outcomeIndex (0-based) to CTF indexSets (1-based bitmask)."""
+    return [1 << outcome_index]  # outcomeIndex=0 → [1], outcomeIndex=1 → [2]
+
+
+def _gnosis_exec_transaction(
+    w3,
+    private_key: str,
+    eoa_address: str,
+    safe_address: str,
+    to: str,
+    calldata: bytes,
+    chain_id: int,
+) -> str:
+    """
+    Sign and execute a transaction through a Gnosis Safe proxy.
+
+    The EOA (eoa_address) is an owner of the Safe (safe_address).  The Safe
+    will perform a CALL to `to` with `calldata`, so msg.sender seen by the
+    target contract is the Safe address (the actual token holder).
+
+    Returns the submitted tx hash as '0x...' hex string.
+    """
+    import eth_abi
+    from eth_keys import keys as eth_keys_mod
+
+    safe_cs = w3.to_checksum_address(safe_address)
+    to_cs = w3.to_checksum_address(to)
+    eoa_cs = w3.to_checksum_address(eoa_address)
+    zero_addr = "0x0000000000000000000000000000000000000000"
+
+    safe = w3.eth.contract(address=safe_cs, abi=_GNOSIS_SAFE_ABI)
+    safe_nonce = safe.functions.nonce().call()
+
+    # --- EIP-712 type hashes ---
+    domain_th = bytes(
+        w3.keccak(text="EIP712Domain(uint256 chainId,address verifyingContract)")
+    )
+    safe_tx_th = bytes(
+        w3.keccak(
+            text=(
+                "SafeTx(address to,uint256 value,bytes data,uint8 operation,"
+                "uint256 safeTxGas,uint256 baseGas,uint256 gasPrice,"
+                "address gasToken,address refundReceiver,uint256 nonce)"
+            )
+        )
+    )
+
+    # --- Domain separator ---
+    domain_sep = bytes(
+        w3.keccak(
+            eth_abi.encode(
+                ["bytes32", "uint256", "address"],
+                [domain_th, chain_id, safe_cs],
+            )
+        )
+    )
+
+    # --- Safe tx hash (all numeric fields are 0 = no refund/no gas payment) ---
+    safe_tx_hash_bytes = bytes(
+        w3.keccak(
+            eth_abi.encode(
+                [
+                    "bytes32", "address", "uint256", "bytes32", "uint8",
+                    "uint256", "uint256", "uint256", "address", "address", "uint256",
+                ],
+                [
+                    safe_tx_th,
+                    to_cs,
+                    0,                          # ETH value
+                    bytes(w3.keccak(calldata)),  # keccak256(data)
+                    0,                          # operation = CALL
+                    0,                          # safeTxGas
+                    0,                          # baseGas
+                    0,                          # gasPrice (Safe-level)
+                    zero_addr,                  # gasToken
+                    zero_addr,                  # refundReceiver
+                    safe_nonce,
+                ],
+            )
+        )
+    )
+
+    # --- Final EIP-712 hash ---
+    final_hash = bytes(w3.keccak(b"\x19\x01" + domain_sep + safe_tx_hash_bytes))
+
+    # --- Sign with EOA private key (raw ECDSA, no eth_sign prefix) ---
+    pk_bytes = bytes.fromhex(private_key.removeprefix("0x"))
+    pk = eth_keys_mod.PrivateKey(pk_bytes)
+    sig = pk.sign_msg_hash(final_hash)
+    v_val, r_val, s_val = sig.vrs
+    # Gnosis Safe expects packed r || s || v with v = recovery_id + 27
+    signature = (
+        r_val.to_bytes(32, "big")
+        + s_val.to_bytes(32, "big")
+        + bytes([v_val + 27])
+    )
+
+    # --- Build execTransaction from EOA ---
+    fn = safe.functions.execTransaction(
+        to_cs,
+        0,           # ETH value
+        calldata,
+        0,           # operation = CALL
+        0,           # safeTxGas
+        0,           # baseGas
+        0,           # gasPrice (Safe-level)
+        zero_addr,   # gasToken
+        zero_addr,   # refundReceiver
+        signature,
+    )
+    eoa_nonce = w3.eth.get_transaction_count(eoa_cs)
+    try:
+        gas = fn.estimate_gas({"from": eoa_cs})
+        gas_limit = int(gas * 1.3)
+    except Exception:
+        gas_limit = 400_000  # conservative fallback
+
+    tx = fn.build_transaction({
+        "from": eoa_cs,
+        "nonce": eoa_nonce,
+        "gas": gas_limit,
+        "gasPrice": w3.eth.gas_price,
+    })
+    signed = w3.eth.account.sign_transaction(tx, private_key=private_key)
+    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+    return "0x" + tx_hash.hex()
+
+
+def _redeem_positions_sync(
+    private_key: str,
+    wallet: str,
+    chain_id: int,
+    positions: list[dict],
+) -> list[dict]:
+    """
+    Execute redeemPositions on-chain for each position.
+
+    If `wallet` is a Gnosis Safe proxy (has contract code), we route through
+    execTransaction so the Safe itself is msg.sender (it holds the tokens).
+    If it's a plain EOA, we call the CTF contract directly.
+    """
+    try:
+        from web3 import Web3
+        from eth_account import Account
+        import eth_abi
+    except ImportError as exc:
+        return [{"error": f"Missing dependency: {exc}", "skipped": True}]
+
+    rpc_url = os.getenv("POLYGON_RPC_URL") or _DEFAULT_RPC_URL.get(
+        chain_id, "https://rpc-mainnet.matic.quiknode.pro"
+    )
+    w3 = Web3(Web3.HTTPProvider(rpc_url))
+    if not w3.is_connected():
+        return [{"error": f"Cannot connect to Polygon RPC: {rpc_url}"}]
+
+    # Derive the true EOA address from the private key
+    eoa_address = Account.from_key(private_key).address
+    safe_address = Web3.to_checksum_address(wallet)
+
+    # Detect whether wallet is a contract (Gnosis Safe proxy) or a plain EOA
+    code = w3.eth.get_code(safe_address)
+    is_safe = len(bytes(code)) > 2  # b'' or b'0x' → no code → plain EOA
+    logger.info(
+        "Redeem: wallet=%s eoa=%s is_safe=%s chain=%s",
+        safe_address, eoa_address, is_safe, chain_id,
+    )
+
+    ctf_address = Web3.to_checksum_address(_CTF_ADDRESS[chain_id])
+    collateral = Web3.to_checksum_address(_COLLATERAL_ADDRESS[chain_id])
+    contract = w3.eth.contract(address=ctf_address, abi=_CTF_ABI)
+
+    # Pre-compute redeemPositions function selector for calldata encoding
+    fn_selector = bytes(
+        w3.keccak(text="redeemPositions(address,bytes32,bytes32,uint256[])")
+    )[:4]
+
+    results = []
+    eoa_nonce = w3.eth.get_transaction_count(eoa_address)
+
+    for pos in positions:
+        condition_id_hex = pos.get("condition_id", "")
+        title = pos.get("title", "")
+
+        try:
+            raw = condition_id_hex.removeprefix("0x").zfill(64)
+            condition_id_bytes = bytes.fromhex(raw)
+            if len(condition_id_bytes) != 32:
+                raise ValueError("condition_id must be 32 bytes")
+        except Exception as e:
+            results.append({
+                "title": title, "condition_id": condition_id_hex,
+                "error": str(e), "skipped": True,
+            })
+            continue
+
+        index_sets = _outcome_index_to_index_sets(pos.get("outcome_index", 0))
+
+        try:
+            if is_safe:
+                # Encode redeemPositions calldata (ABI-encoded args after selector)
+                calldata = fn_selector + eth_abi.encode(
+                    ["address", "bytes32", "bytes32", "uint256[]"],
+                    [collateral, _PARENT_COLLECTION_ID, condition_id_bytes, index_sets],
+                )
+                tx_hash_hex = _gnosis_exec_transaction(
+                    w3, private_key, eoa_address,
+                    safe_address, ctf_address, calldata, chain_id,
+                )
+            else:
+                # Direct EOA call
+                fn = contract.functions.redeemPositions(
+                    collateral, _PARENT_COLLECTION_ID, condition_id_bytes, index_sets
+                )
+                gas_estimate = fn.estimate_gas({"from": eoa_address})
+                tx = fn.build_transaction({
+                    "from": eoa_address,
+                    "nonce": eoa_nonce,
+                    "gas": int(gas_estimate * 1.2),
+                    "gasPrice": w3.eth.gas_price,
+                })
+                signed = w3.eth.account.sign_transaction(tx, private_key=private_key)
+                raw_tx = w3.eth.send_raw_transaction(signed.raw_transaction)
+                tx_hash_hex = "0x" + raw_tx.hex()
+                eoa_nonce += 1
+
+            results.append({
+                "title": title,
+                "condition_id": condition_id_hex,
+                "outcome": pos.get("outcome", ""),
+                "value_usd": pos.get("value_usd", 0.0),
+                "tx_hash": tx_hash_hex,
+                "status": "sent",
+            })
+            logger.info("Redeem sent: %s tx=%s", title, tx_hash_hex)
+
+        except Exception as e:
+            logger.error("Redeem failed for %s: %s", condition_id_hex, e)
+            results.append({
+                "title": title,
+                "condition_id": condition_id_hex,
+                "outcome": pos.get("outcome", ""),
+                "error": str(e),
+                "status": "failed",
+            })
+
+    return results
+
+
+@router.post("/redeem")
+async def execute_redeem():
+    """Execute redeemPositions on-chain for all claimable resolved positions."""
+    if event_manager.mode == "demo":
+        return {"redeemed": [], "total_usd": 0.0, "message": "Demo mode — no on-chain tx"}
+
+    client = get_client()
+    if not client:
+        raise HTTPException(status_code=503, detail="Polymarket client unavailable")
+
+    wallet = getattr(client.config, "funder", None)
+    private_key = os.getenv("POLYMARKET_PRIVATE_KEY")
+    chain_id = int(os.getenv("CHAIN_ID", "137"))
+
+    if not wallet or not private_key:
+        raise HTTPException(
+            status_code=500,
+            detail="POLYMARKET_FUNDER or POLYMARKET_PRIVATE_KEY not configured",
+        )
+    if chain_id not in _CTF_ADDRESS:
+        raise HTTPException(status_code=400, detail=f"Unsupported chain_id: {chain_id}")
+
+    # Always fetch fresh (bypass cache) before redeeming
+    claimable = await asyncio.to_thread(_fetch_claimable_sync, wallet)
+    if claimable.get("error"):
+        raise HTTPException(status_code=502, detail=f"Gamma API error: {claimable['error']}")
+
+    positions = [p for p in claimable.get("positions", []) if p.get("condition_id")]
+    if not positions:
+        return {"redeemed": [], "summary": {"sent": 0, "failed": 0, "skipped": 0, "total_usd_sent": 0.0}, "message": "No redeemable positions found"}
+
+    results = await asyncio.to_thread(_redeem_positions_sync, private_key, wallet, chain_id, positions)
+
+    # Invalidate cache so next GET /claimable reflects updated state
+    _CLAIMABLE_CACHE["data"] = None
+    _CLAIMABLE_CACHE["ts"] = 0.0
+
+    sent = [r for r in results if r.get("status") == "sent"]
+    failed = [r for r in results if r.get("status") == "failed"]
+    skipped = [r for r in results if r.get("skipped")]
+    total_usd = sum(r.get("value_usd", 0.0) for r in sent)
+
+    return {
+        "redeemed": results,
+        "summary": {
+            "sent": len(sent),
+            "failed": len(failed),
+            "skipped": len(skipped),
+            "total_usd_sent": round(total_usd, 4),
+        },
+    }
 
 
 @router.get("/debug/client")

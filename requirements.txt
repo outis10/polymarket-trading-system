@@ -2,6 +2,7 @@
 py-clob-client  # Latest: 0.34.4 (Jan 2026)
 python-dotenv
 pyyaml
+web3  # on-chain transactions (redeem positions)
 
 # Data handling
 pandas  # Latest: 2.3.3 (Sep 2025)

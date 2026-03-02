@@ -160,6 +160,37 @@ def _append_bot_order_log(row: dict) -> None:
         writer.writerow({k: row.get(k, "") for k in _BOT_ORDERS_FIELDNAMES})
 
 
+def _update_bot_order_log_row(
+    placed_at_utc: str, event_id: str, side: str, updates: dict
+) -> None:
+    """Atomically update a 'sending' row in today's bot orders CSV with final fill data."""
+    path = _bot_orders_log_path()
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path, newline="") as f:
+            reader = csv.DictReader(f)
+            rows = list(reader)
+        for row in rows:
+            if (
+                row.get("placed_at_utc") == placed_at_utc
+                and row.get("event_id") == event_id
+                and row.get("side") == side
+                and row.get("status") == "sending"
+            ):
+                row.update(updates)
+                break
+        tmp_path = f"{path}.tmp"
+        with open(tmp_path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=_BOT_ORDERS_FIELDNAMES)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({k: row.get(k, "") for k in _BOT_ORDERS_FIELDNAMES})
+        os.replace(tmp_path, path)
+    except Exception as exc:
+        logger.warning("Could not update bot order log row: %s", exc)
+
+
 def _as_float(value: Any) -> float | None:
     try:
         if value is None:
@@ -392,7 +423,8 @@ class EventManager:
             "bot_cooldown_seconds_per_event_side": 60,
             "bot_global_min_seconds_between_orders": 2,
             "bot_max_event_exposure_pct": 15.0,
-            "bot_max_ticker_exposure_pct": 25.0,
+            "bot_drawdown_enabled": True,
+            "bot_drawdown_stop_pct": 50.0,
             "bot_order_notional_cap_usd": 5.0,
             "bot_paper_mode": False,
             "pm_min_shares": 5.0,
@@ -403,6 +435,9 @@ class EventManager:
             "bot_block_opposite_side": True,
             "bot_min_seconds_before_end": 30,
             "price_source": "binance",
+            "auto_redeem_enabled": False,
+            "auto_redeem_threshold_usd": 20.0,
+            "auto_redeem_bankroll_pct": 0.03,
         }
         self._config: dict = {}
         self._task: Optional[asyncio.Task] = None
@@ -457,10 +492,13 @@ class EventManager:
         self._order_guard_records: list[dict] = (
             self._load_order_guard_records_from_csv()
         )
+        self._last_claimable_usd: float = 0.0  # updated by auto-redeem loop
         self._last_order_at_utc: datetime | None = None
         # Bot auto-order: track previous gate state to detect disabled→enabled transitions
         self._bot_prev_gate_enabled: dict[tuple[str, str], bool] = {}
         self._bot_pending_orders: set[tuple[str, str]] = set()
+        # Cooldown after no_fill: maps key→timestamp after which retry is allowed
+        self._no_fill_cooldown_until: dict[tuple[str, str], float] = {}
         # Position tracker: fuente de verdad para shares compradas por evento
         # {event_id: {"up": {"shares": float, "avg_price": float, "token_id": str, "placed_at_utc": str}, ...}}
         self._position_tracker: dict[str, dict] = {}
@@ -497,7 +535,7 @@ class EventManager:
             with open(csv_path, newline="") as f:
                 reader = csv.DictReader(f)
                 for row in reader:
-                    if row.get("status") != "placed":
+                    if row.get("status") not in ("placed", "sending"):
                         continue
                     try:
                         at_utc = datetime.fromisoformat(row["placed_at_utc"])
@@ -1573,7 +1611,26 @@ class EventManager:
                 if bool(self.settings.get("bot_paper_mode", False))
                 else self._get_live_manual_bankroll_usd()
             )
-        # Respect remaining exposure budget by clipping size to remnant.
+        # Drawdown circuit breaker: block new orders if effective equity is too low.
+        if bool(self.settings.get("bot_risk_enabled", True)) and not bool(
+            self.settings.get("bot_paper_mode", False)
+        ):
+            if bool(self.settings.get("bot_drawdown_enabled", True)):
+                drawdown_stop_pct = float(
+                    self.settings.get("bot_drawdown_stop_pct", 50.0)
+                )
+                start_bankroll = float(
+                    self.settings.get("live_equity_start_bankroll_usd", 0.0)
+                )
+                if drawdown_stop_pct > 0 and start_bankroll > 0:
+                    current_bankroll = float(guard_bankroll or 0.0)
+                    effective_equity = current_bankroll + self._last_claimable_usd
+                    threshold = start_bankroll * (1.0 - drawdown_stop_pct / 100.0)
+                    if effective_equity < threshold:
+                        result["reason"] = "drawdown_circuit_breaker"
+                        return result
+
+        # Respect remaining event exposure budget by clipping size to remnant.
         if bool(self.settings.get("bot_risk_enabled", True)):
             base_bankroll_guard = max(1.0, float(guard_bankroll or 0.0))
             event_cap_usd = (
@@ -1581,37 +1638,20 @@ class EventManager:
                 * max(0.0, float(self.settings.get("bot_max_event_exposure_pct", 15.0)))
                 / 100.0
             )
-            ticker_cap_usd = (
-                base_bankroll_guard
-                * max(
-                    0.0, float(self.settings.get("bot_max_ticker_exposure_pct", 25.0))
-                )
-                / 100.0
-            )
             start_day = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
             self._order_guard_records = self._clean_old_order_records(
                 self._order_guard_records, now_utc
             )
-            ticker = self._extract_event_ticker(event_id, event_dict)
             event_spend = sum(
                 float(r.get("notional_usd", 0.0))
                 for r in self._order_guard_records
                 if r.get("event_id") == event_id and r.get("at_utc") >= start_day
             )
-            ticker_spend = sum(
-                float(r.get("notional_usd", 0.0))
-                for r in self._order_guard_records
-                if r.get("ticker") == ticker and r.get("at_utc") >= start_day
-            )
             remaining_event = event_cap_usd - event_spend
-            remaining_ticker = ticker_cap_usd - ticker_spend
             if remaining_event <= 0:
                 result["reason"] = "event_exposure_cap_reached"
                 return result
-            if remaining_ticker <= 0:
-                result["reason"] = "ticker_exposure_cap_reached"
-                return result
-            capped_notional = min(notional_usd, remaining_event, remaining_ticker)
+            capped_notional = min(notional_usd, remaining_event)
             if capped_notional <= 0:
                 result["reason"] = "event_exposure_cap_reached"
                 return result
@@ -2119,26 +2159,14 @@ class EventManager:
             * max(0.0, float(self.settings.get("bot_max_event_exposure_pct", 15.0)))
             / 100.0
         )
-        ticker_cap_usd = (
-            base_bankroll
-            * max(0.0, float(self.settings.get("bot_max_ticker_exposure_pct", 25.0)))
-            / 100.0
-        )
 
         event_spend = sum(
             float(r.get("notional_usd", 0.0))
             for r in self._order_guard_records
             if r.get("event_id") == event_id and r.get("at_utc") >= start_day
         )
-        ticker_spend = sum(
-            float(r.get("notional_usd", 0.0))
-            for r in self._order_guard_records
-            if r.get("ticker") == ticker and r.get("at_utc") >= start_day
-        )
         if event_spend + notional_usd > event_cap_usd:
             return False, "event_exposure_cap_reached"
-        if ticker_spend + notional_usd > ticker_cap_usd:
-            return False, "ticker_exposure_cap_reached"
 
         return True, ""
 
@@ -2155,26 +2183,36 @@ class EventManager:
         """
         Expand compact risk-guard reason codes with actionable context.
         """
-        if reason not in {"event_exposure_cap_reached", "ticker_exposure_cap_reached"}:
+        if reason not in {"event_exposure_cap_reached", "drawdown_circuit_breaker"}:
             return reason
 
-        records = self._clean_old_order_records(self._order_guard_records, now_utc)
-        start_day = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
-        ticker = self._extract_event_ticker(event_id, event)
         base_bankroll = (
             float(bankroll_usd)
             if bankroll_usd is not None and bankroll_usd > 0
             else self._get_live_manual_bankroll_usd()
         )
         base_bankroll = max(1.0, base_bankroll)
+        new_notional = max(0.0, float(notional_usd))
+
+        if reason == "drawdown_circuit_breaker":
+            start_bankroll = float(
+                self.settings.get("live_equity_start_bankroll_usd", 0.0)
+            )
+            drawdown_stop_pct = float(self.settings.get("bot_drawdown_stop_pct", 50.0))
+            effective_equity = base_bankroll + self._last_claimable_usd
+            threshold = start_bankroll * (1.0 - drawdown_stop_pct / 100.0)
+            return (
+                "drawdown_circuit_breaker "
+                f"(effective_equity=${effective_equity:.2f}, "
+                f"threshold=${threshold:.2f}, start_bankroll=${start_bankroll:.2f}, "
+                f"claimable=${self._last_claimable_usd:.2f})"
+            )
+
+        records = self._clean_old_order_records(self._order_guard_records, now_utc)
+        start_day = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
         event_cap_usd = (
             base_bankroll
             * max(0.0, float(self.settings.get("bot_max_event_exposure_pct", 15.0)))
-            / 100.0
-        )
-        ticker_cap_usd = (
-            base_bankroll
-            * max(0.0, float(self.settings.get("bot_max_ticker_exposure_pct", 25.0)))
             / 100.0
         )
         event_spend = sum(
@@ -2182,24 +2220,10 @@ class EventManager:
             for r in records
             if r.get("event_id") == event_id and r.get("at_utc") >= start_day
         )
-        ticker_spend = sum(
-            float(r.get("notional_usd", 0.0))
-            for r in records
-            if r.get("ticker") == ticker and r.get("at_utc") >= start_day
-        )
-        new_notional = max(0.0, float(notional_usd))
-
-        if reason == "event_exposure_cap_reached":
-            return (
-                "event_exposure_cap_reached "
-                f"(event_spend=${event_spend:.2f}, new_notional=${new_notional:.2f}, "
-                f"cap=${event_cap_usd:.2f}, bankroll=${base_bankroll:.2f})"
-            )
         return (
-            "ticker_exposure_cap_reached "
-            f"(ticker={ticker}, ticker_spend=${ticker_spend:.2f}, "
-            f"new_notional=${new_notional:.2f}, cap=${ticker_cap_usd:.2f}, "
-            f"bankroll=${base_bankroll:.2f})"
+            "event_exposure_cap_reached "
+            f"(event_spend=${event_spend:.2f}, new_notional=${new_notional:.2f}, "
+            f"cap=${event_cap_usd:.2f}, bankroll=${base_bankroll:.2f})"
         )
 
     def register_order_fill(
@@ -3290,8 +3314,18 @@ class EventManager:
             return
         if key in self._bot_pending_orders:
             return
+        # Cooldown: after a no_fill, wait before retrying the same signal
+        _cooldown_until = self._no_fill_cooldown_until.get(key, 0.0)
+        if _cooldown_until > 0:
+            _now_ts = datetime.now(timezone.utc).timestamp()
+            if _now_ts < _cooldown_until:
+                return
+            # Cooldown expired — clear it and allow retry
+            del self._no_fill_cooldown_until[key]
 
         self._bot_pending_orders.add(key)
+        _prelog_ts: str = ""
+        _clob_confirmed: bool = False
         try:
             client = get_client()
             if not client:
@@ -3422,9 +3456,89 @@ class EventManager:
                 ask_price,
                 shares,
             )
-            result = await asyncio.to_thread(
-                client.place_fok_order, token_id, "BUY", notional_usd
+
+            # --- Pre-log and guard registration BEFORE sending to CLOB ---
+            # If the process is killed mid-flight, the CSV and guard records
+            # already contain this order (status="sending"), preventing duplicates
+            # on the next restart.
+            _pre_log_row: dict = {
+                "placed_at_utc": now_utc.isoformat(),
+                "event_id": event_id,
+                "ticker": self._extract_event_ticker(event_id, event_dict),
+                "slot": slot_at_send if slot_at_send is not None else "",
+                "range": range_at_send or "",
+                "side": side,
+                "event_end_utc_at_send": str(event_dict.get("event_end_utc", "") or ""),
+                "token_id": token_id,
+                "shares": round(shares, 6),
+                "price": round(ask_price, 6),
+                "notional_usd": round(notional_usd, 4),
+                "order_id": "",
+                "quant_prob": round(quant_prob, 6),
+                "edge_pct": round((quant_prob - ask_price) * 100, 4),
+                "price_source_at_send": price_source_at_send,
+                "price_to_beat_at_send": round(price_to_beat_at_send, 6)
+                if isinstance(price_to_beat_at_send, float)
+                else "",
+                "current_price_at_send": round(current_price_at_send, 6)
+                if isinstance(current_price_at_send, float)
+                else "",
+                "diff_vs_ptb_at_send": round(diff_vs_ptb_at_send, 6)
+                if isinstance(diff_vs_ptb_at_send, float)
+                else "",
+                "best_bid_at_send": round(best_bid_at_send, 6)
+                if isinstance(best_bid_at_send, float)
+                else "",
+                "best_ask_at_send": round(best_ask_at_send, 6)
+                if isinstance(best_ask_at_send, float)
+                else "",
+                "mid_at_send": round(mid_at_send, 6)
+                if isinstance(mid_at_send, float)
+                else "",
+                "spread_at_send": round(spread_at_send, 6)
+                if isinstance(spread_at_send, float)
+                else "",
+                "spread_pct_at_send": round(spread_pct_at_send, 6)
+                if isinstance(spread_pct_at_send, float)
+                else "",
+                "fill_price_real": "",
+                "slippage_pct": "",
+                "filled_notional_usd_real": "",
+                "filled_shares_real": "",
+                "fill_count": "",
+                "fills_detail_json": "",
+                "edge_at_fill_pct": "",
+                "kelly_pct": round(kelly_pct * 100, 4) if kelly_pct is not None else "",
+                "bankroll_usd": round(bankroll_usd, 2)
+                if bankroll_usd is not None
+                else "",
+                "percentile_at_signal": percentile_at_signal
+                if percentile_at_signal is not None
+                else "",
+                "close_price_at_resolution": "",
+                "event_outcome_real": "",
+                "won": "",
+                "pnl_simulated": "",
+                "resolution_status": "pending",
+                "status": "sending",
+            }
+            _prelog_ts = now_utc.isoformat()
+            _clob_confirmed = False  # True once place_fok_order returns a result
+            _append_bot_order_log(_pre_log_row)
+            self.register_order_fill(
+                event_id=event_id,
+                event=event_dict,
+                outcome=side,
+                notional_usd=notional_usd,
+                now_utc=now_utc,
             )
+            # Lock gate so a re-enable in the next tick doesn't re-trigger.
+            self._bot_prev_gate_enabled[key] = True
+
+            result = await asyncio.to_thread(
+                client.place_fok_order, token_id, "BUY", notional_usd, ask_price
+            )
+            _clob_confirmed = bool(result)
 
             if result:
                 # Lazy import to avoid circular dependency; invalidate stale cache
@@ -3434,16 +3548,6 @@ class EventManager:
                     invalidate_positions_cache(event_id)
                 except Exception:
                     pass
-                self.register_order_fill(
-                    event_id=event_id,
-                    event=event_dict,
-                    outcome=side,
-                    notional_usd=notional_usd,
-                    now_utc=now_utc,
-                )
-                # Lock gate for this key so a re-enable in the next tick
-                # doesn't trigger a second order for the same event/side.
-                self._bot_prev_gate_enabled[key] = True
                 order_id = (
                     getattr(result, "id", None)
                     or getattr(result, "orderID", None)
@@ -3451,102 +3555,67 @@ class EventManager:
                     or (result.get("orderID") if isinstance(result, dict) else None)
                     or str(result)[:16]
                 )
-                fill_price_real = _extract_fill_price_from_result(result)
-                (
-                    fill_count,
-                    filled_notional_usd_real,
-                    filled_shares_real,
-                    fills_detail_json,
-                ) = _extract_fills_detail(result)
-                slippage_pct = (
-                    (fill_price_real - ask_price) / ask_price * 100.0
-                    if isinstance(fill_price_real, float)
-                    and fill_price_real > 0
-                    and ask_price > 0
-                    else None
-                )
-                edge_at_fill_pct = (
-                    (quant_prob - fill_price_real) * 100.0
-                    if isinstance(fill_price_real, float) and fill_price_real > 0
-                    else None
-                )
-                _append_bot_order_log(
-                    {
-                        "placed_at_utc": now_utc.isoformat(),
-                        "event_id": event_id,
-                        "ticker": self._extract_event_ticker(event_id, event_dict),
-                        "slot": slot_at_send if slot_at_send is not None else "",
-                        "range": range_at_send or "",
-                        "side": side,
-                        "event_end_utc_at_send": str(
-                            event_dict.get("event_end_utc", "") or ""
-                        ),
-                        "token_id": token_id,
-                        "shares": round(shares, 6),
-                        "price": round(ask_price, 6),
-                        "notional_usd": round(notional_usd, 4),
-                        "order_id": str(order_id),
-                        "quant_prob": round(quant_prob, 6),
-                        "edge_pct": round((quant_prob - ask_price) * 100, 4),
-                        "price_source_at_send": price_source_at_send,
-                        "price_to_beat_at_send": round(price_to_beat_at_send, 6)
-                        if isinstance(price_to_beat_at_send, float)
-                        else "",
-                        "current_price_at_send": round(current_price_at_send, 6)
-                        if isinstance(current_price_at_send, float)
-                        else "",
-                        "diff_vs_ptb_at_send": round(diff_vs_ptb_at_send, 6)
-                        if isinstance(diff_vs_ptb_at_send, float)
-                        else "",
-                        "best_bid_at_send": round(best_bid_at_send, 6)
-                        if isinstance(best_bid_at_send, float)
-                        else "",
-                        "best_ask_at_send": round(best_ask_at_send, 6)
-                        if isinstance(best_ask_at_send, float)
-                        else "",
-                        "mid_at_send": round(mid_at_send, 6)
-                        if isinstance(mid_at_send, float)
-                        else "",
-                        "spread_at_send": round(spread_at_send, 6)
-                        if isinstance(spread_at_send, float)
-                        else "",
-                        "spread_pct_at_send": round(spread_pct_at_send, 6)
-                        if isinstance(spread_pct_at_send, float)
-                        else "",
-                        "fill_price_real": round(fill_price_real, 6)
+                try:
+                    fill_price_real = _extract_fill_price_from_result(result)
+                    (
+                        fill_count,
+                        filled_notional_usd_real,
+                        filled_shares_real,
+                        fills_detail_json,
+                    ) = _extract_fills_detail(result)
+                    slippage_pct = (
+                        (fill_price_real - ask_price) / ask_price * 100.0
                         if isinstance(fill_price_real, float)
-                        else "",
-                        "slippage_pct": round(slippage_pct, 4)
-                        if isinstance(slippage_pct, float)
-                        else "",
-                        "filled_notional_usd_real": round(filled_notional_usd_real, 4)
-                        if filled_notional_usd_real > 0
-                        else "",
-                        "filled_shares_real": round(filled_shares_real, 6)
-                        if filled_shares_real > 0
-                        else "",
-                        "fill_count": fill_count if fill_count > 0 else "",
-                        "fills_detail_json": fills_detail_json,
-                        "edge_at_fill_pct": round(edge_at_fill_pct, 4)
-                        if isinstance(edge_at_fill_pct, float)
-                        else "",
-                        "kelly_pct": round(kelly_pct * 100, 4)
-                        if kelly_pct is not None
-                        else "",
-                        "bankroll_usd": round(bankroll_usd, 2)
-                        if bankroll_usd is not None
-                        else "",
-                        "percentile_at_signal": percentile_at_signal
-                        if percentile_at_signal is not None
-                        else "",
-                        "close_price_at_resolution": "",
-                        "event_outcome_real": "",
-                        "won": "",
-                        "pnl_simulated": "",
-                        "resolution_status": "pending",
-                        "status": "placed",
-                    }
-                )
+                        and fill_price_real > 0
+                        and ask_price > 0
+                        else None
+                    )
+                    edge_at_fill_pct = (
+                        (quant_prob - fill_price_real) * 100.0
+                        if isinstance(fill_price_real, float) and fill_price_real > 0
+                        else None
+                    )
+                    _update_bot_order_log_row(
+                        _prelog_ts,
+                        event_id,
+                        side,
+                        {
+                            "order_id": str(order_id),
+                            "fill_price_real": round(fill_price_real, 6)
+                            if isinstance(fill_price_real, float)
+                            else "",
+                            "slippage_pct": round(slippage_pct, 4)
+                            if isinstance(slippage_pct, float)
+                            else "",
+                            "filled_notional_usd_real": round(
+                                filled_notional_usd_real, 4
+                            )
+                            if filled_notional_usd_real > 0
+                            else "",
+                            "filled_shares_real": round(filled_shares_real, 6)
+                            if filled_shares_real > 0
+                            else "",
+                            "fill_count": fill_count if fill_count > 0 else "",
+                            "fills_detail_json": fills_detail_json,
+                            "edge_at_fill_pct": round(edge_at_fill_pct, 4)
+                            if isinstance(edge_at_fill_pct, float)
+                            else "",
+                            "status": "placed",
+                        },
+                    )
+                except Exception as fill_exc:
+                    # Fill extraction failed but order IS confirmed on-chain
+                    logger.warning(
+                        "Bot auto-order: could not extract fill data for %s: %s",
+                        event_id,
+                        fill_exc,
+                    )
+                    _update_bot_order_log_row(
+                        _prelog_ts,
+                        event_id,
+                        side,
+                        {"order_id": str(order_id), "status": "placed"},
+                    )
                 logger.info("Bot auto-order placed: order_id=%s", order_id)
                 self.record_position_buy(
                     event_id=event_id,
@@ -3594,71 +3663,61 @@ class EventManager:
                     event_id,
                     side,
                 )
-                _append_bot_order_log(
+                # Update the pre-logged "sending" row to reflect the failure
+                _update_bot_order_log_row(
+                    _prelog_ts,
+                    event_id,
+                    side,
                     {
-                        "placed_at_utc": now_utc.isoformat(),
-                        "event_id": event_id,
-                        "ticker": self._extract_event_ticker(event_id, event_dict),
-                        "slot": slot_at_send if slot_at_send is not None else "",
-                        "range": range_at_send or "",
-                        "side": side,
-                        "event_end_utc_at_send": str(
-                            event_dict.get("event_end_utc", "") or ""
-                        ),
-                        "token_id": token_id,
-                        "shares": round(shares, 6),
-                        "price": round(ask_price, 6),
-                        "notional_usd": round(notional_usd, 4),
-                        "order_id": "",
-                        "quant_prob": round(quant_prob, 6),
-                        "edge_pct": round((quant_prob - ask_price) * 100, 4),
-                        "price_source_at_send": price_source_at_send,
-                        "price_to_beat_at_send": round(price_to_beat_at_send, 6)
-                        if isinstance(price_to_beat_at_send, float)
-                        else "",
-                        "current_price_at_send": round(current_price_at_send, 6)
-                        if isinstance(current_price_at_send, float)
-                        else "",
-                        "diff_vs_ptb_at_send": round(diff_vs_ptb_at_send, 6)
-                        if isinstance(diff_vs_ptb_at_send, float)
-                        else "",
-                        "best_bid_at_send": round(best_bid_at_send, 6)
-                        if isinstance(best_bid_at_send, float)
-                        else "",
-                        "best_ask_at_send": round(best_ask_at_send, 6)
-                        if isinstance(best_ask_at_send, float)
-                        else "",
-                        "mid_at_send": round(mid_at_send, 6)
-                        if isinstance(mid_at_send, float)
-                        else "",
-                        "spread_at_send": round(spread_at_send, 6)
-                        if isinstance(spread_at_send, float)
-                        else "",
-                        "spread_pct_at_send": round(spread_pct_at_send, 6)
-                        if isinstance(spread_pct_at_send, float)
-                        else "",
-                        "fill_price_real": "",
-                        "edge_at_fill_pct": "",
-                        "kelly_pct": round(kelly_pct * 100, 4)
-                        if kelly_pct is not None
-                        else "",
-                        "bankroll_usd": round(bankroll_usd, 2)
-                        if bankroll_usd is not None
-                        else "",
-                        "percentile_at_signal": percentile_at_signal
-                        if percentile_at_signal is not None
-                        else "",
-                        "close_price_at_resolution": "",
-                        "event_outcome_real": "",
-                        "won": "",
-                        "pnl_simulated": "",
-                        "resolution_status": "",
                         "status": "failed",
-                    }
+                        "fills_detail_json": "error:no_result_from_clob",
+                    },
                 )
 
         except Exception as e:
             logger.error("Bot auto-order error for %s %s: %s", event_id, side, e)
+            try:
+                # If we pre-logged but never updated the row, fix it now.
+                # If CLOB already confirmed the order, mark "placed" to avoid losing it.
+                if _clob_confirmed:
+                    status = "placed"
+                    fail_info: dict = {}
+                else:
+                    err_str = str(e)
+                    # Distinguish thin-liquidity no-fill from real errors
+                    _no_liq_signals = (
+                        "no orders found to match",
+                        "no match",
+                        "no orderbook",
+                    )
+                    if any(s in err_str.lower() for s in _no_liq_signals):
+                        status = "no_fill"
+                        # Unlock gate + cooldown: retry after N secs if signal still active
+                        self._bot_prev_gate_enabled[key] = False
+                        _cooldown_secs = float(
+                            self.settings.get("bot_no_fill_cooldown_secs", 2)
+                        )
+                        self._no_fill_cooldown_until[key] = (
+                            datetime.now(timezone.utc).timestamp() + _cooldown_secs
+                        )
+                        # Remove false exposure entry — no USDC was spent
+                        self._order_guard_records = [
+                            r
+                            for r in self._order_guard_records
+                            if not (
+                                r.get("event_id") == event_id
+                                and r.get("outcome") == side
+                                and r.get("at_utc") == now_utc
+                            )
+                        ]
+                    else:
+                        status = "failed"
+                    fail_info = {"fills_detail_json": f"error:{err_str[:120]}"}
+                _update_bot_order_log_row(
+                    _prelog_ts, event_id, side, {"status": status, **fail_info}
+                )
+            except Exception:
+                pass
         finally:
             self._bot_pending_orders.discard(key)
 
