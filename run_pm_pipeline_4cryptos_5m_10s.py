@@ -65,6 +65,11 @@ def parse_args() -> argparse.Namespace:
         default="backtest_output",
         help="Output directory",
     )
+    parser.add_argument(
+        "--skip-download",
+        action="store_true",
+        help="Skip Binance klines download (reuse existing CSV files).",
+    )
     return parser.parse_args()
 
 
@@ -103,7 +108,7 @@ def main() -> None:
     for symbol in symbols:
         ticker = symbol.replace("USDT", "").lower()
         csv_1s = output_dir / f"{ticker}_1s_{args.lookback_days}d.csv"
-        xlsx_subminute = output_dir / f"{ticker}_subminute.xlsx"
+        xlsx_subminute = output_dir / f"{ticker}_subminute.csv"
         pm_ranges = output_dir / f"{ticker}_pm_5m_slot_ranges.csv"
         pm_ranges_filtered = (
             output_dir / f"{ticker}_pm_5m_slot_ranges_mincount_{args.min_count}.csv"
@@ -111,22 +116,29 @@ def main() -> None:
 
         print(f"\n=== {symbol} ({ticker}) ===")
 
-        run_cmd(
-            [
-                sys.executable,
-                "export_binance_klines.py",
-                "--symbol",
-                symbol,
-                "--interval",
-                "1s",
-                "--start",
-                start_str,
-                "--end",
-                end_str,
-                "--output",
-                str(csv_1s),
-            ]
-        )
+        if args.skip_download:
+            if not csv_1s.exists():
+                raise FileNotFoundError(
+                    f"--skip-download set but CSV not found: {csv_1s}"
+                )
+            print(f"[skip-download] Reusing {csv_1s}")
+        else:
+            run_cmd(
+                [
+                    sys.executable,
+                    "export_binance_klines.py",
+                    "--symbol",
+                    symbol,
+                    "--interval",
+                    "1s",
+                    "--start",
+                    start_str,
+                    "--end",
+                    end_str,
+                    "--output",
+                    str(csv_1s),
+                ]
+            )
 
         run_cmd(
             [

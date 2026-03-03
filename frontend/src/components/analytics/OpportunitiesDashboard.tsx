@@ -85,6 +85,10 @@ interface RawPaperTrade {
     side_taken: "up" | "down";
     event_outcome_real: "up" | "down" | "";
     pnl_simulated: string;
+    pnl_sim_adjusted?: string;
+    spread_pct_at_decision?: string;
+    friction_cost_usd?: string;
+    edge_at_fill_pct?: string;
     status: "pending" | "resolved";
 }
 
@@ -734,14 +738,24 @@ export default function OpportunitiesDashboard() {
     }, [pipelineEv]);
 
     const paperMetrics = useMemo(() => {
-        const resolved = filteredPaperRows.filter(
+        const resolvedRows = filteredPaperRows.filter(
             (r) => r.status === "resolved",
         );
-        const pending = filteredPaperRows.length - resolved.length;
-        const totalPnl = resolved.reduce(
+        const pending = filteredPaperRows.length - resolvedRows.length;
+        const wins = resolvedRows.filter(
+            (r) =>
+                String(r.event_outcome_real).toLowerCase() ===
+                String(r.side_taken).toLowerCase(),
+        ).length;
+        const losses = Math.max(0, resolvedRows.length - wins);
+        const winRate =
+            resolvedRows.length > 0 ? (wins / resolvedRows.length) * 100 : 0;
+        const totalPnl = resolvedRows.reduce(
             (acc, r) => acc + asNumber(r.pnl_simulated),
             0,
         );
+        const avgPnlPerResolved =
+            resolvedRows.length > 0 ? totalPnl / resolvedRows.length : 0;
         const avgQe = filteredPaperRows.length
             ? filteredPaperRows.reduce(
                   (acc, r) => acc + asNumber(r.QuantumEdge),
@@ -750,9 +764,13 @@ export default function OpportunitiesDashboard() {
             : 0;
         return {
             total: filteredPaperRows.length,
-            resolved: resolved.length,
+            resolved: resolvedRows.length,
             pending,
+            wins,
+            losses,
+            winRate,
             totalPnl,
+            avgPnlPerResolved,
             avgQePct: avgQe * 100,
         };
     }, [filteredPaperRows]);
@@ -1507,12 +1525,35 @@ export default function OpportunitiesDashboard() {
                         </li>
                         <li>CSV file: `backtest_output/paper_trades.csv`</li>
                         <li>
-                            Focus columns: `decision_time`, `slot`, `range`,
-                            `diff_vs_ptb_at_decision`, `prob_up`,
-                            `marketProb_at_decision`, `QuantumEdge`,
-                            `side_taken`, `event_outcome_real`, `pnl_simulated`.
+                            `PnL Sim` is raw simulated PnL; `PnL Adj`
+                            discounts spread + slippage buffer.
+                        </li>
+                        <li>
+                            `WON` and `PnL` are populated after event close
+                            (`status=resolved`); before that they show
+                            `pending` / `n/a`.
                         </li>
                     </ul>
+                </div>
+                <div className="analytics-mini-kpis">
+                    <span>Total: {paperMetrics.total}</span>
+                    <span>Resolved: {paperMetrics.resolved}</span>
+                    <span>Pending: {paperMetrics.pending}</span>
+                    <span>Wins: {paperMetrics.wins}</span>
+                    <span>Losses: {paperMetrics.losses}</span>
+                    <span>
+                        Win Rate: {paperMetrics.winRate.toFixed(2)}%
+                    </span>
+                    <span>
+                        Total PnL Sim: ${paperMetrics.totalPnl.toFixed(2)}
+                    </span>
+                    <span>
+                        Avg PnL/Resolved: $
+                        {paperMetrics.avgPnlPerResolved.toFixed(2)}
+                    </span>
+                    <span>
+                        Avg QE: {paperMetrics.avgQePct.toFixed(2)}%
+                    </span>
                 </div>
                 <table className="analytics-table">
                     <thead>
@@ -1521,7 +1562,6 @@ export default function OpportunitiesDashboard() {
                             <th>Ticker</th>
                             <th>Slot</th>
                             <th>Range</th>
-                            <th>Diff vs PTB</th>
                             <th>Prob UP</th>
                             <th>Prob Side</th>
                             <th>Market Prob</th>
@@ -1529,9 +1569,13 @@ export default function OpportunitiesDashboard() {
                             <th>Shares</th>
                             <th>QE</th>
                             <th>Side</th>
-                            <th>Outcome</th>
+                            <th>Diff vs PTB</th>
+                            <th>Spread %</th>
+                            <th>WON</th>
                             <th>PnL Sim</th>
+                            <th>PnL Adj</th>
                             <th>Status</th>
+                            <th>Event</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -1541,11 +1585,22 @@ export default function OpportunitiesDashboard() {
                             .slice(0, 50)
                             .map((row) => {
                                 const probUp = asNumber(row.prob_up);
+                                const side = String(
+                                    row.side_taken,
+                                ).toLowerCase();
                                 const probSide =
-                                    String(row.side_taken).toLowerCase() ===
-                                    "down"
-                                        ? 1 - probUp
-                                        : probUp;
+                                    side === "down" ? 1 - probUp : probUp;
+                                const outcome = String(
+                                    row.event_outcome_real || "",
+                                ).toLowerCase();
+                                const won =
+                                    row.status === "resolved" &&
+                                    outcome !== "" &&
+                                    outcome === side;
+                                const spreadPct = asNumber(
+                                    row.spread_pct_at_decision,
+                                );
+                                const pnlAdj = asNumber(row.pnl_sim_adjusted);
                                 return (
                                     <tr key={row.decision_id}>
                                         <td>
@@ -1556,15 +1611,6 @@ export default function OpportunitiesDashboard() {
                                         <td>{row.ticker}</td>
                                         <td>{row.slot || "n/a"}</td>
                                         <td>{row.range || "n/a"}</td>
-                                        <td>
-                                            {row.diff_vs_ptb_at_decision !==
-                                                undefined &&
-                                            row.diff_vs_ptb_at_decision !== ""
-                                                ? `${asNumber(
-                                                      row.diff_vs_ptb_at_decision,
-                                                  ).toFixed(2)}`
-                                                : "n/a"}
-                                        </td>
                                         <td>{probUp.toFixed(4)}</td>
                                         <td>{probSide.toFixed(4)}</td>
                                         <td>
@@ -1589,17 +1635,35 @@ export default function OpportunitiesDashboard() {
                                             ).toFixed(2)}
                                             %
                                         </td>
+                                        <td>{side.toUpperCase()}</td>
                                         <td>
-                                            {String(
-                                                row.side_taken,
-                                            ).toUpperCase()}
+                                            {row.diff_vs_ptb_at_decision !==
+                                                undefined &&
+                                            row.diff_vs_ptb_at_decision !== ""
+                                                ? asNumber(
+                                                      row.diff_vs_ptb_at_decision,
+                                                  ).toFixed(2)
+                                                : "n/a"}
                                         </td>
                                         <td>
-                                            {row.event_outcome_real
-                                                ? String(
-                                                      row.event_outcome_real,
-                                                  ).toUpperCase()
-                                                : "pending"}
+                                            {spreadPct > 0
+                                                ? `${spreadPct.toFixed(2)}%`
+                                                : "n/a"}
+                                        </td>
+                                        <td>
+                                            {row.status !== "resolved" ? (
+                                                <span className="outcome-pending">
+                                                    pending
+                                                </span>
+                                            ) : won ? (
+                                                <span className="outcome-won">
+                                                    ✓
+                                                </span>
+                                            ) : (
+                                                <span className="outcome-lost">
+                                                    ✗
+                                                </span>
+                                            )}
                                         </td>
                                         <td>
                                             $
@@ -1607,7 +1671,23 @@ export default function OpportunitiesDashboard() {
                                                 row.pnl_simulated,
                                             ).toFixed(2)}
                                         </td>
+                                        <td>
+                                            {pnlAdj !== 0
+                                                ? `$${pnlAdj.toFixed(2)}`
+                                                : "n/a"}
+                                        </td>
                                         <td>{row.status}</td>
+                                        <td
+                                            style={{
+                                                fontSize: "0.7em",
+                                                color: "var(--text-muted)",
+                                            }}
+                                        >
+                                            {row.event_id
+                                                ? row.event_id.slice(0, 8) +
+                                                  "…"
+                                                : "n/a"}
+                                        </td>
                                     </tr>
                                 );
                             })}

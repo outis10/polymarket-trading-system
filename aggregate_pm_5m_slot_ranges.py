@@ -1,18 +1,121 @@
 #!/usr/bin/env python3
 """
-Aggregate subminute frame data into 5-minute slot buckets and price-move ranges.
+Aggregate subminute frame data into 5-minute slot buckets and price-move ranges,
+segmented by time window (day_type + time_frame) defined in config/time_windows.csv.
 
 Output schema:
-  slot, inf_range, sup_range, prob_up, prob_down, count_of_klines_inside_range
+  day_type, time_frame, slot, inf_range, sup_range, prob_up, prob_down,
+  count_of_klines_inside_range
 """
 
 from __future__ import annotations
 
 import argparse
+import csv as csv_mod
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
+
+
+# ---------------------------------------------------------------------------
+# Time-window helpers
+# ---------------------------------------------------------------------------
+
+def load_time_windows(csv_path: str | Path) -> list[dict]:
+    """Load and validate time_windows.csv.
+
+    Returns a list of dicts with keys:
+      day_type, time_frame, start_hour (float), end_hour (float), zone (str)
+
+    Validations:
+    - Required columns present.
+    - All rows must share the same timezone.
+    - Per day_type: ranges cover [0, 24) without gaps or overlaps.
+    """
+    path = Path(csv_path)
+    if not path.exists():
+        raise FileNotFoundError(f"time_windows.csv not found at {path}")
+
+    required_cols = {"day_type", "time_frame", "start_hour", "end_hour", "zone"}
+    rows: list[dict] = []
+    with open(path, newline="") as f:
+        reader = csv_mod.DictReader(f)
+        if reader.fieldnames is None:
+            raise ValueError("time_windows.csv is empty or missing header")
+        missing = required_cols - set(reader.fieldnames)
+        if missing:
+            raise ValueError(f"time_windows.csv missing columns: {missing}")
+        for row in reader:
+            rows.append(
+                {
+                    "day_type": row["day_type"].strip(),
+                    "time_frame": row["time_frame"].strip(),
+                    "start_hour": float(row["start_hour"]),
+                    "end_hour": float(row["end_hour"]),
+                    "zone": row["zone"].strip(),
+                }
+            )
+
+    if not rows:
+        raise ValueError("time_windows.csv has no data rows")
+
+    # All rows must share a single timezone.
+    zones = {r["zone"] for r in rows}
+    if len(zones) > 1:
+        raise ValueError(
+            f"time_windows.csv must use a single timezone across all rows, found: {zones}"
+        )
+
+    # Validate coverage per day_type: no gaps, no overlaps, full [0, 24].
+    for day_type in ("workday", "weekend"):
+        day_rows = sorted(
+            [r for r in rows if r["day_type"] == day_type],
+            key=lambda r: r["start_hour"],
+        )
+        if not day_rows:
+            raise ValueError(f"time_windows.csv has no rows for day_type='{day_type}'")
+        if day_rows[0]["start_hour"] != 0:
+            raise ValueError(
+                f"time_windows.csv day_type='{day_type}': first window must start at 0, "
+                f"got {day_rows[0]['start_hour']}"
+            )
+        if day_rows[-1]["end_hour"] != 24:
+            raise ValueError(
+                f"time_windows.csv day_type='{day_type}': last window must end at 24, "
+                f"got {day_rows[-1]['end_hour']}"
+            )
+        for i in range(1, len(day_rows)):
+            prev_end = day_rows[i - 1]["end_hour"]
+            curr_start = day_rows[i]["start_hour"]
+            if prev_end != curr_start:
+                raise ValueError(
+                    f"time_windows.csv day_type='{day_type}': gap or overlap between "
+                    f"window {i - 1} (end={prev_end}) and window {i} (start={curr_start})"
+                )
+
+    return rows
+
+
+def classify_window(
+    dt_utc: "pd.Timestamp", windows: list[dict], tz: ZoneInfo
+) -> tuple[str, str]:
+    """Return (day_type, time_frame) for a UTC timestamp using the loaded windows."""
+    dt_local = dt_utc.astimezone(tz)
+    weekday = dt_local.weekday()  # 0=Mon … 6=Sun
+    day_type = "weekend" if weekday >= 5 else "workday"
+    # Fractional hour in local time (e.g. 13:30 → 13.5)
+    local_hour = dt_local.hour + dt_local.minute / 60 + dt_local.second / 3600
+    for row in windows:
+        if row["day_type"] != day_type:
+            continue
+        # end_hour==24 is treated as the open upper bound for the day
+        end = row["end_hour"]
+        if row["start_hour"] <= local_hour < end or (end == 24 and local_hour >= row["start_hour"]):
+            return day_type, row["time_frame"]
+    # Fallback (should never happen if windows cover [0,24])
+    return day_type, windows[-1]["time_frame"]
 
 
 def parse_args() -> argparse.Namespace:
@@ -81,6 +184,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Exclude final slot of 5m block from output (actionable pre-close).",
     )
+    parser.add_argument(
+        "--time-windows",
+        default="config/time_windows.csv",
+        help="Path to time_windows.csv defining day_type/time_frame buckets.",
+    )
     return parser.parse_args()
 
 
@@ -114,7 +222,16 @@ def main() -> None:
     if slot_seconds <= 0 or 300 % slot_seconds != 0:
         raise ValueError("--slot-seconds must be > 0 and divide 300 (5m) exactly.")
 
-    df = pd.read_excel(args.input, sheet_name=args.sheet)
+    # Load time-window definitions from CSV.
+    windows = load_time_windows(args.time_windows)
+    tz = ZoneInfo(windows[0]["zone"])
+    print(f"Time windows loaded from {args.time_windows} (zone={windows[0]['zone']})")
+
+    input_path = Path(args.input)
+    if input_path.suffix.lower() == ".csv":
+        df = pd.read_csv(input_path)
+    else:
+        df = pd.read_excel(input_path, sheet_name=args.sheet)
     validate_columns(df, prob_source=args.prob_source)
 
     df["open_time_utc"] = pd.to_datetime(df["open_time_utc"], errors="coerce", utc=True)
@@ -146,6 +263,16 @@ def main() -> None:
         df["_block_key"] = (df["_block_start"].astype("int64") // 1_000_000).astype(
             "int64"
         )
+
+    # Classify each row's 5m block into (day_type, time_frame) using _block_start UTC.
+    # We compute per unique block_key to avoid redundant conversions.
+    block_start_series = df.groupby("_block_key", sort=False)["_block_start"].first()
+    block_window: dict[int, tuple[str, str]] = {
+        int(key): classify_window(ts, windows, tz)
+        for key, ts in block_start_series.items()
+    }
+    df["day_type"] = df["_block_key"].map(lambda k: block_window[int(k)][0])
+    df["time_frame"] = df["_block_key"].map(lambda k: block_window[int(k)][1])
 
     seconds_in_block = (df["open_time_utc"] - df["_block_start"]).dt.total_seconds()
     df["slot"] = (seconds_in_block // slot_seconds).astype(int) + 1
@@ -224,13 +351,16 @@ def main() -> None:
         prob_down_col = "prob_down"
 
     grouped = (
-        df.groupby(["slot", "inf_range", "sup_range"], as_index=False)
+        df.groupby(["day_type", "time_frame", "slot", "inf_range", "sup_range"], as_index=False)
         .agg(
             prob_up=(prob_up_col, "mean"),
             prob_down=(prob_down_col, "mean"),
             count_of_klines_inside_range=("price_move", "count"),
         )
-        .sort_values(["slot", "inf_range"], ascending=[True, True])
+        .sort_values(
+            ["day_type", "time_frame", "slot", "inf_range"],
+            ascending=[True, True, True, True],
+        )
         .reset_index(drop=True)
     )
     grouped["slot"] = grouped["slot"].astype(int)

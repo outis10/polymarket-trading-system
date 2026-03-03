@@ -68,6 +68,8 @@ export interface QuantRangeHistogram {
     slot?: number;
     slot_seconds?: number;
     bucket_type?: string;
+    day_type?: string;
+    time_frame?: string;
     current_diff: number;
     total_count: number;
     current_bin_index: number | null;

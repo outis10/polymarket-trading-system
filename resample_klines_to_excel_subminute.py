@@ -187,23 +187,42 @@ def main() -> None:
     input_path = Path(args.input)
     output_path = Path(args.output)
     intervals = normalize_intervals(args.intervals)
+    is_csv_mode = output_path.suffix.lower() == ".csv"
+
+    if is_csv_mode and len(intervals) > 1:
+        raise ValueError(
+            "CSV output mode supports only one interval at a time. "
+            f"Got: {intervals}. Use a single interval or switch to .xlsx output."
+        )
 
     base = load_base_csv(input_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
-        for interval in intervals:
-            rs = resample_ohlcv(
-                base,
-                interval=interval,
-                prob_window=args.prob_window,
-                block_minutes=args.block_minutes,
-            )
-            sheet = interval_to_sheet(interval)[:31]
-            rs.to_excel(writer, sheet_name=sheet, index=False)
+    if is_csv_mode:
+        interval = intervals[0]
+        rs = resample_ohlcv(
+            base,
+            interval=interval,
+            prob_window=args.prob_window,
+            block_minutes=args.block_minutes,
+        )
+        rs.to_csv(output_path, index=False)
+        print(f"CSV created: {output_path}")
+        print(f"Rows: {len(rs)}")
+    else:
+        with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+            for interval in intervals:
+                rs = resample_ohlcv(
+                    base,
+                    interval=interval,
+                    prob_window=args.prob_window,
+                    block_minutes=args.block_minutes,
+                )
+                sheet = interval_to_sheet(interval)[:31]
+                rs.to_excel(writer, sheet_name=sheet, index=False)
 
-    print(f"Excel created: {output_path}")
-    print(f"Intervals: {', '.join(intervals)}")
+        print(f"Excel created: {output_path}")
+        print(f"Intervals: {', '.join(intervals)}")
 
 
 if __name__ == "__main__":

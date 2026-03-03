@@ -192,7 +192,14 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
             : null;
     const isSlotHistogram = quantHistogram?.bucket_type === "slot_5m";
     const histogramWindowLabel = isSlotHistogram
-        ? `slot ${quantHistogram.slot ?? "?"} (${quantHistogram.slot_seconds ?? "?"}s)`
+        ? (() => {
+              const slotPart = `slot ${quantHistogram.slot ?? "?"} (${quantHistogram.slot_seconds ?? "?"}s)`;
+              const windowPart =
+                  quantHistogram.day_type && quantHistogram.time_frame
+                      ? ` · ${quantHistogram.day_type}/${quantHistogram.time_frame}`
+                      : "";
+              return slotPart + windowPart;
+          })()
         : `m${quantHistogram?.minute ?? "?"}`;
     const quantSourceLabel =
         quantSource === "pm_5m_slot_ranges"
