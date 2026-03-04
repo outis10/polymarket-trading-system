@@ -542,3 +542,10 @@ Parámetros clave:
 Salidas:
 - CSV principal en `--output`.
 - CSV filtrado por `min-count`: por defecto `*_mincount_<N>.csv` (o ruta de `--output-filtered`).
+
+
+scp -i /ruta/a/tu.pem \
+  backtest_output/opportunities_log.csv \
+  backtest_output/opportunity_blocked.csv \
+  backtest_output/opportunity_outcomes.csv \
+  ubuntu@<EC2_HOST>:/home/ubuntu/polymarket-trading-system/backtest_output/
