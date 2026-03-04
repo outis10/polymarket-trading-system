@@ -549,3 +549,4 @@ scp -i /ruta/a/tu.pem \
   backtest_output/opportunity_blocked.csv \
   backtest_output/opportunity_outcomes.csv \
   ubuntu@<EC2_HOST>:/home/ubuntu/polymarket-trading-system/backtest_output/
+e
