@@ -123,6 +123,8 @@ interface RawBotOrder {
     spread_at_send?: string;
     spread_pct_at_send?: string;
     fill_price_real?: string;
+    filled_at_utc?: string;
+    fill_latency_ms?: string;
     slippage_pct?: string;
     filled_notional_usd_real?: string;
     filled_shares_real?: string;
@@ -863,18 +865,26 @@ export default function OpportunitiesDashboard() {
                 ? runtimeSettings.live_equity_start_bankroll_usd
                 : (runtimeSettings.kelly_live_bankroll_usd ?? 100),
         );
-        const outcomeByEvent = new Map<string, string>();
-        for (const row of rowsInWindow) {
-            const key = String(row.event_id || "").trim();
-            const actual = String(row.actual_outcome || "")
-                .trim()
-                .toLowerCase();
-            if (!key || !actual) continue;
-            outcomeByEvent.set(key, actual);
-        }
+        const startAt =
+            runtimeSettings.live_equity_start_at_utc
+                ? new Date(runtimeSettings.live_equity_start_at_utc).getTime()
+                : null;
 
         const placedOrders = filteredBotOrderRows
-            .filter((r) => String(r.status).toLowerCase() === "placed")
+            .filter((r) => {
+                if (String(r.status).toLowerCase() !== "placed") return false;
+                if (
+                    String(r.resolution_status || "").toLowerCase() !==
+                    "resolved"
+                )
+                    return false;
+                if (r.won === undefined || r.won === "") return false;
+                if (startAt !== null) {
+                    const ts = new Date(r.placed_at_utc).getTime();
+                    if (ts < startAt) return false;
+                }
+                return true;
+            })
             .slice()
             .sort(
                 (a, b) =>
@@ -886,10 +896,7 @@ export default function OpportunitiesDashboard() {
         let lastTsMs = Number.NEGATIVE_INFINITY;
         const points: TradingEquityPoint[] = [];
         for (const row of placedOrders) {
-            const eventId = String(row.event_id || "").trim();
-            const actual = outcomeByEvent.get(eventId);
-            if (!actual) continue;
-            const side = String(row.side || "").toLowerCase();
+            const won = String(row.won) === "1";
             const stake =
                 asNumber(row.filled_notional_usd_real) > 0
                     ? asNumber(row.filled_notional_usd_real)
@@ -899,7 +906,6 @@ export default function OpportunitiesDashboard() {
                     ? asNumber(row.fill_price_real)
                     : asNumber(row.price);
             if (stake <= 0 || q <= 0) continue;
-            const won = side === actual;
             const pnl = won ? stake * (1 / q - 1) : -stake;
             equity += pnl;
 
@@ -912,9 +918,9 @@ export default function OpportunitiesDashboard() {
         return points;
     }, [
         filteredBotOrderRows,
-        rowsInWindow,
         runtimeSettings.live_equity_start_bankroll_usd,
         runtimeSettings.kelly_live_bankroll_usd,
+        runtimeSettings.live_equity_start_at_utc,
     ]);
 
     const liveTradingCurveMetrics = useMemo(() => {
@@ -1558,24 +1564,24 @@ export default function OpportunitiesDashboard() {
                 <table className="analytics-table">
                     <thead>
                         <tr>
-                            <th>Decision (UTC)</th>
-                            <th>Ticker</th>
-                            <th>Slot</th>
-                            <th>Range</th>
-                            <th>Prob UP</th>
-                            <th>Prob Side</th>
-                            <th>Market Prob</th>
-                            <th>Stake $</th>
-                            <th>Shares</th>
-                            <th>QE</th>
-                            <th>Side</th>
-                            <th>Diff vs PTB</th>
-                            <th>Spread %</th>
-                            <th>WON</th>
-                            <th>PnL Sim</th>
-                            <th>PnL Adj</th>
-                            <th>Status</th>
-                            <th>Event</th>
+                            <th title="Timestamp de la decisión en UTC">Decision (UTC)</th>
+                            <th title="Activo subyacente (ej. BTC, ETH, SOL)">Ticker</th>
+                            <th title="Sub-bloque temporal dentro del evento (en 5m/10s hay 30 slots)">Slot</th>
+                            <th title="Bin de diferencia de precio vs PTB usado por el modelo quant">Range</th>
+                            <th title="Probabilidad estimada por el modelo de que el evento cierre UP">Prob Up</th>
+                            <th title="Probabilidad estimada por el modelo de que el evento cierre DOWN (= 1 − Prob Up)">Prob Down</th>
+                            <th title="Probabilidad implícita de mercado, aproximada por el precio del contrato">Market Prob</th>
+                            <th title="Monto en USD asignado a la orden (notional)">Stake $</th>
+                            <th title="Cantidad de contratos/participaciones adquiridas">Shares</th>
+                            <th title="Quantum Edge: ventaja del modelo frente al mercado en el momento de la decisión">QE</th>
+                            <th title="Dirección tomada en la orden (UP o DOWN)">Side</th>
+                            <th title="Diferencia entre precio actual del subyacente y Price To Beat (PTB)">Diff vs PTB</th>
+                            <th title="Spread relativo en porcentaje: (ask − bid) / mid × 100">Spread %</th>
+                            <th title="Resultado binario: 1 si el evento resolvió en el lado tomado, 0 si no">WON</th>
+                            <th title="PnL simulado bruto (sin ajuste de fricción)">PnL Sim</th>
+                            <th title="PnL simulado ajustado por fricción estimada (spread, slippage)">PnL Adj</th>
+                            <th title="Estado de la decisión: pending, resolved">Status</th>
+                            <th title="Identificador del evento de Polymarket">Event</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -1612,7 +1618,7 @@ export default function OpportunitiesDashboard() {
                                         <td>{row.slot || "n/a"}</td>
                                         <td>{row.range || "n/a"}</td>
                                         <td>{probUp.toFixed(4)}</td>
-                                        <td>{probSide.toFixed(4)}</td>
+                                        <td>{(1 - probUp).toFixed(4)}</td>
                                         <td>
                                             {asNumber(
                                                 row.marketProb_at_decision,
@@ -1744,24 +1750,26 @@ export default function OpportunitiesDashboard() {
                 <table className="analytics-table">
                     <thead>
                         <tr>
-                            <th>Decision (UTC)</th>
-                            <th>Ticker</th>
-                            <th>Slot</th>
-                            <th>Range</th>
-                            <th>Prob UP</th>
-                            <th>Prob Side</th>
-                            <th>Market Prob</th>
-                            <th>Stake $ (real)</th>
-                            <th>Shares</th>
-                            <th>QE</th>
-                            <th>Side</th>
-                            <th>Diff vs PTB</th>
-                            <th>Spread %</th>
-                            <th>Slippage %</th>
-                            <th>WON</th>
-                            <th>PnL</th>
-                            <th>Status</th>
-                            <th>Event</th>
+                            <th title="Timestamp de la orden en UTC">Decision (UTC)</th>
+                            <th title="Activo subyacente (ej. BTC, ETH, SOL)">Ticker</th>
+                            <th title="Sub-bloque temporal dentro del evento (en 5m/10s hay 30 slots)">Slot</th>
+                            <th title="Bin de diferencia de precio vs PTB usado por el modelo quant">Range</th>
+                            <th title="Probabilidad estimada por el modelo de que el evento cierre UP">Prob Up</th>
+                            <th title="Probabilidad estimada por el modelo de que el evento cierre DOWN (= 1 − Prob Up)">Prob Down</th>
+                            <th title="Probabilidad implícita de mercado, aproximada por el precio ask del contrato al momento del envío">Market Prob</th>
+                            <th title="Monto real en USD enviado al CLOB (notional)">Stake $ (real)</th>
+                            <th title="Cantidad de contratos/participaciones adquiridas">Shares</th>
+                            <th title="Quantum Edge: ventaja del modelo frente al mercado en el momento de envío">QE</th>
+                            <th title="ΔEdge = QE Real (edge vs fill price) − QE (edge vs ask al envío). Negativo = la ejecución erosionó el edge; positivo = fill mejor de lo esperado">ΔEdge</th>
+                            <th title="Dirección tomada en la orden (UP o DOWN)">Side</th>
+                            <th title="Diferencia entre precio actual del subyacente y Price To Beat (PTB)">Diff vs PTB</th>
+                            <th title="Spread relativo en porcentaje: (ask − bid) / mid × 100">Spread %</th>
+                            <th title="Latencia total desde envío de orden hasta recepción del fill del CLOB, en milisegundos">Latency (ms)</th>
+                            <th title="Slippage en porcentaje: (fill_price − arrival_price) / arrival_price × 100. Positivo = peor ejecución">Slippage %</th>
+                            <th title="Resultado binario: 1 si el evento resolvió en el lado tomado, 0 si no">WON</th>
+                            <th title="PnL neto de la orden (usando precio real de fill)">PnL</th>
+                            <th title="Estado de la orden: placed, no_fill, failed, resolved">Status</th>
+                            <th title="Identificador del evento de Polymarket">Event</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -1814,8 +1822,8 @@ export default function OpportunitiesDashboard() {
                                                 : "n/a"}
                                         </td>
                                         <td>
-                                            {Number.isFinite(probSide)
-                                                ? probSide.toFixed(4)
+                                            {Number.isFinite(probUp)
+                                                ? (1 - probUp).toFixed(4)
                                                 : "n/a"}
                                         </td>
                                         <td>
@@ -1833,6 +1841,33 @@ export default function OpportunitiesDashboard() {
                                         </td>
                                         <td>
                                             {asNumber(row.edge_pct).toFixed(2)}%
+                                        </td>
+                                        <td>
+                                            {row.edge_at_fill_pct !== undefined &&
+                                            row.edge_at_fill_pct !== ""
+                                                ? (() => {
+                                                      const delta =
+                                                          asNumber(
+                                                              row.edge_at_fill_pct,
+                                                          ) -
+                                                          asNumber(row.edge_pct);
+                                                      return (
+                                                          <span
+                                                              style={{
+                                                                  color:
+                                                                      delta >= 0
+                                                                          ? "#4caf50"
+                                                                          : "#f44336",
+                                                              }}
+                                                          >
+                                                              {delta >= 0
+                                                                  ? "+"
+                                                                  : ""}
+                                                              {delta.toFixed(2)}%
+                                                          </span>
+                                                      );
+                                                  })()
+                                                : "n/a"}
                                         </td>
                                         <td>
                                             {String(
@@ -1857,6 +1892,12 @@ export default function OpportunitiesDashboard() {
                                                           row.spread_pct_at_send,
                                                       ) * 100
                                                   ).toFixed(2)}%`
+                                                : "n/a"}
+                                        </td>
+                                        <td>
+                                            {row.fill_latency_ms !== undefined &&
+                                            row.fill_latency_ms !== ""
+                                                ? `${row.fill_latency_ms} ms`
                                                 : "n/a"}
                                         </td>
                                         <td>

@@ -14,7 +14,7 @@
     "bot_max_event_exposure_pct": 3,
     "bot_min_seconds_before_end": 15,
     "bot_order_notional_cap_usd": 30,
-    "bot_paper_mode": true,
+    "bot_paper_mode": false,
     "bot_risk_enabled": true,
     "chart_options": [
       "hide_probabilities_card"
@@ -45,8 +45,8 @@
     "late_window_enabled": true,
     "late_window_end": 280,
     "late_window_start": 180,
-    "live_equity_start_at_utc": "2026-02-26T23:33:16.199598+00:00",
-    "live_equity_start_bankroll_usd": 233.004905,
+    "live_equity_start_at_utc": "2026-03-04T01:50:22.799617+00:00",
+    "live_equity_start_bankroll_usd": 100,
     "mode": "live",
     "monitored_tickers": [
       "BTC"
@@ -76,5 +76,5 @@
     "timeframe_filter": "5m",
     "trading_mode": "bot"
   },
-  "updated_at_utc": "2026-03-03T18:21:32.053907+00:00"
+  "updated_at_utc": "2026-03-04T02:20:34.814697+00:00"
 }

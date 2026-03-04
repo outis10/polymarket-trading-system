@@ -64,6 +64,8 @@ _BOT_ORDERS_FIELDNAMES = [
     "spread_at_send",
     "spread_pct_at_send",
     "fill_price_real",
+    "filled_at_utc",
+    "fill_latency_ms",
     "slippage_pct",
     "filled_notional_usd_real",
     "filled_shares_real",
@@ -3723,6 +3725,7 @@ class EventManager:
             }
             _prelog_ts = now_utc.isoformat()
             _clob_confirmed = False  # True once place_fok_order returns a result
+            _send_at_utc = now_utc  # overwritten right before CLOB call
             _append_bot_order_log(_pre_log_row)
             self.register_order_fill(
                 event_id=event_id,
@@ -3734,8 +3737,13 @@ class EventManager:
             # Lock gate so a re-enable in the next tick doesn't re-trigger.
             self._bot_prev_gate_enabled[key] = True
 
+            _send_at_utc = datetime.now(tz=timezone.utc)
             result = await asyncio.to_thread(
                 client.place_fok_order, token_id, "BUY", notional_usd, ask_price
+            )
+            _filled_at_utc = datetime.now(tz=timezone.utc)
+            _fill_latency_ms = round(
+                (_filled_at_utc - _send_at_utc).total_seconds() * 1000
             )
             _clob_confirmed = bool(result)
 
@@ -3783,6 +3791,8 @@ class EventManager:
                             "fill_price_real": round(fill_price_real, 6)
                             if isinstance(fill_price_real, float)
                             else "",
+                            "filled_at_utc": _filled_at_utc.isoformat(),
+                            "fill_latency_ms": _fill_latency_ms,
                             "slippage_pct": round(slippage_pct, 4)
                             if isinstance(slippage_pct, float)
                             else "",
@@ -3813,7 +3823,12 @@ class EventManager:
                         _prelog_ts,
                         event_id,
                         side,
-                        {"order_id": str(order_id), "status": "placed"},
+                        {
+                            "order_id": str(order_id),
+                            "filled_at_utc": _filled_at_utc.isoformat(),
+                            "fill_latency_ms": _fill_latency_ms,
+                            "status": "placed",
+                        },
                     )
                 logger.info("Bot auto-order placed: order_id=%s", order_id)
                 self.record_position_buy(
@@ -3868,12 +3883,18 @@ class EventManager:
                     event_id,
                     side,
                     {
+                        "filled_at_utc": _filled_at_utc.isoformat(),
+                        "fill_latency_ms": _fill_latency_ms,
                         "status": "failed",
                         "fills_detail_json": "error:no_result_from_clob",
                     },
                 )
 
         except Exception as e:
+            _filled_at_utc = datetime.now(tz=timezone.utc)
+            _fill_latency_ms = round(
+                (_filled_at_utc - _send_at_utc).total_seconds() * 1000
+            )
             logger.error("Bot auto-order error for %s %s: %s", event_id, side, e)
             try:
                 # If we pre-logged but never updated the row, fix it now.
@@ -3913,7 +3934,15 @@ class EventManager:
                         status = "failed"
                     fail_info = {"fills_detail_json": f"error:{err_str[:120]}"}
                 _update_bot_order_log_row(
-                    _prelog_ts, event_id, side, {"status": status, **fail_info}
+                    _prelog_ts,
+                    event_id,
+                    side,
+                    {
+                        "filled_at_utc": _filled_at_utc.isoformat(),
+                        "fill_latency_ms": _fill_latency_ms,
+                        "status": status,
+                        **fail_info,
+                    }
                 )
             except Exception:
                 pass
