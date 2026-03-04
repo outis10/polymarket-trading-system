@@ -46,7 +46,7 @@ deploy-ec2:
     - rsync -az --delete frontend/dist/ "$EC2_USER@$EC2_HOST:$DEPLOY_PATH/frontend/dist/"
 
     # 3. Install/update Python dependencies
-    - ssh "$EC2_USER@$EC2_HOST" "cd $DEPLOY_PATH && pip install -q -r backend/requirements.txt"
+    - ssh "$EC2_USER@$EC2_HOST" "cd $DEPLOY_PATH && pip install -q --break-system-packages -r backend/requirements.txt"
 
     # 4. Restart backend service
     - ssh "$EC2_USER@$EC2_HOST" "sudo systemctl restart polymarket-bot"
