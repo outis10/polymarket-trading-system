@@ -541,7 +541,7 @@ Parámetros clave:
 
 Salidas:
 - CSV principal en `--output`.
-- CSV filtrado por `min-count`: por defecto `*_mincount_<N>.csv` (o ruta de `--output-filtered`).
+- CSV filtrado por `min-count`: por defecto `*_mincount_<N>.csv` (o ruta de  `--output-filtered`).
 
 
 scp -i /ruta/a/tu.pem \
