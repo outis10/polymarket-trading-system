@@ -550,6 +550,10 @@ async def get_balance():
 _POSITIONS_URL = "https://data-api.polymarket.com/positions"
 _CLAIMABLE_CACHE: dict = {"ts": 0.0, "data": None}
 _CLAIMABLE_CACHE_TTL = 300.0  # 5 min — claimable changes only on market resolution
+# condition_ids redeemed recently: {condition_id: monotonic_ts} — TTL 10 min
+# prevents re-redeeming while data-api lags behind on-chain state
+_RECENTLY_REDEEMED: dict[str, float] = {}
+_RECENTLY_REDEEMED_TTL = 600.0  # 10 min
 
 # --- Redeem (on-chain) constants ---
 _CTF_ABI = [
@@ -609,22 +613,41 @@ _PARENT_COLLECTION_ID = b"\x00" * 32  # root-level positions
 
 
 def _fetch_claimable_sync(wallet: str) -> dict:
-    """Query data-api for resolved positions with redeemable value (currentValue > 0)."""
+    """Query data-api for resolved positions with redeemable value (currentValue > 0).
+    Paginates automatically — the API returns max 100 per call by default.
+    """
+    _PAGE_SIZE = 500
+    all_positions: list = []
+    offset = 0
     try:
-        resp = _requests.get(
-            _POSITIONS_URL,
-            params={"user": wallet},
-            timeout=5,
-        )
-        if resp.status_code == 404:
-            return {"claimable_usd": 0.0, "positions": [], "wallet": wallet}
-        resp.raise_for_status()
-        positions = resp.json()
+        while True:
+            resp = _requests.get(
+                _POSITIONS_URL,
+                params={"user": wallet, "limit": _PAGE_SIZE, "offset": offset, "redeemable": "true"},
+                timeout=5,
+            )
+            if resp.status_code == 404:
+                break
+            resp.raise_for_status()
+            page = resp.json()
+            if not isinstance(page, list):
+                page = page.get("data", []) if isinstance(page, dict) else []
+            all_positions.extend(page)
+            # If we got fewer than a full page, we've reached the end
+            if len(page) < _PAGE_SIZE:
+                break
+            offset += _PAGE_SIZE
     except Exception as e:
         return {"error": str(e), "claimable_usd": None}
 
-    if not isinstance(positions, list):
-        positions = positions.get("data", []) if isinstance(positions, dict) else []
+    positions = all_positions
+
+    # Purge expired entries from the recently-redeemed cache
+    import time as _time_mod
+    _now = _time_mod.monotonic()
+    expired = [k for k, ts in _RECENTLY_REDEEMED.items() if _now - ts > _RECENTLY_REDEEMED_TTL]
+    for k in expired:
+        del _RECENTLY_REDEEMED[k]
 
     claimable_usd = 0.0
     claimable_positions = []
@@ -633,6 +656,9 @@ def _fetch_claimable_sync(wallet: str) -> dict:
             continue
         value = float(pos.get("currentValue", 0) or 0)
         if value <= 0:
+            continue
+        cid = pos.get("conditionId", "")
+        if cid and cid in _RECENTLY_REDEEMED:
             continue
         size = float(pos.get("size", 0) or 0)
         claimable_usd += value
@@ -695,6 +721,8 @@ def _gnosis_exec_transaction(
     to: str,
     calldata: bytes,
     chain_id: int,
+    eoa_nonce: int | None = None,
+    safe_nonce: int | None = None,
 ) -> str:
     """
     Sign and execute a transaction through a Gnosis Safe proxy.
@@ -714,7 +742,8 @@ def _gnosis_exec_transaction(
     zero_addr = "0x0000000000000000000000000000000000000000"
 
     safe = w3.eth.contract(address=safe_cs, abi=_GNOSIS_SAFE_ABI)
-    safe_nonce = safe.functions.nonce().call()
+    if safe_nonce is None:
+        safe_nonce = safe.functions.nonce().call()
 
     # --- EIP-712 type hashes ---
     domain_th = bytes(
@@ -793,7 +822,8 @@ def _gnosis_exec_transaction(
         zero_addr,   # refundReceiver
         signature,
     )
-    eoa_nonce = w3.eth.get_transaction_count(eoa_cs)
+    if eoa_nonce is None:
+        eoa_nonce = w3.eth.get_transaction_count(eoa_cs)
     try:
         gas = fn.estimate_gas({"from": eoa_cs})
         gas_limit = int(gas * 1.3)
@@ -861,6 +891,12 @@ def _redeem_positions_sync(
 
     results = []
     eoa_nonce = w3.eth.get_transaction_count(eoa_address)
+    safe_nonce = None
+    if is_safe:
+        safe_contract = w3.eth.contract(
+            address=w3.to_checksum_address(safe_address), abi=_GNOSIS_SAFE_ABI
+        )
+        safe_nonce = safe_contract.functions.nonce().call()
 
     for pos in positions:
         condition_id_hex = pos.get("condition_id", "")
@@ -890,7 +926,10 @@ def _redeem_positions_sync(
                 tx_hash_hex = _gnosis_exec_transaction(
                     w3, private_key, eoa_address,
                     safe_address, ctf_address, calldata, chain_id,
+                    eoa_nonce=eoa_nonce, safe_nonce=safe_nonce,
                 )
+                eoa_nonce += 1
+                safe_nonce += 1
             else:
                 # Direct EOA call
                 fn = contract.functions.redeemPositions(
@@ -917,6 +956,9 @@ def _redeem_positions_sync(
                 "status": "sent",
             })
             logger.info("Redeem sent: %s tx=%s", title, tx_hash_hex)
+            if condition_id_hex:
+                import time as _time_mod
+                _RECENTLY_REDEEMED[condition_id_hex] = _time_mod.monotonic()
 
         except Exception as e:
             logger.error("Redeem failed for %s: %s", condition_id_hex, e)

@@ -10,6 +10,7 @@ import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
+from zoneinfo import ZoneInfo
 
 from ..config import load_events_config
 from ..ws.manager import manager
@@ -63,6 +64,8 @@ _BOT_ORDERS_FIELDNAMES = [
     "spread_at_send",
     "spread_pct_at_send",
     "fill_price_real",
+    "filled_at_utc",
+    "fill_latency_ms",
     "slippage_pct",
     "filled_notional_usd_real",
     "filled_shares_real",
@@ -458,10 +461,17 @@ class EventManager:
         self._pm_ranges: dict[
             str, dict[int, list[tuple[float, float, float, float, int]]]
         ] = {}
-        # 5m slot table (e.g. 10s slots): {ticker: {slot: [(inf, sup, prob_up, prob_down, count)]}}
+        # 5m slot table with time-window segmentation:
+        # {ticker: {(day_type, time_frame): {slot: [(inf, sup, prob_up, prob_down, count)]}}}
         self._pm_5m_slot_ranges: dict[
-            str, dict[int, list[tuple[float, float, float, float, int]]]
+            str,
+            dict[tuple[str, str], dict[int, list[tuple[float, float, float, float, int]]]],
         ] = {}
+        # Max slot per ticker (cached from loaded data, e.g. 30 for 10s slots)
+        self._pm_5m_max_slot: dict[str, int] = {}
+        # Time windows config loaded from config/time_windows.csv
+        self._time_windows: list[dict] = []
+        self._time_windows_tz: ZoneInfo | None = None
         self._live_discovery: dict = {
             "enabled": False,
             "symbols": ["BTC", "ETH", "SOL", "XRP"],
@@ -699,10 +709,124 @@ class EventManager:
         )
         return table
 
+    def _load_time_windows(self) -> tuple[list[dict], ZoneInfo | None]:
+        """Load config/time_windows.csv and return (windows, ZoneInfo).
+
+        Returns ([], None) if the file is missing (treated as unconfigured).
+        Raises ValueError on invalid content.
+        """
+        csv_path = os.path.normpath(
+            os.path.join(
+                os.path.dirname(__file__),
+                "..",
+                "..",
+                "config",
+                "time_windows.csv",
+            )
+        )
+        if not os.path.exists(csv_path):
+            logger.warning("time_windows.csv not found at %s — windowed 5m model disabled", csv_path)
+            return [], None
+
+        required_cols = {"day_type", "time_frame", "start_hour", "end_hour", "zone"}
+        rows: list[dict] = []
+        with open(csv_path, newline="") as f:
+            reader = csv.DictReader(f)
+            if reader.fieldnames is None:
+                raise ValueError("time_windows.csv is empty or missing header")
+            missing = required_cols - set(reader.fieldnames)
+            if missing:
+                raise ValueError(f"time_windows.csv missing columns: {missing}")
+            for row in reader:
+                rows.append(
+                    {
+                        "day_type": row["day_type"].strip(),
+                        "time_frame": row["time_frame"].strip(),
+                        "start_hour": float(row["start_hour"]),
+                        "end_hour": float(row["end_hour"]),
+                        "zone": row["zone"].strip(),
+                    }
+                )
+
+        if not rows:
+            raise ValueError("time_windows.csv has no data rows")
+
+        zones = {r["zone"] for r in rows}
+        if len(zones) > 1:
+            raise ValueError(
+                f"time_windows.csv must use a single timezone, found: {zones}"
+            )
+
+        for day_type in ("workday", "weekend"):
+            day_rows = sorted(
+                [r for r in rows if r["day_type"] == day_type],
+                key=lambda r: r["start_hour"],
+            )
+            if not day_rows:
+                raise ValueError(f"time_windows.csv has no rows for day_type='{day_type}'")
+            if day_rows[0]["start_hour"] != 0:
+                raise ValueError(
+                    f"time_windows.csv day_type='{day_type}': first window must start at 0"
+                )
+            if day_rows[-1]["end_hour"] != 24:
+                raise ValueError(
+                    f"time_windows.csv day_type='{day_type}': last window must end at 24"
+                )
+            for i in range(1, len(day_rows)):
+                if day_rows[i - 1]["end_hour"] != day_rows[i]["start_hour"]:
+                    raise ValueError(
+                        f"time_windows.csv day_type='{day_type}': gap or overlap "
+                        f"between window {i-1} and {i}"
+                    )
+
+        tz = ZoneInfo(rows[0]["zone"])
+        logger.info("Time windows loaded: %d rows, zone=%s", len(rows), rows[0]["zone"])
+        return rows, tz
+
+    def _classify_event_window(self, event_start_utc: str) -> tuple[str, str] | None:
+        """Classify an event's start time into (day_type, time_frame).
+
+        Returns None if time_windows config is not loaded or parsing fails.
+        """
+        if not self._time_windows or self._time_windows_tz is None:
+            return None
+        try:
+            dt_utc = datetime.fromisoformat(
+                event_start_utc.replace("Z", "+00:00")
+            ).astimezone(timezone.utc)
+            dt_local = dt_utc.astimezone(self._time_windows_tz)
+        except Exception:
+            return None
+
+        weekday = dt_local.weekday()  # 0=Mon … 6=Sun
+        day_type = "weekend" if weekday >= 5 else "workday"
+        local_hour = dt_local.hour + dt_local.minute / 60 + dt_local.second / 3600
+
+        for row in self._time_windows:
+            if row["day_type"] != day_type:
+                continue
+            end = row["end_hour"]
+            if row["start_hour"] <= local_hour < end or (
+                end == 24 and local_hour >= row["start_hour"]
+            ):
+                return day_type, row["time_frame"]
+        return None
+
     def _load_pm_5m_slot_ranges(
         self,
-    ) -> dict[str, dict[int, list[tuple[float, float, float, float, int]]]]:
-        """Load and index PM quantitative table for 5m slot-based model."""
+    ) -> tuple[
+        dict[str, dict[tuple[str, str], dict[int, list[tuple[float, float, float, float, int]]]]],
+        dict[str, int],
+    ]:
+        """Load and index PM quantitative table for 5m slot-based model.
+
+        Returns (table, max_slot_per_ticker).
+        Table structure: {ticker: {(day_type, time_frame): {slot: [(inf, sup, prob_up, prob_down, count)]}}}
+
+        Requires the CSV to have day_type and time_frame columns (produced by the
+        updated pipeline). If these columns are absent the table is returned empty
+        and a warning is logged — re-run the pipeline to regenerate the CSV.
+        """
         csv_path = os.path.normpath(
             os.path.join(
                 os.path.dirname(__file__),
@@ -712,14 +836,34 @@ class EventManager:
                 "merged_pm_5m_slot_ranges_4cryptos.csv",
             )
         )
-        table: dict[str, dict[int, list[tuple[float, float, float, float, int]]]] = {}
+        table: dict[
+            str,
+            dict[tuple[str, str], dict[int, list[tuple[float, float, float, float, int]]]],
+        ] = {}
+        max_slot_map: dict[str, int] = {}
+
         if not os.path.exists(csv_path):
             logger.info("5m slot ranges CSV not found at %s (optional)", csv_path)
-            return table
+            return table, max_slot_map
+
         with open(csv_path, newline="") as f:
-            for row in csv.DictReader(f):
+            reader = csv.DictReader(f)
+            fieldnames = set(reader.fieldnames or [])
+            if "day_type" not in fieldnames or "time_frame" not in fieldnames:
+                logger.warning(
+                    "5m slot ranges CSV at %s is missing day_type/time_frame columns. "
+                    "Re-run the pipeline to regenerate with time-window support.",
+                    csv_path,
+                )
+                return table, max_slot_map
+
+            for row in reader:
                 ticker = str(row.get("ticker", "")).strip().upper()
                 if not ticker:
+                    continue
+                day_type = str(row.get("day_type", "")).strip()
+                time_frame = str(row.get("time_frame", "")).strip()
+                if not day_type or not time_frame:
                     continue
                 slot = int(row["slot"])
                 entry = (
@@ -729,25 +873,47 @@ class EventManager:
                     float(row["prob_down"]),
                     int(row["count_of_klines_inside_range"]),
                 )
-                table.setdefault(ticker, {}).setdefault(slot, []).append(entry)
+                window_key: tuple[str, str] = (day_type, time_frame)
+                (
+                    table.setdefault(ticker, {})
+                    .setdefault(window_key, {})
+                    .setdefault(slot, [])
+                    .append(entry)
+                )
+                if ticker not in max_slot_map or slot > max_slot_map[ticker]:
+                    max_slot_map[ticker] = slot
+
+        # Sort ranges within each (ticker, window, slot) by inf_range ascending.
         for ticker_data in table.values():
-            for slot_list in ticker_data.values():
-                slot_list.sort(key=lambda x: x[0])
-        loaded = sum(len(r) for td in table.values() for r in td.values())
+            for window_data in ticker_data.values():
+                for slot_list in window_data.values():
+                    slot_list.sort(key=lambda x: x[0])
+
+        loaded = sum(
+            len(ranges)
+            for td in table.values()
+            for wd in td.values()
+            for ranges in wd.values()
+        )
         logger.info(
-            "PM 5m slot ranges loaded: %d rows for tickers %s",
+            "PM 5m slot ranges loaded: %d rows, tickers=%s, windows=%s",
             loaded,
             list(table.keys()),
+            sorted({wk for td in table.values() for wk in td.keys()}),
         )
-        return table
+        return table, max_slot_map
 
     def reload_quant_ranges(self) -> dict:
         """Hot-reload both PM range tables from disk. Safe to call while running."""
         try:
             new_ranges = self._load_pm_ranges()
-            new_5m = self._load_pm_5m_slot_ranges()
+            new_5m, new_max_slot = self._load_pm_5m_slot_ranges()
+            new_windows, new_tz = self._load_time_windows()
             self._pm_ranges = new_ranges
             self._pm_5m_slot_ranges = new_5m
+            self._pm_5m_max_slot = new_max_slot
+            self._time_windows = new_windows
+            self._time_windows_tz = new_tz
             tickers_ranges = list(new_ranges.keys())
             tickers_5m = list(new_5m.keys())
             logger.info(
@@ -790,17 +956,35 @@ class EventManager:
         return None
 
     def _lookup_quant_probs_5m_slot(
-        self, ticker: str, slot: int, price_diff: float
+        self,
+        ticker: str,
+        slot: int,
+        price_diff: float,
+        event_start_utc: str | None = None,
     ) -> tuple[float, float, int] | None:
-        """Lookup 5m slot-model probabilities. Returns (prob_up, prob_down, sample_size) or None."""
+        """Lookup 5m slot-model probabilities for the event's time window.
+
+        Returns (prob_up, prob_down, sample_size) or None.
+        No fallback: if the specific (day_type, time_frame) window has no data,
+        returns None so the gate blocks on insufficient sample.
+        """
         ticker_data = self._pm_5m_slot_ranges.get(ticker)
         if not ticker_data:
             return None
-        max_slot = max(ticker_data.keys())
+
+        window = self._classify_event_window(event_start_utc or "")
+        if window is None:
+            return None
+        window_data = ticker_data.get(window)
+        if not window_data:
+            return None
+
+        max_slot = self._pm_5m_max_slot.get(ticker, 30)
         slot_key = max(1, min(max_slot, int(slot)))
-        ranges = ticker_data.get(slot_key)
+        ranges = window_data.get(slot_key)
         if not ranges:
             return None
+
         idx = bisect.bisect_right([r[0] for r in ranges], price_diff) - 1
         if idx < 0:
             # price_diff below all known ranges → clamp to first bin
@@ -872,15 +1056,27 @@ class EventManager:
         }
 
     def _build_quant_histogram_5m_slot(
-        self, ticker: str, slot: int, price_diff: float
+        self,
+        ticker: str,
+        slot: int,
+        price_diff: float,
+        event_start_utc: str | None = None,
     ) -> dict | None:
-        """Build histogram payload for current ticker/slot context (5m slot model)."""
+        """Build histogram payload for current ticker/slot/window context (5m slot model)."""
         ticker_data = self._pm_5m_slot_ranges.get(ticker)
         if not ticker_data:
             return None
-        max_slot = max(ticker_data.keys())
+
+        window = self._classify_event_window(event_start_utc or "")
+        if window is None:
+            return None
+        window_data = ticker_data.get(window)
+        if not window_data:
+            return None
+
+        max_slot = self._pm_5m_max_slot.get(ticker, 30)
         slot_key = max(1, min(max_slot, int(slot)))
-        ranges = ticker_data.get(slot_key)
+        ranges = window_data.get(slot_key)
         if not ranges:
             return None
 
@@ -919,12 +1115,15 @@ class EventManager:
 
         slot_seconds = max(1, int(300 / max_slot))
         minute_approx = max(1, min(5, int(((slot_key - 1) * slot_seconds) // 60) + 1))
+        day_type, time_frame = window
         return {
             "ticker": ticker,
             "minute": minute_approx,
             "slot": slot_key,
             "slot_seconds": slot_seconds,
             "bucket_type": "slot_5m",
+            "day_type": day_type,
+            "time_frame": time_frame,
             "current_diff": price_diff,
             "total_count": total_count,
             "current_bin_index": current_bin_index,
@@ -976,16 +1175,17 @@ class EventManager:
                 timeframe_minutes == 5 and ticker in self._pm_5m_slot_ranges
             )
             if use_5m_slot_model:
-                max_slot = max(self._pm_5m_slot_ranges[ticker].keys())
+                max_slot = self._pm_5m_max_slot.get(ticker, 30)
                 slot_seconds = max(1, int(300 / max_slot))
                 current_slot = max(
                     1, min(max_slot, int(elapsed_seconds // slot_seconds) + 1)
                 )
+                event_start_utc = event_dict.get("event_start_utc") or event_start_str
                 quant = self._lookup_quant_probs_5m_slot(
-                    ticker, current_slot, price_diff
+                    ticker, current_slot, price_diff, event_start_utc=event_start_utc
                 )
                 histogram = self._build_quant_histogram_5m_slot(
-                    ticker, current_slot, price_diff
+                    ticker, current_slot, price_diff, event_start_utc=event_start_utc
                 )
                 event_dict["quant_source"] = "pm_5m_slot_ranges"
             else:
@@ -2402,7 +2602,8 @@ class EventManager:
         self.load_config()
         self._load_runtime_settings()
         self._pm_ranges = self._load_pm_ranges()
-        self._pm_5m_slot_ranges = self._load_pm_5m_slot_ranges()
+        self._pm_5m_slot_ranges, self._pm_5m_max_slot = self._load_pm_5m_slot_ranges()
+        self._time_windows, self._time_windows_tz = self._load_time_windows()
         self._running = True
 
         # Initialize with current mode
@@ -3524,6 +3725,7 @@ class EventManager:
             }
             _prelog_ts = now_utc.isoformat()
             _clob_confirmed = False  # True once place_fok_order returns a result
+            _send_at_utc = now_utc  # overwritten right before CLOB call
             _append_bot_order_log(_pre_log_row)
             self.register_order_fill(
                 event_id=event_id,
@@ -3535,8 +3737,13 @@ class EventManager:
             # Lock gate so a re-enable in the next tick doesn't re-trigger.
             self._bot_prev_gate_enabled[key] = True
 
+            _send_at_utc = datetime.now(tz=timezone.utc)
             result = await asyncio.to_thread(
                 client.place_fok_order, token_id, "BUY", notional_usd, ask_price
+            )
+            _filled_at_utc = datetime.now(tz=timezone.utc)
+            _fill_latency_ms = round(
+                (_filled_at_utc - _send_at_utc).total_seconds() * 1000
             )
             _clob_confirmed = bool(result)
 
@@ -3584,6 +3791,8 @@ class EventManager:
                             "fill_price_real": round(fill_price_real, 6)
                             if isinstance(fill_price_real, float)
                             else "",
+                            "filled_at_utc": _filled_at_utc.isoformat(),
+                            "fill_latency_ms": _fill_latency_ms,
                             "slippage_pct": round(slippage_pct, 4)
                             if isinstance(slippage_pct, float)
                             else "",
@@ -3614,7 +3823,12 @@ class EventManager:
                         _prelog_ts,
                         event_id,
                         side,
-                        {"order_id": str(order_id), "status": "placed"},
+                        {
+                            "order_id": str(order_id),
+                            "filled_at_utc": _filled_at_utc.isoformat(),
+                            "fill_latency_ms": _fill_latency_ms,
+                            "status": "placed",
+                        },
                     )
                 logger.info("Bot auto-order placed: order_id=%s", order_id)
                 self.record_position_buy(
@@ -3669,12 +3883,18 @@ class EventManager:
                     event_id,
                     side,
                     {
+                        "filled_at_utc": _filled_at_utc.isoformat(),
+                        "fill_latency_ms": _fill_latency_ms,
                         "status": "failed",
                         "fills_detail_json": "error:no_result_from_clob",
                     },
                 )
 
         except Exception as e:
+            _filled_at_utc = datetime.now(tz=timezone.utc)
+            _fill_latency_ms = round(
+                (_filled_at_utc - _send_at_utc).total_seconds() * 1000
+            )
             logger.error("Bot auto-order error for %s %s: %s", event_id, side, e)
             try:
                 # If we pre-logged but never updated the row, fix it now.
@@ -3714,7 +3934,15 @@ class EventManager:
                         status = "failed"
                     fail_info = {"fills_detail_json": f"error:{err_str[:120]}"}
                 _update_bot_order_log_row(
-                    _prelog_ts, event_id, side, {"status": status, **fail_info}
+                    _prelog_ts,
+                    event_id,
+                    side,
+                    {
+                        "filled_at_utc": _filled_at_utc.isoformat(),
+                        "fill_latency_ms": _fill_latency_ms,
+                        "status": status,
+                        **fail_info,
+                    }
                 )
             except Exception:
                 pass
