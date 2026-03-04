@@ -55,4 +55,9 @@ deploy-ec2:
     - ssh "$EC2_USER@$EC2_HOST" "sudo nginx -s reload"
 
     # 6. Health check (run on server to avoid opening port 8000 externally)
-    - ssh "$EC2_USER@$EC2_HOST" "curl --fail --silent --show-error -H 'X-API-Key: $API_KEY' http://localhost:8000/api/events > /dev/null && echo 'Health check passed.'"
+    - |
+      ssh "$EC2_USER@$EC2_HOST" \
+        "sleep 5 && curl --fail --silent --show-error \
+         -H 'X-API-Key: $API_KEY' \
+         http://localhost:8000/api/events > /dev/null \
+         && echo 'Health check passed.'"
