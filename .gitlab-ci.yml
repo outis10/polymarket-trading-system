@@ -1,0 +1,64 @@
+stages:
+  - build
+  - deploy
+
+# ─── Stage 1: Build frontend ────────────────────────────────────────────────
+build-frontend:
+  stage: build
+  image: node:22-alpine
+  only:
+    - main
+  cache:
+    key: node-modules-$CI_COMMIT_REF_SLUG
+    paths:
+      - frontend/node_modules/
+  script:
+    - cd frontend
+    - npm ci
+    - npm run build
+  artifacts:
+    paths:
+      - frontend/dist/
+    expire_in: 1 hour
+
+# ─── Stage 2: Deploy to EC2 ─────────────────────────────────────────────────
+deploy-ec2:
+  stage: deploy
+  image: alpine:latest
+  only:
+    - main
+  needs:
+    - job: build-frontend
+      artifacts: true
+  before_script:
+    - apk add --no-cache openssh-client rsync curl
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    # EC2_SSH_KEY must be a GitLab CI "File" type variable
+    - cp "$EC2_SSH_KEY" ~/.ssh/id_rsa
+    - chmod 600 ~/.ssh/id_rsa
+    - ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
+  script:
+    # 1. Pull latest code on server
+    - ssh "$EC2_USER@$EC2_HOST" "cd $DEPLOY_PATH && git pull origin main"
+
+    # 2. Sync built frontend (--delete removes stale files)
+    - rsync -az --delete frontend/dist/ "$EC2_USER@$EC2_HOST:$DEPLOY_PATH/frontend/dist/"
+
+    # 3. Install/update Python dependencies
+    - ssh "$EC2_USER@$EC2_HOST" "cd $DEPLOY_PATH && pip install -q -r backend/requirements.txt"
+
+    # 4. Restart backend service
+    - ssh "$EC2_USER@$EC2_HOST" "sudo systemctl restart polymarket-bot"
+
+    # 5. Reload Nginx
+    - ssh "$EC2_USER@$EC2_HOST" "sudo nginx -s reload"
+
+    # 6. Health check
+    - |
+      echo "Running health check..."
+      sleep 5
+      curl --fail --silent --show-error \
+        -H "X-API-Key: $API_KEY" \
+        "http://$EC2_HOST:8000/api/events" > /dev/null
+      echo "Health check passed."
