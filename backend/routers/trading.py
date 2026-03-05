@@ -550,10 +550,11 @@ async def get_balance():
 _POSITIONS_URL = "https://data-api.polymarket.com/positions"
 _CLAIMABLE_CACHE: dict = {"ts": 0.0, "data": None}
 _CLAIMABLE_CACHE_TTL = 300.0  # 5 min — claimable changes only on market resolution
-# condition_ids redeemed recently: {condition_id: monotonic_ts} — TTL 10 min
-# prevents re-redeeming while data-api lags behind on-chain state
+# condition_ids redeemed recently: {condition_id: monotonic_ts} — TTL 3 min
+# prevents re-redeeming while data-api lags behind on-chain state;
+# short TTL so failed on-chain txs (reverts) can be retried quickly
 _RECENTLY_REDEEMED: dict[str, float] = {}
-_RECENTLY_REDEEMED_TTL = 600.0  # 10 min
+_RECENTLY_REDEEMED_TTL = 180.0  # 3 min
 
 # --- Redeem (on-chain) constants ---
 _CTF_ABI = [
@@ -616,7 +617,7 @@ def _fetch_claimable_sync(wallet: str) -> dict:
     """Query data-api for resolved positions with redeemable value (currentValue > 0).
     Paginates automatically — the API returns max 100 per call by default.
     """
-    _PAGE_SIZE = 500
+    _PAGE_SIZE = 100  # data-api caps at 100 regardless of limit param
     all_positions: list = []
     offset = 0
     try:
@@ -633,8 +634,8 @@ def _fetch_claimable_sync(wallet: str) -> dict:
             if not isinstance(page, list):
                 page = page.get("data", []) if isinstance(page, dict) else []
             all_positions.extend(page)
-            # If we got fewer than a full page, we've reached the end
-            if len(page) < _PAGE_SIZE:
+            # Stop when we get an empty page or fewer results than requested
+            if not page or len(page) < _PAGE_SIZE:
                 break
             offset += _PAGE_SIZE
     except Exception as e:

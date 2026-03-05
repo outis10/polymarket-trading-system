@@ -441,6 +441,7 @@ class EventManager:
             "auto_redeem_enabled": False,
             "auto_redeem_threshold_usd": 20.0,
             "auto_redeem_bankroll_pct": 0.03,
+            "fak_price_tolerance": 0.02,  # extra cents added to ask to survive book movement during latency
         }
         self._config: dict = {}
         self._task: Optional[asyncio.Task] = None
@@ -3737,9 +3738,14 @@ class EventManager:
             # Lock gate so a re-enable in the next tick doesn't re-trigger.
             self._bot_prev_gate_enabled[key] = True
 
+            # Apply price tolerance to survive order book movement during network latency.
+            # ask_price is used for edge/slippage calculations; order_price is what hits the CLOB.
+            _fak_tolerance = float(self.settings.get("fak_price_tolerance", 0.02))
+            order_price = min(round(ask_price + _fak_tolerance, 4), 0.99)
+
             _send_at_utc = datetime.now(tz=timezone.utc)
             result = await asyncio.to_thread(
-                client.place_fok_order, token_id, "BUY", notional_usd, ask_price
+                client.place_fok_order, token_id, "BUY", notional_usd, order_price
             )
             _filled_at_utc = datetime.now(tz=timezone.utc)
             _fill_latency_ms = round(

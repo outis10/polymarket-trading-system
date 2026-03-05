@@ -1,5 +1,6 @@
 """REST endpoints for events data."""
 
+import asyncio
 import csv
 import io
 import re
@@ -209,92 +210,58 @@ async def get_opportunity_stats(days: int = 7, ticker: str | None = None):
     }
 
 
-@router.get("/stats/opportunities/raw")
-async def get_opportunity_outcomes_raw(limit: int = 200, ticker: str | None = None):
-    """Return raw recent opportunity outcomes rows."""
-    path = event_manager._opportunity_tracker.outcomes_path
+def _read_csv_rows(path, ticker: str | None, limit: int) -> list[dict]:
+    """Read CSV file in a thread — keeps the event loop free."""
     rows: list[dict] = []
     try:
         with open(path, newline="") as f:
             for row in csv.DictReader(f):
-                row_ticker = str(row.get("ticker", "")).upper()
-                if ticker and row_ticker != ticker.upper():
+                if ticker and str(row.get("ticker", "")).upper() != ticker:
                     continue
                 rows.append(row)
     except FileNotFoundError:
-        rows = []
-    rows = rows[-max(1, int(limit)) :]
-    return {
-        "count": len(rows),
-        "ticker_filter": ticker.upper() if ticker else None,
-        "rows": rows,
-    }
+        pass
+    return rows[-max(1, limit):]
+
+
+@router.get("/stats/opportunities/raw")
+async def get_opportunity_outcomes_raw(limit: int = 200, ticker: str | None = None):
+    """Return raw recent opportunity outcomes rows."""
+    t = ticker.upper() if ticker else None
+    rows = await asyncio.to_thread(
+        _read_csv_rows, event_manager._opportunity_tracker.outcomes_path, t, limit
+    )
+    return {"count": len(rows), "ticker_filter": t, "rows": rows}
 
 
 @router.get("/stats/opportunities/signals/raw")
 async def get_opportunity_signals_raw(limit: int = 200, ticker: str | None = None):
     """Return raw recent registered opportunity signals rows."""
-    path = event_manager._opportunity_tracker.signals_path
-    rows: list[dict] = []
-    try:
-        with open(path, newline="") as f:
-            for row in csv.DictReader(f):
-                row_ticker = str(row.get("ticker", "")).upper()
-                if ticker and row_ticker != ticker.upper():
-                    continue
-                rows.append(row)
-    except FileNotFoundError:
-        rows = []
-    rows = rows[-max(1, int(limit)) :]
-    return {
-        "count": len(rows),
-        "ticker_filter": ticker.upper() if ticker else None,
-        "rows": rows,
-    }
+    t = ticker.upper() if ticker else None
+    rows = await asyncio.to_thread(
+        _read_csv_rows, event_manager._opportunity_tracker.signals_path, t, limit
+    )
+    return {"count": len(rows), "ticker_filter": t, "rows": rows}
 
 
 @router.get("/stats/opportunities/blocked/raw")
 async def get_opportunity_blocked_raw(limit: int = 200, ticker: str | None = None):
     """Return raw recent blocked opportunity rows (not registered as signals)."""
-    path = event_manager._opportunity_tracker.blocked_path
-    rows: list[dict] = []
-    try:
-        with open(path, newline="") as f:
-            for row in csv.DictReader(f):
-                row_ticker = str(row.get("ticker", "")).upper()
-                if ticker and row_ticker != ticker.upper():
-                    continue
-                rows.append(row)
-    except FileNotFoundError:
-        rows = []
-    rows = rows[-max(1, int(limit)) :]
-    return {
-        "count": len(rows),
-        "ticker_filter": ticker.upper() if ticker else None,
-        "rows": rows,
-    }
+    t = ticker.upper() if ticker else None
+    rows = await asyncio.to_thread(
+        _read_csv_rows, event_manager._opportunity_tracker.blocked_path, t, limit
+    )
+    return {"count": len(rows), "ticker_filter": t, "rows": rows}
 
 
 @router.get("/stats/paper/raw")
 async def get_paper_trades_raw(limit: int = 500, ticker: str | None = None):
     """Return raw paper-mode decision rows."""
-    path = Path("backtest_output/paper_trades.csv")
-    rows: list[dict[str, Any]] = []
-    try:
-        with open(path, newline="") as f:
-            for row in csv.DictReader(f):
-                row_ticker = str(row.get("ticker", "")).upper()
-                if ticker and row_ticker != ticker.upper():
-                    continue
-                rows.append(row)
-    except FileNotFoundError:
-        rows = []
-    rows = rows[-max(1, int(limit)) :]
-    return {
-        "count": len(rows),
-        "ticker_filter": ticker.upper() if ticker else None,
-        "rows": rows,
-    }
+    t = ticker.upper() if ticker else None
+    rows = await asyncio.to_thread(
+        _read_csv_rows, Path("backtest_output/paper_trades.csv"), t, limit
+    )
+    return {"count": len(rows), "ticker_filter": t, "rows": rows}
 
 
 @router.get("/stats/bot-orders/raw")
@@ -305,8 +272,8 @@ async def get_bot_orders_raw(
 ):
     """Return raw bot order rows from daily bot_orders_YYYY-MM-DD.csv logs."""
     ticker_filter = ticker.upper() if ticker else None
-    rows = _load_bot_orders_rows(ticker=ticker, days=days)
-    rows = rows[-max(1, int(limit)) :]
+    rows = await asyncio.to_thread(lambda: _load_bot_orders_rows(ticker=ticker, days=days))
+    rows = rows[-max(1, int(limit)):]
     return {
         "count": len(rows),
         "ticker_filter": ticker_filter,

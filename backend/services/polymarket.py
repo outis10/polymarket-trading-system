@@ -121,8 +121,12 @@ def fetch_real_prices(client, event_config: dict) -> Optional[dict]:
         if not yes_token or not no_token:
             return None
 
-        yes_ob = client.get_order_book(yes_token)
-        no_ob = client.get_order_book(no_token)
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=2) as _pool:
+            _f_yes = _pool.submit(client.get_order_book, yes_token)
+            _f_no  = _pool.submit(client.get_order_book, no_token)
+            yes_ob = _f_yes.result()
+            no_ob  = _f_no.result()
         if not yes_ob or not no_ob:
             return None
 

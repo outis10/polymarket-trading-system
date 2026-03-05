@@ -379,7 +379,7 @@ export default function OpportunitiesDashboard() {
 
     useEffect(() => {
         loadData();
-        const interval = setInterval(loadData, 15000);
+        const interval = setInterval(loadData, 60000); // 60s — analytics doesn't need 15s refresh
         return () => clearInterval(interval);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [days]);
