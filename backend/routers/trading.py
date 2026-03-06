@@ -709,6 +709,70 @@ async def get_claimable():
     return result
 
 
+_POSITIONS_VALUE_CACHE: dict = {"ts": 0.0, "data": None}
+_POSITIONS_VALUE_CACHE_TTL = 60.0  # 1 min
+
+
+def _fetch_positions_value_sync(wallet: str) -> dict:
+    """Query data-api for all open positions and sum their current market value."""
+    _PAGE_SIZE = 100
+    all_positions: list = []
+    offset = 0
+    try:
+        while True:
+            resp = _requests.get(
+                _POSITIONS_URL,
+                params={"user": wallet, "limit": _PAGE_SIZE, "offset": offset},
+                timeout=5,
+            )
+            if resp.status_code == 404:
+                break
+            resp.raise_for_status()
+            page = resp.json()
+            if not isinstance(page, list):
+                page = page.get("data", []) if isinstance(page, dict) else []
+            all_positions.extend(page)
+            if not page or len(page) < _PAGE_SIZE:
+                break
+            offset += _PAGE_SIZE
+    except Exception as e:
+        return {"error": str(e), "positions_value_usd": None}
+
+    positions_value = sum(
+        float(p.get("currentValue", 0) or 0)
+        for p in all_positions
+        if not p.get("redeemable")
+    )
+    return {"positions_value_usd": round(positions_value, 4)}
+
+
+@router.get("/positions_value")
+async def get_positions_value():
+    """Get total current market value of open (non-redeemable) positions."""
+    if event_manager.mode == "demo":
+        return {"positions_value_usd": 0.0}
+
+    client = get_client()
+    if not client:
+        raise HTTPException(status_code=503, detail="Polymarket client unavailable")
+
+    wallet = getattr(client.config, "funder", None)
+    if not wallet:
+        raise HTTPException(status_code=500, detail="POLYMARKET_FUNDER not configured")
+
+    now = time.monotonic()
+    if (
+        _POSITIONS_VALUE_CACHE["data"] is not None
+        and (now - _POSITIONS_VALUE_CACHE["ts"]) < _POSITIONS_VALUE_CACHE_TTL
+    ):
+        return _POSITIONS_VALUE_CACHE["data"]
+
+    result = await asyncio.to_thread(_fetch_positions_value_sync, wallet)
+    _POSITIONS_VALUE_CACHE["ts"] = now
+    _POSITIONS_VALUE_CACHE["data"] = result
+    return result
+
+
 def _outcome_index_to_index_sets(outcome_index: int) -> list[int]:
     """Convert outcomeIndex (0-based) to CTF indexSets (1-based bitmask)."""
     return [1 << outcome_index]  # outcomeIndex=0 → [1], outcomeIndex=1 → [2]

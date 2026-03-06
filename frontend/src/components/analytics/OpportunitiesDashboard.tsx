@@ -984,6 +984,23 @@ export default function OpportunitiesDashboard() {
                       0,
                   ) / withFill
                 : 0;
+        const placedRows = filteredBotOrderRows.filter(
+            (r) => String(r.status).toLowerCase() === "placed",
+        );
+        const avgStake =
+            placedRows.length > 0
+                ? placedRows.reduce((acc, r) => {
+                      const real = asNumber(r.filled_notional_usd_real);
+                      return acc + (real > 0 ? real : asNumber(r.notional_usd));
+                  }, 0) / placedRows.length
+                : 0;
+        const latencyRows = filteredBotOrderRows.filter(
+            (r) => r.fill_latency_ms !== undefined && r.fill_latency_ms !== "" && asNumber(r.fill_latency_ms) > 0,
+        );
+        const avgLatency =
+            latencyRows.length > 0
+                ? latencyRows.reduce((acc, r) => acc + asNumber(r.fill_latency_ms), 0) / latencyRows.length
+                : 0;
         return {
             total,
             placed,
@@ -997,6 +1014,8 @@ export default function OpportunitiesDashboard() {
             withFill,
             avgEdgeSend,
             avgEdgeFill,
+            avgStake,
+            avgLatency,
         };
     }, [filteredBotOrderRows]);
 
@@ -1307,7 +1326,7 @@ export default function OpportunitiesDashboard() {
                     <EquityDrawdownChart points={pipelineEvPoints} />
                 </article>
 
-                <article className="analytics-panel analytics-panel-wide">
+                {runtimeSettings.bot_paper_mode && <article className="analytics-panel analytics-panel-wide">
                     <h3>Paper Mode Equity + Drawdown (Execution Proxy)</h3>
                     <div className="analytics-chart-help">
                         <div>How to read</div>
@@ -1343,9 +1362,9 @@ export default function OpportunitiesDashboard() {
                         </span>
                     </div>
                     <EquityDrawdownChart points={paperEquityPoints} />
-                </article>
+                </article>}
 
-                <article className="analytics-panel">
+                {runtimeSettings.bot_paper_mode && <article className="analytics-panel">
                     <h3>Paper Trading Equity Curve</h3>
                     <div className="analytics-mini-kpis">
                         <span>Points: {paperTradingCurveMetrics.points}</span>
@@ -1362,7 +1381,7 @@ export default function OpportunitiesDashboard() {
                         points={paperTradingCurve}
                         color="#3fb950"
                     />
-                </article>
+                </article>}
 
                 <article className="analytics-panel">
                     <h3>Live Trading Equity Curve</h3>
@@ -1520,7 +1539,7 @@ export default function OpportunitiesDashboard() {
                 </article>
             </section>
 
-            <section className="analytics-panel">
+            {runtimeSettings.bot_paper_mode && <section className="analytics-panel">
                 <h3>Paper Decisions (Raw)</h3>
                 <div className="analytics-chart-help">
                     <div>How to extract</div>
@@ -1699,7 +1718,7 @@ export default function OpportunitiesDashboard() {
                             })}
                     </tbody>
                 </table>
-            </section>
+            </section>}
 
             <section className="analytics-panel">
                 <h3>Bot Orders (Execution Log)</h3>
@@ -1746,6 +1765,14 @@ export default function OpportunitiesDashboard() {
                     <span>
                         Avg Edge@Fill: {botOrderMetrics.avgEdgeFill.toFixed(2)}%
                     </span>
+                    <span>
+                        Avg Stake: ${botOrderMetrics.avgStake.toFixed(2)}
+                    </span>
+                    {botOrderMetrics.avgLatency > 0 && (
+                        <span>
+                            Avg Latency: {botOrderMetrics.avgLatency.toFixed(0)} ms
+                        </span>
+                    )}
                 </div>
                 <table className="analytics-table">
                     <thead>
@@ -1757,11 +1784,11 @@ export default function OpportunitiesDashboard() {
                             <th title="Probabilidad estimada por el modelo de que el evento cierre UP">Prob Up</th>
                             <th title="Probabilidad estimada por el modelo de que el evento cierre DOWN (= 1 − Prob Up)">Prob Down</th>
                             <th title="Probabilidad implícita de mercado, aproximada por el precio ask del contrato al momento del envío">Market Prob</th>
+                            <th title="Dirección tomada en la orden (UP o DOWN)">Side</th>
                             <th title="Monto real en USD enviado al CLOB (notional)">Stake $ (real)</th>
                             <th title="Cantidad de contratos/participaciones adquiridas">Shares</th>
                             <th title="Quantum Edge: ventaja del modelo frente al mercado en el momento de envío">QE</th>
                             <th title="ΔEdge = QE Real (edge vs fill price) − QE (edge vs ask al envío). Negativo = la ejecución erosionó el edge; positivo = fill mejor de lo esperado">ΔEdge</th>
-                            <th title="Dirección tomada en la orden (UP o DOWN)">Side</th>
                             <th title="Diferencia entre precio actual del subyacente y Price To Beat (PTB)">Diff vs PTB</th>
                             <th title="Spread relativo en porcentaje: (ask − bid) / mid × 100">Spread %</th>
                             <th title="Latencia total desde envío de orden hasta recepción del fill del CLOB, en milisegundos">Latency (ms)</th>
@@ -1830,6 +1857,11 @@ export default function OpportunitiesDashboard() {
                                             {asNumber(row.price).toFixed(4)}
                                         </td>
                                         <td>
+                                            {String(
+                                                row.side || "",
+                                            ).toUpperCase()}
+                                        </td>
+                                        <td>
                                             {asNumber(
                                                 row.filled_notional_usd_real,
                                             ) > 0
@@ -1868,11 +1900,6 @@ export default function OpportunitiesDashboard() {
                                                       );
                                                   })()
                                                 : "n/a"}
-                                        </td>
-                                        <td>
-                                            {String(
-                                                row.side || "",
-                                            ).toUpperCase()}
                                         </td>
                                         <td>
                                             {row.diff_vs_ptb_at_send !==

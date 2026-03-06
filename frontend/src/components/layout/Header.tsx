@@ -28,6 +28,7 @@ export default function Header({ route, onNavigate }: HeaderProps) {
     const [balanceText, setBalanceText] = useState("Bankroll: unavailable");
     const [refreshing, setRefreshing] = useState(false);
     const [claimableUsd, setClaimableUsd] = useState<number | null>(null);
+    const [positionsValueUsd, setPositionsValueUsd] = useState<number | null>(null);
 
     const loadBalance = useCallback(async () => {
         try {
@@ -59,12 +60,23 @@ export default function Header({ route, onNavigate }: HeaderProps) {
         }
     }, []);
 
+    const loadPositionsValue = useCallback(async () => {
+        try {
+            const res = await apiFetch("/api/positions_value");
+            const data = await res.json();
+            const v = toFiniteNumber(data?.positions_value_usd);
+            setPositionsValueUsd(v !== null && v > 0 ? v : null);
+        } catch {
+            setPositionsValueUsd(null);
+        }
+    }, []);
+
     const handleRefresh = useCallback(async () => {
         if (refreshing) return;
         setRefreshing(true);
-        await Promise.all([loadBalance(), loadClaimable()]);
+        await Promise.all([loadBalance(), loadClaimable(), loadPositionsValue()]);
         setRefreshing(false);
-    }, [refreshing, loadBalance, loadClaimable]);
+    }, [refreshing, loadBalance, loadClaimable, loadPositionsValue]);
 
     useEffect(() => {
         let mounted = true;
@@ -94,16 +106,22 @@ export default function Header({ route, onNavigate }: HeaderProps) {
         const claimableDelay = setTimeout(() => {
             if (mounted) loadClaimable();
         }, 3000);
+        const positionsDelay = setTimeout(() => {
+            if (mounted) loadPositionsValue();
+        }, 5000);
         // Fallback reconciliation only: primary updates come from order fills / WS.
         const interval = setInterval(load, 90000);
         const claimableInterval = setInterval(loadClaimable, 300000);
+        const positionsInterval = setInterval(loadPositionsValue, 120000);
         return () => {
             mounted = false;
             clearTimeout(claimableDelay);
+            clearTimeout(positionsDelay);
             clearInterval(interval);
             clearInterval(claimableInterval);
+            clearInterval(positionsInterval);
         };
-    }, [mode, setBankrollReal, loadClaimable]);
+    }, [mode, setBankrollReal, loadClaimable, loadPositionsValue]);
 
     useEffect(() => {
         if (bankrollReal !== null) {
@@ -119,6 +137,11 @@ export default function Header({ route, onNavigate }: HeaderProps) {
             mode === "demo" ? "Bankroll: Demo" : "Bankroll: unavailable",
         );
     }, [bankrollReal, mode]);
+
+    const portfolioUsd =
+        bankrollReal !== null && positionsValueUsd !== null
+            ? bankrollReal + positionsValueUsd + (claimableUsd ?? 0)
+            : null;
 
     const showPaperBadge = tradingMode === "bot" && paperMode === true;
     const paperCurrentBankroll = toFiniteNumber(paperCurrentBankrollUsd);
@@ -139,7 +162,31 @@ export default function Header({ route, onNavigate }: HeaderProps) {
                 </span>
             </div>
             <div className="app-header-center">
+                {portfolioUsd !== null && (
+                    <span
+                        className="portfolio-chip"
+                        title="Portfolio = Bankroll + Positions Value + Claimable"
+                    >
+                        Portfolio: $
+                        {portfolioUsd.toLocaleString("en-US", {
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 2,
+                        })}
+                    </span>
+                )}
                 <span className="bankroll-chip">{balanceText}</span>
+                {positionsValueUsd !== null && (
+                    <span
+                        className="positions-value-chip"
+                        title="Current market value of open positions"
+                    >
+                        Pos: $
+                        {positionsValueUsd.toLocaleString("en-US", {
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 2,
+                        })}
+                    </span>
+                )}
                 {showPaperBadge && (
                     <span
                         className="paper-bankroll-chip"

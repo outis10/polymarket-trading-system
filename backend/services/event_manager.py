@@ -442,6 +442,7 @@ class EventManager:
             "auto_redeem_threshold_usd": 20.0,
             "auto_redeem_bankroll_pct": 0.03,
             "fak_price_tolerance": 0.02,  # extra cents added to ask to survive book movement during latency
+            "bot_min_diff_abs": {},  # per-asset absolute diff filter e.g. {"BTC": 20}
         }
         self._config: dict = {}
         self._task: Optional[asyncio.Task] = None
@@ -3617,6 +3618,20 @@ class EventManager:
                 if mid_at_send > 0:
                     spread_pct_at_send = spread_at_send / mid_at_send
 
+            # bot_min_diff_abs: per-asset absolute diff filter
+            # e.g. {"BTC": 20} blocks orders where |diff_vs_ptb| < 20 pts for BTC
+            _min_diff_abs: dict = self.settings.get("bot_min_diff_abs", {})
+            if isinstance(_min_diff_abs, dict) and _min_diff_abs:
+                _asset_ticker = self._extract_event_ticker(event_id, event_dict).upper()
+                _diff_threshold = _min_diff_abs.get(_asset_ticker)
+                if _diff_threshold is not None and isinstance(diff_vs_ptb_at_send, float):
+                    if abs(diff_vs_ptb_at_send) < float(_diff_threshold):
+                        logger.debug(
+                            "Bot auto-order blocked: |diff_vs_ptb| %.2f < %.2f for %s",
+                            abs(diff_vs_ptb_at_send), float(_diff_threshold), _asset_ticker,
+                        )
+                        return
+
             if paper_mode_enabled:
                 # Keep guard behavior aligned with live mode: once a paper decision is
                 # accepted, register it as a fill for cooldown/max-buys/exposure memory.
@@ -3649,6 +3664,27 @@ class EventManager:
                     price_source_at_send,
                 )
                 return
+
+            # --- Book depth filter: skip if ask-side liquidity is too thin ---
+            _min_ask_depth_usd = float(self.settings.get("bot_min_ask_depth_usd", 0.0))
+            if _min_ask_depth_usd > 0.0:
+                _ob_key = "order_book_yes" if side == "up" else "order_book_no"
+                _asks_ob = (event_dict.get(_ob_key) or {}).get("asks", [])
+                _ask_depth_usd = (
+                    float(_asks_ob[-1]["total"])
+                    if isinstance(_asks_ob, list) and _asks_ob
+                    else 0.0
+                )
+                if _ask_depth_usd < _min_ask_depth_usd:
+                    logger.info(
+                        "Bot auto-order: skip %s %s — ask depth $%.2f < min $%.2f",
+                        event_id,
+                        side,
+                        _ask_depth_usd,
+                        _min_ask_depth_usd,
+                    )
+                    self._bot_prev_gate_enabled[key] = False  # allow re-trigger next tick
+                    return
 
             logger.info(
                 "Bot auto-order: placing FOK BUY $%.2f for %s %s (ask=%.4f shares=%.4f)",
@@ -3740,13 +3776,39 @@ class EventManager:
 
             # Apply price tolerance to survive order book movement during network latency.
             # ask_price is used for edge/slippage calculations; order_price is what hits the CLOB.
-            _fak_tolerance = float(self.settings.get("fak_price_tolerance", 0.02))
-            order_price = min(round(ask_price + _fak_tolerance, 4), 0.99)
+            _fak_tolerance = float(self.settings.get("fak_price_tolerance", 0.03))
+            _no_liq_signals = ("no orders found to match", "no match", "no orderbook")
+            _retry_extra = float(self.settings.get("bot_fak_retry_extra_tolerance", 0.01))
+            _retry_enabled = bool(self.settings.get("bot_fak_retry_on_no_fill", True))
+            _max_attempts = 2 if _retry_enabled else 1
 
+            result = None
             _send_at_utc = datetime.now(tz=timezone.utc)
-            result = await asyncio.to_thread(
-                client.place_fok_order, token_id, "BUY", notional_usd, order_price
-            )
+            for _attempt in range(_max_attempts):
+                _attempt_tolerance = _fak_tolerance + (_attempt * _retry_extra)
+                order_price = min(round(ask_price + _attempt_tolerance, 4), 0.99)
+                if _attempt > 0:
+                    logger.info(
+                        "Bot auto-order: no_fill retry %d for %s %s price=%.4f",
+                        _attempt + 1,
+                        event_id,
+                        side,
+                        order_price,
+                    )
+                    _send_at_utc = datetime.now(tz=timezone.utc)
+                try:
+                    result = await asyncio.to_thread(
+                        client.place_fok_order, token_id, "BUY", notional_usd, order_price
+                    )
+                    break  # success — exit retry loop
+                except Exception as _attempt_exc:
+                    if (
+                        _attempt < _max_attempts - 1
+                        and any(s in str(_attempt_exc).lower() for s in _no_liq_signals)
+                    ):
+                        continue  # try next attempt with higher tolerance
+                    raise  # re-raise on last attempt or non-liquidity error
+
             _filled_at_utc = datetime.now(tz=timezone.utc)
             _fill_latency_ms = round(
                 (_filled_at_utc - _send_at_utc).total_seconds() * 1000
@@ -3911,11 +3973,6 @@ class EventManager:
                 else:
                     err_str = str(e)
                     # Distinguish thin-liquidity no-fill from real errors
-                    _no_liq_signals = (
-                        "no orders found to match",
-                        "no match",
-                        "no orderbook",
-                    )
                     if any(s in err_str.lower() for s in _no_liq_signals):
                         status = "no_fill"
                         # Unlock gate + cooldown: retry after N secs if signal still active

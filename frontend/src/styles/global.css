@@ -72,6 +72,30 @@ body {
     letter-spacing: 0.2px;
 }
 
+.portfolio-chip {
+    background: rgba(6, 182, 212, 0.14);
+    border: 1px solid rgba(6, 182, 212, 0.45);
+    color: #67e8f9;
+    border-radius: 999px;
+    padding: 7px 12px;
+    font-size: 14px;
+    font-weight: 700;
+    margin-left: 6px;
+    letter-spacing: 0.2px;
+}
+
+.positions-value-chip {
+    background: rgba(139, 92, 246, 0.14);
+    border: 1px solid rgba(139, 92, 246, 0.45);
+    color: #c4b5fd;
+    border-radius: 999px;
+    padding: 5px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    margin-left: 6px;
+    letter-spacing: 0.2px;
+}
+
 .claimable-chip {
     background: rgba(251, 191, 36, 0.12);
     border: 1px solid rgba(251, 191, 36, 0.4);
