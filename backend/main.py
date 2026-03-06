@@ -8,6 +8,8 @@ from contextlib import asynccontextmanager
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from .middleware.auth import APIKeyMiddleware
 from .routers import events, trading
@@ -171,6 +173,16 @@ app.include_router(trading.router)
 
 # WebSocket router
 app.include_router(ws_router)
+
+# Serve frontend build if dist/ exists (production / ngrok mode)
+_dist_dir = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
+if os.path.isdir(_dist_dir):
+    app.mount("/assets", StaticFiles(directory=os.path.join(_dist_dir, "assets")), name="assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa_fallback(full_path: str):
+        index = os.path.join(_dist_dir, "index.html")
+        return FileResponse(index)
 
 
 if __name__ == "__main__":
