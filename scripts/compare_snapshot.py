@@ -160,7 +160,7 @@ def compare(before: dict, after: dict):
             continue
         label, key, fmt, invert = row
         bval = before.get(key, 0)
-        print(f"  {label:<26} {bval:{fmt}>10}  {fmt_delta(before, after, key, fmt, invert):>20}")
+        print(f"  {label:<26} {format(bval, fmt):>10}  {fmt_delta(before, after, key, fmt, invert):>20}")
 
     print()
     print("  Notes:")
