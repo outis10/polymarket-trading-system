@@ -16,6 +16,7 @@ export interface TradingEquityPoint {
 interface Props {
     points: TradingEquityPoint[];
     color?: string;
+    drawdownThresholdPnl?: number; // línea roja de circuit breaker (-startBankroll * stopPct/100)
 }
 
 interface Snapshot {
@@ -31,6 +32,7 @@ const HIT_RADIUS = 6; // px — proximidad para eliminar snapshot al hacer click
 export default function TradingEquityCurveChart({
     points,
     color = "#58a6ff",
+    drawdownThresholdPnl,
 }: Props) {
     const containerRef = useRef<HTMLDivElement>(null);
     const overlayRef = useRef<HTMLDivElement>(null);
@@ -38,7 +40,9 @@ export default function TradingEquityCurveChart({
     const equityRef = useRef<ISeriesApi<"Line"> | null>(null);
     const drawdownRef = useRef<ISeriesApi<"Line"> | null>(null);
     const snapshotsRef = useRef<Snapshot[]>([]);
+    const thresholdLineRef = useRef<ReturnType<ISeriesApi<"Line">["createPriceLine"]> | null>(null);
     const [hasSnapshots, setHasSnapshots] = useState(false);
+    const [showDrawdown, setShowDrawdown] = useState(true);
 
     const normalized = useMemo(() => {
         const sorted = points
@@ -227,6 +231,36 @@ export default function TradingEquityCurveChart({
         chartRef.current?.timeScale().fitContent();
     }, [normalized]);
 
+    useEffect(() => {
+        if (!drawdownRef.current) return;
+        drawdownRef.current.applyOptions({ visible: showDrawdown });
+        chartRef.current?.applyOptions({
+            leftPriceScale: { visible: showDrawdown },
+        });
+    }, [showDrawdown]);
+
+    useEffect(() => {
+        const equity = equityRef.current;
+        if (!equity) return;
+
+        // Eliminar línea anterior si existe
+        if (thresholdLineRef.current) {
+            equity.removePriceLine(thresholdLineRef.current);
+            thresholdLineRef.current = null;
+        }
+
+        if (drawdownThresholdPnl !== undefined) {
+            thresholdLineRef.current = equity.createPriceLine({
+                price: drawdownThresholdPnl,
+                color: "#f85149",
+                lineWidth: 1,
+                lineStyle: LineStyle.Dashed,
+                axisLabelVisible: true,
+                title: "DD stop",
+            });
+        }
+    }, [drawdownThresholdPnl]);
+
     const clearSnapshots = useCallback(() => {
         const equity = equityRef.current;
         if (!equity) return;
@@ -240,26 +274,56 @@ export default function TradingEquityCurveChart({
 
     return (
         <div style={{ position: "relative" }}>
-            {hasSnapshots && (
-                <button
-                    onClick={clearSnapshots}
+            <div
+                style={{
+                    position: "absolute",
+                    top: 6,
+                    right: 6,
+                    zIndex: 10,
+                    display: "flex",
+                    gap: 8,
+                    alignItems: "center",
+                }}
+            >
+                <label
                     style={{
-                        position: "absolute",
-                        top: 6,
-                        right: 6,
-                        zIndex: 10,
-                        padding: "2px 10px",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 4,
                         fontSize: 11,
-                        background: "rgba(22,27,34,0.85)",
                         color: "#98a6b8",
+                        cursor: "pointer",
+                        background: "rgba(22,27,34,0.85)",
                         border: "1px solid #30363d",
                         borderRadius: 6,
-                        cursor: "pointer",
+                        padding: "2px 8px",
                     }}
                 >
-                    Clear snapshots
-                </button>
-            )}
+                    <input
+                        type="checkbox"
+                        checked={showDrawdown}
+                        onChange={(e) => setShowDrawdown(e.target.checked)}
+                        style={{ accentColor: "#f85149", cursor: "pointer" }}
+                    />
+                    Drawdown
+                </label>
+                {hasSnapshots && (
+                    <button
+                        onClick={clearSnapshots}
+                        style={{
+                            padding: "2px 10px",
+                            fontSize: 11,
+                            background: "rgba(22,27,34,0.85)",
+                            color: "#98a6b8",
+                            border: "1px solid #30363d",
+                            borderRadius: 6,
+                            cursor: "pointer",
+                        }}
+                    >
+                        Clear snapshots
+                    </button>
+                )}
+            </div>
             <div ref={containerRef} className="analytics-chart-canvas" />
             <div
                 ref={overlayRef}

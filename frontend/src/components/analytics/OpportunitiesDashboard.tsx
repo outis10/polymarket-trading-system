@@ -1353,6 +1353,21 @@ export default function OpportunitiesDashboard() {
                     <TradingEquityCurveChart
                         points={liveTradingCurve}
                         color="#58a6ff"
+                        drawdownThresholdPnl={
+                            runtimeSettings.bot_drawdown_enabled &&
+                            (runtimeSettings.bot_drawdown_stop_pct ?? 0) > 0
+                                ? -(
+                                      asNumber(
+                                          runtimeSettings.live_equity_start_bankroll_usd &&
+                                              runtimeSettings.live_equity_start_bankroll_usd > 0
+                                              ? runtimeSettings.live_equity_start_bankroll_usd
+                                              : (runtimeSettings.kelly_live_bankroll_usd ?? 100),
+                                      ) *
+                                      (runtimeSettings.bot_drawdown_stop_pct ?? 50) /
+                                      100
+                                  )
+                                : undefined
+                        }
                     />
                 </article>
             </section>
