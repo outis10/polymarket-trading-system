@@ -55,6 +55,7 @@ Thumbs.db
 
 # Node / Frontend (Vite/React)
 node_modules/
+frontend/node_modules/
 .vite/
 frontend/dist/
 npm-debug.log*
