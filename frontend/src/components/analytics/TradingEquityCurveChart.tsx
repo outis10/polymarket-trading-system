@@ -4,6 +4,7 @@ import {
     IChartApi,
     ISeriesApi,
     LineData,
+    LineStyle,
     Time,
 } from "lightweight-charts";
 
@@ -17,13 +18,25 @@ interface Props {
     color?: string;
 }
 
+interface Snapshot {
+    time: Time;
+    price: number;
+    priceLine: ReturnType<ISeriesApi<"Line">["createPriceLine"]>;
+    divEl: HTMLDivElement;
+}
+
+const SNAP_COLOR = "rgba(255, 184, 0, 0.75)";
+const HIT_RADIUS = 6; // px — proximidad para eliminar snapshot al hacer click
+
 export default function TradingEquityCurveChart({
     points,
     color = "#58a6ff",
 }: Props) {
     const containerRef = useRef<HTMLDivElement>(null);
+    const overlayRef = useRef<HTMLDivElement>(null);
     const chartRef = useRef<IChartApi | null>(null);
     const equityRef = useRef<ISeriesApi<"Line"> | null>(null);
+    const snapshotsRef = useRef<Snapshot[]>([]);
 
     const normalized = useMemo(() => {
         const sorted = points
@@ -48,7 +61,8 @@ export default function TradingEquityCurveChart({
     }, [points]);
 
     useEffect(() => {
-        if (!containerRef.current) return;
+        if (!containerRef.current || !overlayRef.current) return;
+
         const chart = createChart(containerRef.current, {
             layout: {
                 background: { color: "transparent" },
@@ -83,15 +97,96 @@ export default function TradingEquityCurveChart({
         chartRef.current = chart;
         equityRef.current = equity;
 
+        // Reposiciona las líneas verticales de todos los snapshots
+        const syncVerticalLines = () => {
+            for (const snap of snapshotsRef.current) {
+                const x = chart.timeScale().timeToCoordinate(snap.time);
+                if (x === null || x === undefined) {
+                    snap.divEl.style.display = "none";
+                } else {
+                    snap.divEl.style.display = "block";
+                    snap.divEl.style.left = `${Math.round(x)}px`;
+                }
+            }
+        };
+
+        // Actualizar posiciones al hacer scroll / zoom
+        chart.timeScale().subscribeVisibleTimeRangeChange(syncVerticalLines);
+
+        // Click: añadir snapshot o eliminar si está cerca de uno existente
+        chart.subscribeClick((param) => {
+            if (!param.time || !param.point) return;
+
+            const clickX = param.point.x;
+
+            // ¿Cerca de un snapshot existente? → eliminarlo
+            const hit = snapshotsRef.current.find((s) => {
+                const sx = chart.timeScale().timeToCoordinate(s.time);
+                return sx !== null && Math.abs(sx - clickX) <= HIT_RADIUS;
+            });
+
+            if (hit) {
+                equity.removePriceLine(hit.priceLine);
+                hit.divEl.remove();
+                snapshotsRef.current = snapshotsRef.current.filter(
+                    (s) => s !== hit
+                );
+                return;
+            }
+
+            // Precio en el punto Y del click
+            const price = equity.coordinateToPrice(param.point.y);
+            if (price === null || price === undefined) return;
+
+            // Línea horizontal (price line nativa)
+            const priceLine = equity.createPriceLine({
+                price,
+                color: SNAP_COLOR,
+                lineWidth: 1,
+                lineStyle: LineStyle.Dashed,
+                axisLabelVisible: true,
+                title: "",
+            });
+
+            // Línea vertical (div sobre el canvas)
+            const divEl = document.createElement("div");
+            divEl.style.cssText = [
+                "position:absolute",
+                "top:0",
+                "height:100%",
+                "width:1px",
+                `border-left:1px dashed ${SNAP_COLOR}`,
+                "pointer-events:none",
+                "display:block",
+            ].join(";");
+            overlayRef.current!.appendChild(divEl);
+
+            const snap: Snapshot = {
+                time: param.time as Time,
+                price,
+                priceLine,
+                divEl,
+            };
+            snapshotsRef.current.push(snap);
+
+            // Posición inicial
+            const x = chart.timeScale().timeToCoordinate(param.time as Time);
+            if (x !== null && x !== undefined) divEl.style.left = `${Math.round(x)}px`;
+        });
+
         const onResize = () => {
             if (!containerRef.current) return;
             chart.applyOptions({ width: containerRef.current.clientWidth });
+            syncVerticalLines();
         };
 
         window.addEventListener("resize", onResize);
         onResize();
+
         return () => {
             window.removeEventListener("resize", onResize);
+            snapshotsRef.current.forEach((s) => s.divEl.remove());
+            snapshotsRef.current = [];
             chart.remove();
         };
     }, [color]);
@@ -106,5 +201,18 @@ export default function TradingEquityCurveChart({
         chartRef.current?.timeScale().fitContent();
     }, [normalized]);
 
-    return <div ref={containerRef} className="analytics-chart-canvas" />;
+    return (
+        <div style={{ position: "relative" }}>
+            <div ref={containerRef} className="analytics-chart-canvas" />
+            <div
+                ref={overlayRef}
+                style={{
+                    position: "absolute",
+                    inset: 0,
+                    pointerEvents: "none",
+                    overflow: "hidden",
+                }}
+            />
+        </div>
+    );
 }
