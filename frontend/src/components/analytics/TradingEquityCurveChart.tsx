@@ -237,6 +237,13 @@ export default function TradingEquityCurveChart({
         chartRef.current?.applyOptions({
             leftPriceScale: { visible: showDrawdown },
         });
+        // También ocultar/mostrar la línea de threshold
+        if (thresholdLineRef.current) {
+            thresholdLineRef.current.applyOptions({
+                color: showDrawdown ? "#f85149" : "rgba(0,0,0,0)",
+                axisLabelVisible: showDrawdown,
+            });
+        }
     }, [showDrawdown]);
 
     useEffect(() => {
@@ -273,16 +280,14 @@ export default function TradingEquityCurveChart({
     }, []);
 
     return (
-        <div style={{ position: "relative" }}>
+        <div>
             <div
                 style={{
-                    position: "absolute",
-                    top: 6,
-                    right: 6,
-                    zIndex: 10,
                     display: "flex",
                     gap: 8,
                     alignItems: "center",
+                    justifyContent: "flex-end",
+                    marginBottom: 4,
                 }}
             >
                 <label
@@ -293,10 +298,6 @@ export default function TradingEquityCurveChart({
                         fontSize: 11,
                         color: "#98a6b8",
                         cursor: "pointer",
-                        background: "rgba(22,27,34,0.85)",
-                        border: "1px solid #30363d",
-                        borderRadius: 6,
-                        padding: "2px 8px",
                     }}
                 >
                     <input
@@ -324,16 +325,18 @@ export default function TradingEquityCurveChart({
                     </button>
                 )}
             </div>
-            <div ref={containerRef} className="analytics-chart-canvas" />
-            <div
-                ref={overlayRef}
-                style={{
-                    position: "absolute",
-                    inset: 0,
-                    pointerEvents: "none",
-                    overflow: "hidden",
-                }}
-            />
+            <div style={{ position: "relative" }}>
+                <div ref={containerRef} className="analytics-chart-canvas" />
+                <div
+                    ref={overlayRef}
+                    style={{
+                        position: "absolute",
+                        inset: 0,
+                        pointerEvents: "none",
+                        overflow: "hidden",
+                    }}
+                />
+            </div>
         </div>
     );
 }
