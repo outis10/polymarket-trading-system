@@ -52,9 +52,12 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+# Windows/WSL metadata
+*:Zone.Identifier
 
 # Node / Frontend (Vite/React)
 node_modules/
+frontend/node_modules/
 .vite/
 frontend/dist/
 npm-debug.log*
