@@ -692,43 +692,6 @@ export default function OpportunitiesDashboard() {
         return rows;
     }, [chartRows]);
 
-    const equityPoints = useMemo(() => {
-        const rows = chartRows
-            .slice()
-            .sort(
-                (a, b) =>
-                    new Date(a.closed_at_utc).getTime() -
-                    new Date(b.closed_at_utc).getTime(),
-            );
-
-        let equity = 0;
-        let peak = 0;
-        const points: EquityDrawdownPoint[] = [];
-        for (const row of rows) {
-            equity += asNumber(row.pnl_usd);
-            peak = Math.max(peak, equity);
-            const drawdownPct = peak > 0 ? ((equity - peak) / peak) * 100 : 0;
-            points.push({
-                ts: row.closed_at_utc,
-                equity,
-                drawdownPct,
-            });
-        }
-        return points;
-    }, [chartRows]);
-
-    const equityMetrics = useMemo(() => {
-        const last = equityPoints[equityPoints.length - 1];
-        const maxDd = equityPoints.reduce(
-            (acc, p) => Math.min(acc, p.drawdownPct),
-            0,
-        );
-        return {
-            finalEquity: last?.equity ?? 0,
-            maxDrawdownPct: maxDd,
-        };
-    }, [equityPoints]);
-
     const pipelineEvPoints = useMemo<EquityDrawdownPoint[]>(() => {
         const rows = pipelineEv?.points || [];
         const base = Date.UTC(2020, 0, 1, 0, 0, 0);
@@ -1254,36 +1217,7 @@ export default function OpportunitiesDashboard() {
                     </table>
                 </article>
 
-                <article className="analytics-panel analytics-panel-wide">
-                    <h3>Equity Curve + Drawdown</h3>
-                    <div className="analytics-chart-help">
-                        <div>How to read</div>
-                        <ul>
-                            <li>Equity should trend up over enough samples.</li>
-                            <li>
-                                Drawdown shows capital pain during losing
-                                streaks.
-                            </li>
-                            <li>
-                                Business quality = positive equity with
-                                tolerable drawdown.
-                            </li>
-                        </ul>
-                    </div>
-                    <div className="analytics-mini-kpis">
-                        <span>
-                            Final Equity: $
-                            {equityMetrics.finalEquity.toFixed(2)}
-                        </span>
-                        <span>
-                            Max Drawdown:{" "}
-                            {equityMetrics.maxDrawdownPct.toFixed(2)}%
-                        </span>
-                    </div>
-                    <EquityDrawdownChart points={equityPoints} />
-                </article>
-
-                <article className="analytics-panel analytics-panel-wide">
+                {runtimeSettings.bot_paper_mode && <article className="analytics-panel analytics-panel-wide">
                     <h3>Pipeline EV Curve (In-Sample)</h3>
                     <div className="analytics-chart-help">
                         <div>How to read</div>
@@ -1324,7 +1258,7 @@ export default function OpportunitiesDashboard() {
                         </span>
                     </div>
                     <EquityDrawdownChart points={pipelineEvPoints} />
-                </article>
+                </article>}
 
                 {runtimeSettings.bot_paper_mode && <article className="analytics-panel analytics-panel-wide">
                     <h3>Paper Mode Equity + Drawdown (Execution Proxy)</h3>
@@ -1383,7 +1317,7 @@ export default function OpportunitiesDashboard() {
                     />
                 </article>}
 
-                <article className="analytics-panel">
+                <article className="analytics-panel analytics-panel-wide">
                     <h3>Live Trading Equity Curve</h3>
                     <div className="analytics-mini-kpis">
                         <span>

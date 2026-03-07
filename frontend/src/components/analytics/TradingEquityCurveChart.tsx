@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
     createChart,
     IChartApi,
@@ -36,7 +36,9 @@ export default function TradingEquityCurveChart({
     const overlayRef = useRef<HTMLDivElement>(null);
     const chartRef = useRef<IChartApi | null>(null);
     const equityRef = useRef<ISeriesApi<"Line"> | null>(null);
+    const drawdownRef = useRef<ISeriesApi<"Line"> | null>(null);
     const snapshotsRef = useRef<Snapshot[]>([]);
+    const [hasSnapshots, setHasSnapshots] = useState(false);
 
     const normalized = useMemo(() => {
         const sorted = points
@@ -76,6 +78,11 @@ export default function TradingEquityCurveChart({
                 borderColor: "#2b3542",
                 scaleMargins: { top: 0.12, bottom: 0.14 },
             },
+            leftPriceScale: {
+                visible: true,
+                borderColor: "#2b3542",
+                scaleMargins: { top: 0.12, bottom: 0.14 },
+            },
             timeScale: {
                 borderColor: "#2b3542",
                 timeVisible: true,
@@ -93,9 +100,16 @@ export default function TradingEquityCurveChart({
             priceScaleId: "right",
             title: "Equity",
         });
+        const drawdown = chart.addLineSeries({
+            color: "#f85149",
+            lineWidth: 2,
+            priceScaleId: "left",
+            title: "Drawdown %",
+        });
 
         chartRef.current = chart;
         equityRef.current = equity;
+        drawdownRef.current = drawdown;
 
         // Reposiciona las líneas verticales de todos los snapshots
         const syncVerticalLines = () => {
@@ -131,6 +145,7 @@ export default function TradingEquityCurveChart({
                 snapshotsRef.current = snapshotsRef.current.filter(
                     (s) => s !== hit
                 );
+                setHasSnapshots(snapshotsRef.current.length > 0);
                 return;
             }
 
@@ -168,6 +183,7 @@ export default function TradingEquityCurveChart({
                 divEl,
             };
             snapshotsRef.current.push(snap);
+            setHasSnapshots(true);
 
             // Posición inicial
             const x = chart.timeScale().timeToCoordinate(param.time as Time);
@@ -192,17 +208,58 @@ export default function TradingEquityCurveChart({
     }, [color]);
 
     useEffect(() => {
-        if (!equityRef.current) return;
-        const equityData: LineData[] = normalized.map((p) => ({
-            time: (p.t / 1000) as Time,
-            value: p.equity,
-        }));
+        if (!equityRef.current || !drawdownRef.current) return;
+
+        let peak = 0;
+        const equityData: LineData[] = [];
+        const drawdownData: LineData[] = [];
+
+        for (const p of normalized) {
+            const t = (p.t / 1000) as Time;
+            peak = Math.max(peak, p.equity);
+            const ddPct = peak > 0 ? ((p.equity - peak) / peak) * 100 : 0;
+            equityData.push({ time: t, value: p.equity });
+            drawdownData.push({ time: t, value: ddPct });
+        }
+
         equityRef.current.setData(equityData);
+        drawdownRef.current.setData(drawdownData);
         chartRef.current?.timeScale().fitContent();
     }, [normalized]);
 
+    const clearSnapshots = useCallback(() => {
+        const equity = equityRef.current;
+        if (!equity) return;
+        for (const snap of snapshotsRef.current) {
+            equity.removePriceLine(snap.priceLine);
+            snap.divEl.remove();
+        }
+        snapshotsRef.current = [];
+        setHasSnapshots(false);
+    }, []);
+
     return (
         <div style={{ position: "relative" }}>
+            {hasSnapshots && (
+                <button
+                    onClick={clearSnapshots}
+                    style={{
+                        position: "absolute",
+                        top: 6,
+                        right: 6,
+                        zIndex: 10,
+                        padding: "2px 10px",
+                        fontSize: 11,
+                        background: "rgba(22,27,34,0.85)",
+                        color: "#98a6b8",
+                        border: "1px solid #30363d",
+                        borderRadius: 6,
+                        cursor: "pointer",
+                    }}
+                >
+                    Clear snapshots
+                </button>
+            )}
             <div ref={containerRef} className="analytics-chart-canvas" />
             <div
                 ref={overlayRef}
