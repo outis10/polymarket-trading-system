@@ -152,7 +152,7 @@ _cors_origins_env = os.getenv("ALLOWED_ORIGINS", "")
 _cors_origins = (
     [o.strip() for o in _cors_origins_env.split(",") if o.strip()]
     if _cors_origins_env
-    else ["http://localhost:5173", "http://localhost:3000"]
+    else ["http://localhost:5183", "http://localhost:3010"]
 )
 app.add_middleware(
     CORSMiddleware,
@@ -174,4 +174,4 @@ app.include_router(ws_router)
 
 
 if __name__ == "__main__":
-    uvicorn.run("backend.main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("backend.main:app", host="0.0.0.0", port=8010, reload=True)

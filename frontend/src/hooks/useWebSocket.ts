@@ -6,7 +6,7 @@ import type { WSMessage, EventData, SettingsData } from "../types/events";
 
 function buildWsUrl(): string {
     const base = import.meta.env.DEV
-        ? "ws://localhost:8000/ws/events"
+        ? "ws://localhost:8010/ws/events"
         : `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/events`;
     return API_KEY ? `${base}?api_key=${encodeURIComponent(API_KEY)}` : base;
 }
