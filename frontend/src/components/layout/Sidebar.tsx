@@ -1078,6 +1078,26 @@ export default function Sidebar({ send }: SidebarProps) {
                         }
                     />
 
+                    <label className="field-label">Max Spread (%) <span style={{fontSize:"0.75em",opacity:0.6}}>0=off</span></label>
+                    <input
+                        className="sidebar-number-input"
+                        type="number"
+                        min={0}
+                        max={100}
+                        step={0.5}
+                        value={
+                            settings.quant_gate_max_spread_pct != null
+                                ? +(settings.quant_gate_max_spread_pct * 100).toFixed(1)
+                                : 0
+                        }
+                        onChange={(e) =>
+                            handleKellySettingChange({
+                                quant_gate_max_spread_pct:
+                                    Number(e.target.value || 0) / 100,
+                            })
+                        }
+                    />
+
                     <label className="field-label">Min Edge (%)</label>
                     <input
                         className="sidebar-number-input"

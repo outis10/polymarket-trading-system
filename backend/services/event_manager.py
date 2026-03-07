@@ -400,6 +400,7 @@ class EventManager:
             "quant_gate_edge_vs_ask_enabled": False,
             "quant_gate_min_edge_vs_ask_pct": 2.0,
             "quant_gate_min_prob": 0.0,
+            "quant_gate_max_spread_pct": 0.0,
             "quant_gate_min_sample_strong_signal": 20,
             "quant_gate_strong_signal_threshold": 0.72,
             "early_window_enabled": True,
@@ -1227,6 +1228,7 @@ class EventManager:
         gate_params: dict | None = None,
         price_diff_abs: float | None = None,
         price_diff_pct: float | None = None,
+        spread_pct: float | None = None,
         window_profile: str = "base",
     ) -> dict:
         settings = self.settings
@@ -1306,6 +1308,12 @@ class EventManager:
         if min_diff_pct > 0:
             if price_diff_pct is None or price_diff_pct < min_diff_pct:
                 reasons.append(f"diff_pct<{min_diff_pct:.3f}%")
+
+        max_spread_pct = float(
+            gp.get("max_spread_pct", settings.get("quant_gate_max_spread_pct", 0.0))
+        )
+        if max_spread_pct > 0 and spread_pct is not None and spread_pct > max_spread_pct:
+            reasons.append(f"spread>{max_spread_pct:.2%}")
 
         if quant_prob is not None:
             # edge_pct: informational — quant advantage vs mid-market
@@ -1526,28 +1534,56 @@ class EventManager:
         window_profile, gate_params = self._resolve_quant_gate_window_params(event_dict)
         ask_up_raw = None
         ask_down_raw = None
+        bid_up_raw = None
+        bid_down_raw = None
         if isinstance(event_dict.get("order_book_yes"), dict):
-            asks = event_dict.get("order_book_yes", {}).get("asks", [])
+            ob_yes = event_dict["order_book_yes"]
+            asks = ob_yes.get("asks", [])
             if isinstance(asks, list) and asks:
                 raw = asks[0].get("price") if isinstance(asks[0], dict) else None
                 try:
                     ask_up_raw = float(raw) if raw is not None else None
                 except (TypeError, ValueError):
                     ask_up_raw = None
+            bids = ob_yes.get("bids", [])
+            if isinstance(bids, list) and bids:
+                raw = bids[0].get("price") if isinstance(bids[0], dict) else None
+                try:
+                    bid_up_raw = float(raw) if raw is not None else None
+                except (TypeError, ValueError):
+                    bid_up_raw = None
         if isinstance(event_dict.get("order_book_no"), dict):
-            asks = event_dict.get("order_book_no", {}).get("asks", [])
+            ob_no = event_dict["order_book_no"]
+            asks = ob_no.get("asks", [])
             if isinstance(asks, list) and asks:
                 raw = asks[0].get("price") if isinstance(asks[0], dict) else None
                 try:
                     ask_down_raw = float(raw) if raw is not None else None
                 except (TypeError, ValueError):
                     ask_down_raw = None
+            bids = ob_no.get("bids", [])
+            if isinstance(bids, list) and bids:
+                raw = bids[0].get("price") if isinstance(bids[0], dict) else None
+                try:
+                    bid_down_raw = float(raw) if raw is not None else None
+                except (TypeError, ValueError):
+                    bid_down_raw = None
 
         # Fallback: use mid-price as ask proxy when order book is unavailable
         ask_up_is_proxy = ask_up_raw is None
         ask_down_is_proxy = ask_down_raw is None
         ask_up = ask_up_raw if ask_up_raw is not None else yes_price
         ask_down = ask_down_raw if ask_down_raw is not None else no_price
+
+        # Compute spread_pct per side (only when real ask+bid are available)
+        def _spread_pct(ask: float | None, bid: float | None) -> float | None:
+            if ask is None or bid is None or ask <= 0:
+                return None
+            mid = (ask + bid) / 2.0
+            return (ask - bid) / mid if mid > 0 else None
+
+        spread_pct_up = _spread_pct(ask_up_raw, bid_up_raw)
+        spread_pct_down = _spread_pct(ask_down_raw, bid_down_raw)
 
         event_dict["quant_buy_gate"] = {
             "up": self._compute_quant_buy_gate_side(
@@ -1563,6 +1599,7 @@ class EventManager:
                 gate_params=gate_params,
                 price_diff_abs=price_diff_abs,
                 price_diff_pct=price_diff_pct,
+                spread_pct=spread_pct_up,
                 window_profile=window_profile,
             ),
             "down": self._compute_quant_buy_gate_side(
@@ -1578,6 +1615,7 @@ class EventManager:
                 gate_params=gate_params,
                 price_diff_abs=price_diff_abs,
                 price_diff_pct=price_diff_pct,
+                spread_pct=spread_pct_down,
                 window_profile=window_profile,
             ),
         }
