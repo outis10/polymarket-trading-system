@@ -20,6 +20,15 @@ import pandas as pd
 
 DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
 
+# Per-ticker range step (absolute price units). Reflects typical 5–15 min price moves.
+# Override with --range-step to set a global fallback for unlisted tickers.
+TICKER_RANGE_STEPS: dict[str, float] = {
+    "BTC": 10.0,   # BTC ~$85k, 5-15min moves $50–$500
+    "ETH": 2.0,    # ETH ~$2k,  5-15min moves $5–$50
+    "SOL": 0.5,    # SOL ~$150, 5-15min moves $0.3–$2
+    "XRP": 0.02,   # XRP ~$2.5, 5-15min moves $0.01–$0.10
+}
+
 
 def run_cmd(cmd: list[str]) -> None:
     print(f"$ {' '.join(cmd)}")
@@ -44,8 +53,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--range-step",
         type=float,
-        default=10.0,
-        help="Range step for aggregate_pm_15m_ranges.py",
+        default=None,
+        help="Global range step fallback for tickers not in TICKER_RANGE_STEPS. "
+             "Defaults to per-ticker values defined in TICKER_RANGE_STEPS.",
     )
     parser.add_argument(
         "--min-count",
@@ -82,7 +92,8 @@ def main() -> None:
             output_dir / f"{ticker}_pm_ranges_mincount_{args.min_count}.csv"
         )
 
-        print(f"\n=== {symbol} ({ticker}) ===")
+        range_step = TICKER_RANGE_STEPS.get(ticker.upper(), args.range_step or 10.0)
+        print(f"\n=== {symbol} ({ticker}) [range-step={range_step}] ===")
 
         run_cmd(
             [
@@ -123,7 +134,7 @@ def main() -> None:
                 "--output",
                 str(pm_ranges),
                 "--range-step",
-                str(args.range_step),
+                str(range_step),
                 "--min-count",
                 str(args.min_count),
                 "--output-filtered",

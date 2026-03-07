@@ -175,20 +175,15 @@ app.include_router(trading.router)
 # WebSocket router
 app.include_router(ws_router)
 
-# Serve built frontend (SPA)
-_DIST = pathlib.Path(__file__).parent.parent / "frontend" / "dist"
-if _DIST.exists():
-    app.mount("/assets", StaticFiles(directory=_DIST / "assets"), name="assets")
-    if (_DIST / "icons").exists():
-        app.mount("/icons", StaticFiles(directory=_DIST / "icons"), name="icons")
-
-    @app.get("/manifest.webmanifest", include_in_schema=False)
-    async def _manifest():
-        return FileResponse(_DIST / "manifest.webmanifest")
+# Serve frontend build if dist/ exists (production / ngrok mode)
+_dist_dir = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
+if os.path.isdir(_dist_dir):
+    app.mount("/assets", StaticFiles(directory=os.path.join(_dist_dir, "assets")), name="assets")
 
     @app.get("/{full_path:path}", include_in_schema=False)
-    async def _serve_spa(full_path: str):
-        return FileResponse(_DIST / "index.html")
+    async def spa_fallback(full_path: str):
+        index = os.path.join(_dist_dir, "index.html")
+        return FileResponse(index)
 
 
 if __name__ == "__main__":
