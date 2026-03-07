@@ -3,11 +3,14 @@
 import asyncio
 import logging
 import os
+import pathlib
 from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from .middleware.auth import APIKeyMiddleware
 from .routers import events, trading
@@ -171,6 +174,21 @@ app.include_router(trading.router)
 
 # WebSocket router
 app.include_router(ws_router)
+
+# Serve built frontend (SPA)
+_DIST = pathlib.Path(__file__).parent.parent / "frontend" / "dist"
+if _DIST.exists():
+    app.mount("/assets", StaticFiles(directory=_DIST / "assets"), name="assets")
+    if (_DIST / "icons").exists():
+        app.mount("/icons", StaticFiles(directory=_DIST / "icons"), name="icons")
+
+    @app.get("/manifest.webmanifest", include_in_schema=False)
+    async def _manifest():
+        return FileResponse(_DIST / "manifest.webmanifest")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def _serve_spa(full_path: str):
+        return FileResponse(_DIST / "index.html")
 
 
 if __name__ == "__main__":
