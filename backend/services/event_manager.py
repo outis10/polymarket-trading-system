@@ -642,8 +642,13 @@ class EventManager:
         return base
 
     def persist_runtime_settings(self) -> None:
-        """Persist current runtime mode/settings for restart continuity."""
-        os.makedirs(os.path.dirname(self._runtime_settings_path), exist_ok=True)
+        """Persist current runtime mode/settings for restart continuity.
+
+        Uses an atomic write (temp file + rename) to avoid partial writes or
+        file corruption when multiple clients save settings concurrently.
+        """
+        path = self._runtime_settings_path
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         payload = {
             "mode": self.mode,
             "settings": {
@@ -653,12 +658,16 @@ class EventManager:
             "updated_at_utc": datetime.now(tz=timezone.utc).isoformat(),
         }
         try:
-            with open(self._runtime_settings_path, "w") as f:
+            tmp_path = path + ".tmp"
+            with open(tmp_path, "w") as f:
                 json.dump(payload, f, indent=2, sort_keys=True)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, path)  # atomic on POSIX and Windows
         except Exception as exc:
             logger.warning(
                 "Could not persist runtime settings to %s: %s",
-                self._runtime_settings_path,
+                path,
                 exc,
             )
 

@@ -24,10 +24,10 @@ DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
 # Per-ticker range step (absolute price units). Reflects typical 5-min price moves.
 # Override with --range-step to set a global fallback for unlisted tickers.
 TICKER_RANGE_STEPS: dict[str, float] = {
-    "BTC": 10.0,   # BTC ~$85k, 5min moves $50–$500
-    "ETH": 2.0,    # ETH ~$2k,  5min moves $5–$50
-    "SOL": 0.5,    # SOL ~$150, 5min moves $0.3–$2
-    "XRP": 0.02,   # XRP ~$2.5, 5min moves $0.01–$0.10
+    "BTC": 10.0,  # BTC ~$85k, 5min moves $50–$500
+    "ETH": 0.2,  # ETH ~$2k,  5min moves $5–$50
+    "SOL": 0.2,  # SOL ~$150, 5min moves $0.3–$2
+    "XRP": 0.02,  # XRP ~$2.5, 5min moves $0.01–$0.10
 }
 
 
@@ -62,7 +62,7 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=None,
         help="Global range step fallback for tickers not in TICKER_RANGE_STEPS. "
-             "Defaults to per-ticker values defined in TICKER_RANGE_STEPS.",
+        "Defaults to per-ticker values defined in TICKER_RANGE_STEPS.",
     )
     parser.add_argument(
         "--min-count",
