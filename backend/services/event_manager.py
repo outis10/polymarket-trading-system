@@ -1839,7 +1839,11 @@ class EventManager:
         base_bankroll = (
             self._get_paper_effective_bankroll_usd()
             if bool(self.settings.get("bot_paper_mode", False))
-            else self._get_live_manual_bankroll_usd()
+            else (
+                float(bankroll_usd)
+                if bankroll_usd is not None and float(bankroll_usd) > 0
+                else self._get_live_manual_bankroll_usd()
+            )
         )
         base_bankroll = max(1.0, float(base_bankroll))
         stake_usd = kelly_pct * base_bankroll
