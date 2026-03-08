@@ -57,6 +57,7 @@ export default function Sidebar({ send }: SidebarProps) {
     const updateSettings = useEventsStore((s) => s.updateSettings);
     const [refreshingLiveEvents, setRefreshingLiveEvents] = useState(false);
     const [refreshLiveMessage, setRefreshLiveMessage] = useState("");
+    const [blockedHoursRaw, setBlockedHoursRaw] = useState<string | null>(null);
 
     const handleModeChange = (mode: string) => {
         send({ type: "switch_mode", mode });
@@ -1120,16 +1121,15 @@ export default function Sidebar({ send }: SidebarProps) {
                         className="sidebar-number-input"
                         type="text"
                         placeholder="ej: 10,11,21,22"
-                        value={(settings.quant_gate_blocked_hours_pst ?? []).join(",")}
-                        onChange={(e) => {
-                            const raw = e.target.value;
-                            const hours = raw
+                        value={blockedHoursRaw ?? (settings.quant_gate_blocked_hours_pst ?? []).join(",")}
+                        onChange={(e) => setBlockedHoursRaw(e.target.value)}
+                        onBlur={(e) => {
+                            const hours = e.target.value
                                 .split(",")
                                 .map((s) => parseInt(s.trim(), 10))
                                 .filter((n) => !isNaN(n) && n >= 0 && n <= 23);
-                            handleKellySettingChange({
-                                quant_gate_blocked_hours_pst: hours,
-                            });
+                            handleKellySettingChange({ quant_gate_blocked_hours_pst: hours });
+                            setBlockedHoursRaw(null);
                         }}
                     />
 

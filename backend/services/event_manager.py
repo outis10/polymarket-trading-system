@@ -1770,6 +1770,14 @@ class EventManager:
             "kelly_pct": None,
         }
 
+        blocked_hours = self.settings.get("quant_gate_blocked_hours_pst", [])
+        if blocked_hours:
+            from zoneinfo import ZoneInfo as _ZI
+            _hour_pst = datetime.now(tz=_ZI("America/Los_Angeles")).hour
+            if _hour_pst in blocked_hours:
+                result["reason"] = f"blocked_hour_pst:{_hour_pst}"
+                return result
+
         if bool(self.settings.get("bot_enforce_timeframe_filter", True)):
             selected_tf = self._parse_timeframe_filter_to_minutes(
                 self.settings.get("timeframe_filter", "5m")
