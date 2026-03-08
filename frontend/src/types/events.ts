@@ -118,6 +118,7 @@ export interface SettingsData {
     quant_gate_min_edge_pct?: number;
     quant_gate_min_diff_pct?: number;
     quant_gate_max_spread_pct?: number;
+    quant_gate_min_ask_price?: number;
     quant_gate_use_percentile?: boolean;
     quant_gate_percentile_low?: number;
     quant_gate_percentile_high?: number;

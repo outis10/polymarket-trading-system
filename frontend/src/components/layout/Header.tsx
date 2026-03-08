@@ -29,99 +29,43 @@ export default function Header({ route, onNavigate }: HeaderProps) {
     const [refreshing, setRefreshing] = useState(false);
     const [claimableUsd, setClaimableUsd] = useState<number | null>(null);
     const [positionsValueUsd, setPositionsValueUsd] = useState<number | null>(null);
+    const [netPnlUsd, setNetPnlUsd] = useState<number | null>(null);
 
-    const loadBalance = useCallback(async () => {
+    const loadEquity = useCallback(async () => {
         try {
-            const res = await apiFetch("/api/balance");
+            const res = await apiFetch("/api/equity");
             const data = await res.json();
-            const balance =
-                toFiniteNumber(data?.balance) ??
-                toFiniteNumber(data?.available) ??
-                toFiniteNumber(data?.usdc) ??
-                toFiniteNumber(data?.data?.balance);
-            if (balance !== null) {
-                setBankrollReal(balance);
-            } else {
-                setBankrollReal(null);
-            }
+            const bankroll = toFiniteNumber(data?.bankroll_usd);
+            if (bankroll !== null) setBankrollReal(bankroll);
+            else setBankrollReal(null);
+            const claimable = toFiniteNumber(data?.claimable_usd);
+            setClaimableUsd(claimable !== null && claimable > 0 ? claimable : null);
+            const posVal = toFiniteNumber(data?.positions_value_usd);
+            setPositionsValueUsd(posVal !== null && posVal > 0 ? posVal : null);
+            const netPnl = toFiniteNumber(data?.net_pnl_usd);
+            setNetPnlUsd(netPnl);
         } catch {
             setBankrollReal(null);
         }
     }, [setBankrollReal]);
 
-    const loadClaimable = useCallback(async () => {
-        try {
-            const res = await apiFetch("/api/claimable");
-            const data = await res.json();
-            const v = toFiniteNumber(data?.claimable_usd);
-            setClaimableUsd(v !== null && v > 0 ? v : null);
-        } catch {
-            setClaimableUsd(null);
-        }
-    }, []);
-
-    const loadPositionsValue = useCallback(async () => {
-        try {
-            const res = await apiFetch("/api/positions_value");
-            const data = await res.json();
-            const v = toFiniteNumber(data?.positions_value_usd);
-            setPositionsValueUsd(v !== null && v > 0 ? v : null);
-        } catch {
-            setPositionsValueUsd(null);
-        }
-    }, []);
-
     const handleRefresh = useCallback(async () => {
         if (refreshing) return;
         setRefreshing(true);
-        await Promise.all([loadBalance(), loadClaimable(), loadPositionsValue()]);
+        await loadEquity();
         setRefreshing(false);
-    }, [refreshing, loadBalance, loadClaimable, loadPositionsValue]);
+    }, [refreshing, loadEquity]);
 
     useEffect(() => {
         let mounted = true;
-
-        const load = async () => {
-            try {
-                const res = await apiFetch("/api/balance");
-                const data = await res.json();
-                if (!mounted) return;
-                const balance =
-                    toFiniteNumber(data?.balance) ??
-                    toFiniteNumber(data?.available) ??
-                    toFiniteNumber(data?.usdc) ??
-                    toFiniteNumber(data?.data?.balance);
-                if (balance !== null) {
-                    setBankrollReal(balance);
-                } else {
-                    setBankrollReal(null);
-                }
-            } catch {
-                if (mounted) setBankrollReal(null);
-            }
-        };
-
+        const load = async () => { if (mounted) await loadEquity(); };
         load();
-        // Defer claimable fetch so it doesn't block initial page render
-        const claimableDelay = setTimeout(() => {
-            if (mounted) loadClaimable();
-        }, 3000);
-        const positionsDelay = setTimeout(() => {
-            if (mounted) loadPositionsValue();
-        }, 5000);
-        // Fallback reconciliation only: primary updates come from order fills / WS.
         const interval = setInterval(load, 90000);
-        const claimableInterval = setInterval(loadClaimable, 300000);
-        const positionsInterval = setInterval(loadPositionsValue, 120000);
         return () => {
             mounted = false;
-            clearTimeout(claimableDelay);
-            clearTimeout(positionsDelay);
             clearInterval(interval);
-            clearInterval(claimableInterval);
-            clearInterval(positionsInterval);
         };
-    }, [mode, setBankrollReal, loadClaimable, loadPositionsValue]);
+    }, [mode, loadEquity]);
 
     useEffect(() => {
         if (bankrollReal !== null) {
@@ -169,6 +113,18 @@ export default function Header({ route, onNavigate }: HeaderProps) {
                     >
                         Portfolio: $
                         {portfolioUsd.toLocaleString("en-US", {
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 2,
+                        })}
+                    </span>
+                )}
+                {netPnlUsd !== null && (
+                    <span
+                        className={`net-pnl-chip ${netPnlUsd >= 0 ? "net-pnl-chip--positive" : "net-pnl-chip--negative"}`}
+                        title="Net PnL = Equity actual − Equity al inicio del bot"
+                    >
+                        Net PnL: {netPnlUsd >= 0 ? "+" : ""}
+                        {netPnlUsd.toLocaleString("en-US", {
                             minimumFractionDigits: 2,
                             maximumFractionDigits: 2,
                         })}

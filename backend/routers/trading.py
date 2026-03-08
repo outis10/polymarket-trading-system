@@ -773,6 +773,124 @@ async def get_positions_value():
     return result
 
 
+@router.get("/equity")
+async def get_equity():
+    """Return consolidated equity: bankroll + open positions + claimable, plus net PnL vs start."""
+    if event_manager.mode == "demo":
+        return {
+            "bankroll_usd": 1000.0,
+            "positions_value_usd": 0.0,
+            "claimable_usd": 0.0,
+            "equity_usd": 1000.0,
+            "equity_start_usd": None,
+            "net_pnl_usd": None,
+        }
+
+    client = get_client()
+    if not client:
+        raise HTTPException(status_code=503, detail="Polymarket client unavailable")
+
+    wallet = getattr(client.config, "funder", None)
+    if not wallet:
+        raise HTTPException(status_code=500, detail="POLYMARKET_FUNDER not configured")
+
+    # Run balance + claimable + positions_value in parallel
+    import asyncio as _asyncio
+    balance_task   = _asyncio.to_thread(lambda: client.get_balance())
+    claimable_task = _asyncio.to_thread(_fetch_claimable_sync, wallet)
+    posval_task    = _asyncio.to_thread(_fetch_positions_value_sync, wallet)
+    balance_raw, claimable_data, posval_data = await _asyncio.gather(
+        balance_task, claimable_task, posval_task
+    )
+
+    bankroll       = float(balance_raw or 0.0)
+    claimable      = float((claimable_data or {}).get("claimable_usd") or 0.0)
+    positions_val  = float((posval_data or {}).get("positions_value_usd") or 0.0)
+    equity         = bankroll + claimable + positions_val
+
+    equity_start   = float(event_manager.settings.get("live_equity_start_bankroll_usd") or 0.0)
+    net_pnl        = round(equity - equity_start, 4) if equity_start > 0 else None
+
+    return {
+        "bankroll_usd":       round(bankroll, 4),
+        "positions_value_usd": round(positions_val, 4),
+        "claimable_usd":      round(claimable, 4),
+        "equity_usd":         round(equity, 4),
+        "equity_start_usd":   round(equity_start, 4) if equity_start > 0 else None,
+        "net_pnl_usd":        net_pnl,
+    }
+
+
+_EQUITY_SNAPSHOT_PATH = os.path.normpath(
+    os.path.join(
+        os.path.dirname(__file__),
+        "..",
+        "..",
+        "backtest_output",
+        "equity_snapshots.csv",
+    )
+)
+_EQUITY_SNAPSHOT_FIELDS = [
+    "timestamp_utc",
+    "bankroll_usdc",
+    "positions_value_usd",
+    "claimable_usd",
+    "equity_usd",
+    "net_pnl_usd",
+]
+
+
+async def save_equity_snapshot() -> None:
+    """Fetch current equity and append a row to equity_snapshots.csv."""
+    if event_manager.mode == "demo":
+        return
+    client = get_client()
+    if not client:
+        return
+    wallet = getattr(client.config, "funder", None)
+    if not wallet:
+        return
+
+    import asyncio as _asyncio
+    try:
+        balance_raw, claimable_data, posval_data = await _asyncio.gather(
+            _asyncio.to_thread(lambda: client.get_balance()),
+            _asyncio.to_thread(_fetch_claimable_sync, wallet),
+            _asyncio.to_thread(_fetch_positions_value_sync, wallet),
+        )
+    except Exception as exc:
+        logger.warning("equity_snapshot: fetch failed: %s", exc)
+        return
+
+    bankroll      = float(balance_raw or 0.0)
+    claimable     = float((claimable_data or {}).get("claimable_usd") or 0.0)
+    positions_val = float((posval_data or {}).get("positions_value_usd") or 0.0)
+    equity        = bankroll + claimable + positions_val
+    equity_start  = float(event_manager.settings.get("live_equity_start_bankroll_usd") or 0.0)
+    net_pnl       = round(equity - equity_start, 4) if equity_start > 0 else None
+
+    row = {
+        "timestamp_utc":     datetime.now(timezone.utc).isoformat(),
+        "bankroll_usdc":     round(bankroll, 4),
+        "positions_value_usd": round(positions_val, 4),
+        "claimable_usd":     round(claimable, 4),
+        "equity_usd":        round(equity, 4),
+        "net_pnl_usd":       net_pnl,
+    }
+    os.makedirs(os.path.dirname(_EQUITY_SNAPSHOT_PATH), exist_ok=True)
+    file_exists = os.path.exists(_EQUITY_SNAPSHOT_PATH)
+    with open(_EQUITY_SNAPSHOT_PATH, "a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=_EQUITY_SNAPSHOT_FIELDS)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(row)
+    logger.debug(
+        "equity_snapshot saved: equity=%.2f net_pnl=%s",
+        equity,
+        f"{net_pnl:+.2f}" if net_pnl is not None else "n/a",
+    )
+
+
 def _outcome_index_to_index_sets(outcome_index: int) -> list[int]:
     """Convert outcomeIndex (0-based) to CTF indexSets (1-based bitmask)."""
     return [1 << outcome_index]  # outcomeIndex=0 → [1], outcomeIndex=1 → [2]

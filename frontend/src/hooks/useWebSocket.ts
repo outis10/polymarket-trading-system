@@ -5,8 +5,10 @@ import { useAccountStore } from "../stores/useAccountStore";
 import type { WSMessage, EventData, SettingsData } from "../types/events";
 
 function buildWsUrl(): string {
+    const backendUrl = import.meta.env.VITE_BACKEND_URL ?? "http://localhost:8000";
+    const wsBase = backendUrl.replace(/^http/, "ws");
     const base = import.meta.env.DEV
-        ? "ws://localhost:8010/ws/events"
+        ? `${wsBase}/ws/events`
         : `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/events`;
     return API_KEY ? `${base}?api_key=${encodeURIComponent(API_KEY)}` : base;
 }

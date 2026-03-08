@@ -14,14 +14,16 @@ from fastapi.staticfiles import StaticFiles
 
 from .middleware.auth import APIKeyMiddleware
 from .routers import events, trading
+from .routers.trading import save_equity_snapshot
 from .services.event_manager import event_manager
 from .ws.handlers import router as ws_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
-_AUTO_REDEEM_CHECK_INTERVAL = 30 * 60   # check every 30 min
-_AUTO_REDEEM_COOLDOWN       = 2 * 60 * 60  # min 2h between executions
+_AUTO_REDEEM_CHECK_INTERVAL  = 30 * 60   # check every 30 min
+_AUTO_REDEEM_COOLDOWN        = 2 * 60 * 60  # min 2h between executions
+_EQUITY_SNAPSHOT_INTERVAL    = 30 * 60   # snapshot every 30 min
 
 
 async def _auto_redeem_loop() -> None:
@@ -128,21 +130,40 @@ async def _auto_redeem_loop() -> None:
         await asyncio.sleep(_AUTO_REDEEM_CHECK_INTERVAL)
 
 
+async def _equity_snapshot_loop() -> None:
+    """Background task: save equity snapshot every 30 minutes to equity_snapshots.csv."""
+    await asyncio.sleep(120)  # wait for app + first balances to settle
+    while True:
+        try:
+            await save_equity_snapshot()
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            logger.warning("equity_snapshot_loop error: %s", exc)
+        try:
+            await asyncio.sleep(_EQUITY_SNAPSHOT_INTERVAL)
+        except asyncio.CancelledError:
+            break
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup / shutdown lifecycle."""
     logger.info("Starting EventManager...")
     await event_manager.start()
 
-    redeem_task = asyncio.create_task(_auto_redeem_loop(), name="auto_redeem")
+    redeem_task    = asyncio.create_task(_auto_redeem_loop(), name="auto_redeem")
+    snapshot_task  = asyncio.create_task(_equity_snapshot_loop(), name="equity_snapshot")
 
     yield
 
     redeem_task.cancel()
-    try:
-        await redeem_task
-    except asyncio.CancelledError:
-        pass
+    snapshot_task.cancel()
+    for t in (redeem_task, snapshot_task):
+        try:
+            await t
+        except asyncio.CancelledError:
+            pass
 
     logger.info("Stopping EventManager...")
     await event_manager.stop()
@@ -155,7 +176,7 @@ _cors_origins_env = os.getenv("ALLOWED_ORIGINS", "")
 _cors_origins = (
     [o.strip() for o in _cors_origins_env.split(",") if o.strip()]
     if _cors_origins_env
-    else ["http://localhost:5183", "http://localhost:3010"]
+    else ["http://localhost:5173", "http://localhost:5183", "http://localhost:3010"]
 )
 app.add_middleware(
     CORSMiddleware,

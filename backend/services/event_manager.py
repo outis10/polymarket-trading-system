@@ -401,6 +401,7 @@ class EventManager:
             "quant_gate_min_edge_vs_ask_pct": 2.0,
             "quant_gate_min_prob": 0.0,
             "quant_gate_max_spread_pct": 0.0,
+            "quant_gate_min_ask_price": 0.0,
             "quant_gate_min_sample_strong_signal": 20,
             "quant_gate_strong_signal_threshold": 0.72,
             "early_window_enabled": True,
@@ -1314,6 +1315,12 @@ class EventManager:
         )
         if max_spread_pct > 0 and spread_pct is not None and spread_pct > max_spread_pct:
             reasons.append(f"spread>{max_spread_pct:.2%}")
+
+        min_ask_price = float(
+            gp.get("min_ask_price", settings.get("quant_gate_min_ask_price", 0.0))
+        )
+        if min_ask_price > 0 and ask_price is not None and not ask_is_proxy and ask_price < min_ask_price:
+            reasons.append(f"ask<{min_ask_price:.2f}")
 
         if quant_prob is not None:
             # edge_pct: informational — quant advantage vs mid-market

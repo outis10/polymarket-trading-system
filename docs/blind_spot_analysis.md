@@ -65,6 +65,17 @@ ruido estadístico. Con N > 50 y PnL negativo consistente, actuar.
 - `0.03` = bloquea cuando spread > 3% (recomendado según análisis inicial)
 - El reason en `opportunity_blocked.csv` aparecerá como `spread>3.00%`
 
+### Min Ask Price (implementado 2026-03-08)
+```json
+"quant_gate_min_ask_price": 0.40
+```
+- `0.0` = desactivado (default)
+- `0.40` = bloquea cuando ask real del outcome < $0.40 por share (recomendado)
+- Solo aplica cuando el ask es real (no proxy/mid)
+- El reason en `opportunity_blocked.csv` aparecerá como `ask<0.40`
+- **Base**: 67 trades con fill 0.10–0.40 → -$79 PnL (-13% EV en bucket 0.3–0.4, N=40)
+- Confirmado cruzando `polymarket_activity_*.csv` con `opportunity_outcomes.csv`
+
 ---
 
 ## Historial de análisis
@@ -98,6 +109,94 @@ para actuar con certeza — esperar análisis en 2026-03-21).
 
 ---
 
+### 2026-03-08 — Análisis por fill price (938 trades cruzados con outcomes, desde Mar 4)
+
+**Fuente**: `polymarket_activity_2026-03-08.csv` cruzado con `opportunity_outcomes.csv` + `bot_orders_all_2026-03-08.csv`
+
+**Resultados globales (desde Mar 4)**: +$46.20 PnL, +0.99% ROI, $4,684 apostados
+
+**Hallazgo principal — distribución por fill price**:
+
+| Bucket fill | N | Win% | EV% | PnL total |
+|---|---|---|---|---|
+| 0.10–0.20 | 9 | 22.2% | +48.1% | -$13.68 |
+| 0.20–0.30 | 18 | 22.2% | -11.1% | -$26.47 |
+| 0.30–0.40 | 40 | 35.0% | ≈0% | -$38.83 |
+| 0.40–0.50 | 31 | 45.2% | +0.4% | -$16.42 |
+| 0.50–0.60 | 153 | 68.0% | +23.6% | +$189.91 |
+| 0.60–0.70 | 101 | 69.3% | +6.6% | +$144.54 |
+| 0.70–0.80 | 57 | 73.7% | -1.8% | +$90.72 |
+| 0.80–0.90 | 17 | 94.1% | +10.7% | +$62.59 |
+
+**Zona perdedora (fill < 0.40)**: 67 trades → -$79 PnL, edge promedio -6.4%
+**Zona ganadora (fill ≥ 0.50)**: 328 trades → +$488 PnL, edge promedio +17.9%
+
+**Acción tomada**: Implementado filtro `quant_gate_min_ask_price = 0.40`.
+
+**Verificación adicional (double-check 2026-03-08)**: Se confirmó que el gate NO tiene bug.
+Todos los placed orders tenían `edge_vs_ask > 0` (+3.9% a +20.2%, avg +9.3%).
+El `edge_pct_at_signal` en `opportunity_outcomes` es vs mid-market (informativo), no vs ask (decisión).
+El problema real es **calibración del modelo**, no lógica del gate.
+
+| Bucket | N | Win% | AvgEdgeAsk | PnL | Veredicto |
+|---|---|---|---|---|---|
+| 0.1–0.2 | 14 | 28.6% | +9.4% | -$16.69 | monitorear |
+| 0.2–0.3 | 23 | 13.0% | +8.7% | -$49.00 | FILTRAR |
+| 0.3–0.4 | 49 | 38.8% | +8.5% | -$35.54 | FILTRAR |
+| 0.4–0.5 | 39 | 51.3% | +10.9% | -$7.64 | monitorear |
+| 0.5–0.9 | 358 | 70%+ | +10.0% | +$510 | OK |
+
+El gate pasa trades con edge similar (+8-11%) en todos los buckets, pero los buckets
+bajos ganan con mucha menos frecuencia de lo que el modelo predice → quant_prob
+sobreestima la probabilidad real para outcomes de precio bajo.
+
+---
+
+### Causa raíz: descalibración del modelo en zona de precio bajo
+
+El modelo de quant está entrenado principalmente con datos donde BTC tiene movimientos
+moderados (outcomes de precio 0.5–0.7). En la zona 0.1–0.4, los outcomes representan
+movimientos extremos o poco probables donde la calibración histórica es escasa.
+
+**Síntoma**: el gate detecta edge real (+8-10% vs ask) pero la win rate real (13-38%)
+no soporta ese edge — el modelo sobreestima `quant_prob` en esa zona.
+
+---
+
+### Posibles acciones para recalibrar el modelo
+
+#### Opción A — Filtro temporal (implementado) ✅
+```json
+"quant_gate_min_ask_price": 0.40
+```
+Bloquea trades mientras el modelo no está calibrado en esa zona.
+Ventaja: inmediato, cero riesgo. Desventaja: sacrifica oportunidades potencialmente buenas.
+
+#### Opción B — Recalibración del quant_prob por bucket de precio
+En el pipeline quant (`scripts/update_quant.sh`), agregar un factor de calibración
+por rango de precio histórico. Si el modelo dice 25% pero históricamente gana 13%
+en ese rango → escalar `quant_prob` por un factor de corrección `0.13/0.25 = 0.52`.
+Requiere: +100 trades por bucket para estimación estable.
+
+#### Opción C — Aumentar `quant_gate_min_edge_pct` para precios bajos
+Exigir más edge en la zona problemática. Si el ask es < 0.40, requerir edge ≥ 20%
+en lugar del default (4-7%). Esto reduce el número de trades bloqueados vs Opción A
+pero sigue siendo más conservador.
+```json
+"quant_gate_min_edge_pct": 7.0   (global, ajustar con cuidado)
+```
+
+#### Opción D — Análisis de calibración por bin/slot + precio
+El pipeline quant ya segmenta por `range` (bin de movimiento BTC) y `slot` (posición
+en ventana). Verificar si los bins que corresponden a movimientos extremos ([-40,-30),
+[30,40)) tienen peor calibración que los bins centrales ([-10,0), [0,10)).
+Si es así, el filtro por precio es un proxy del filtro por bin extremo.
+
+**Recomendación**: mantener Opción A activa y evaluar Opción B en la revisión de
+2026-03-22 cuando haya más datos en la zona bloqueada para comparar.
+
+---
+
 ## Criterios para actuar vs. esperar
 
 | Condición | Acción recomendada |
@@ -111,13 +210,15 @@ para actuar con certeza — esperar análisis en 2026-03-21).
 
 ## Próxima revisión recomendada
 
-**Fecha**: ~2026-03-21 (con ~2 semanas más de datos)
+**Fecha**: ~2026-03-22 (con ~2 semanas más de datos)
 
 **Foco**:
 1. Confirmar si horas 10h, 11h, 21h, 22h PST siguen siendo negativas con más N
 2. Confirmar si slots 9 y 15 son consistentes o fueron ruido
-3. Verificar si el filtro de spread está bloqueando oportunidades buenas (revisar `opportunity_blocked.csv`)
-4. Calibration check: `quant_prob` vs `win_rate` real por bucket
+3. Verificar si `quant_gate_max_spread_pct` está bloqueando oportunidades buenas (revisar `opportunity_blocked.csv`, reason `spread>3.00%`)
+4. Verificar si `quant_gate_min_ask_price` reduce losses sin bloquear demasiado (revisar `opportunity_blocked.csv`, reason `ask<0.40`)
+5. Re-correr `analyze_polymarket_activity.py` para ver evolución de PnL por bucket de precio
+6. Calibration check: `quant_prob` vs `win_rate` real por bucket de precio
 
 ---
 

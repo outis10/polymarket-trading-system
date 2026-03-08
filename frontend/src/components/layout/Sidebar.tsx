@@ -1098,6 +1098,21 @@ export default function Sidebar({ send }: SidebarProps) {
                         }
                     />
 
+                    <label className="field-label">Min Ask Price <span style={{fontSize:"0.75em",opacity:0.6}}>0=off</span></label>
+                    <input
+                        className="sidebar-number-input"
+                        type="number"
+                        min={0}
+                        max={0.99}
+                        step={0.05}
+                        value={settings.quant_gate_min_ask_price ?? 0}
+                        onChange={(e) =>
+                            handleKellySettingChange({
+                                quant_gate_min_ask_price: Number(e.target.value || 0),
+                            })
+                        }
+                    />
+
                     <label className="field-label">Min Edge (%)</label>
                     <input
                         className="sidebar-number-input"

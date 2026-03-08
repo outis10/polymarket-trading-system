@@ -13,6 +13,8 @@ Estos codigos se generan en `_compute_quant_buy_gate_side(...)` y luego se empaq
 - `edge<NN.NN%`: edge del lado por debajo de `min_edge_pct` del gate.
 - `no_ask_price`: filtro `edge_vs_ask` activado pero no hay ask real (solo proxy/mid).
 - `ask_edge<NN.NN%`: edge vs ask por debajo de `min_edge_vs_ask_pct`.
+- `spread>NN.NN%`: spread ask-bid supera `quant_gate_max_spread_pct`. (implementado 2026-03-07)
+- `ask<N.NN`: ask real del outcome por debajo de `quant_gate_min_ask_price`. (implementado 2026-03-08)
 - `price_outside_X-Yc`: precio de mercado fuera de rango permitido en centavos.
 - `no_percentile`: filtro por percentil activado pero no hay percentil.
 - `percentile_inside_X-Y`: percentil dentro de zona bloqueada.
