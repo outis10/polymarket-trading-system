@@ -54,6 +54,7 @@ export const useEventsStore = create<EventsState>((set) => ({
         quant_gate_edge_vs_ask_enabled: false,
         quant_gate_min_edge_vs_ask_pct: 2,
         quant_gate_min_prob: 0.0,
+        quant_gate_blocked_hours_pst: [] as number[],
         early_window_enabled: true,
         early_window_start: 20,
         early_window_end: 120,

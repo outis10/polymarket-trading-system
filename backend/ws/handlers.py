@@ -159,6 +159,12 @@ async def websocket_events(websocket: WebSocket):
                         event_manager.settings["quant_gate_min_prob"] = float(
                             settings["quant_gate_min_prob"]
                         )
+                    if "quant_gate_blocked_hours_pst" in settings:
+                        raw = settings["quant_gate_blocked_hours_pst"]
+                        if isinstance(raw, list):
+                            event_manager.settings["quant_gate_blocked_hours_pst"] = [
+                                int(h) for h in raw if 0 <= int(h) <= 23
+                            ]
                     if "early_window_enabled" in settings:
                         event_manager.settings["early_window_enabled"] = bool(
                             settings["early_window_enabled"]

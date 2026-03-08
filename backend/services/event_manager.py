@@ -404,6 +404,7 @@ class EventManager:
             "quant_gate_min_ask_price": 0.0,
             "quant_gate_min_sample_strong_signal": 20,
             "quant_gate_strong_signal_threshold": 0.72,
+            "quant_gate_blocked_hours_pst": [],  # e.g. [10, 11, 21, 22]
             "early_window_enabled": True,
             "early_window_start": 20,
             "early_window_end": 120,
@@ -1298,6 +1299,21 @@ class EventManager:
                 "sample_size": sample_size,
                 "percentile": percentile,
             }
+
+        # Hour-block filter: skip trades during configured losing hours (PST)
+        blocked_hours = settings.get("quant_gate_blocked_hours_pst", [])
+        if blocked_hours:
+            from zoneinfo import ZoneInfo as _ZI
+            _pst = _ZI("America/Los_Angeles")
+            _hour_pst = datetime.now(tz=_pst).hour
+            if _hour_pst in blocked_hours:
+                return {
+                    "enabled": False,
+                    "reasons": [f"blocked_hour_pst:{_hour_pst}"],
+                    "edge_pct": None,
+                    "sample_size": sample_size,
+                    "percentile": percentile,
+                }
 
         if quant_prob is None:
             reasons.append("no_quant_data")

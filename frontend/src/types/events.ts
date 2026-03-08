@@ -127,6 +127,7 @@ export interface SettingsData {
     quant_gate_edge_vs_ask_enabled?: boolean;
     quant_gate_min_edge_vs_ask_pct?: number;
     quant_gate_min_prob?: number;
+    quant_gate_blocked_hours_pst?: number[];
     early_window_enabled?: boolean;
     early_window_start?: number;
     early_window_end?: number;

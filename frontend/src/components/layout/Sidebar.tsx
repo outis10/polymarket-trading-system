@@ -1113,6 +1113,26 @@ export default function Sidebar({ send }: SidebarProps) {
                         }
                     />
 
+                    <label className="field-label" title="Horas PST en las que el bot NO opera (ej: 10,11,21,22). Vacío = sin bloqueo.">
+                        Blocked Hours PST <span style={{fontSize:"0.75em",opacity:0.6}}>vacío=off</span>
+                    </label>
+                    <input
+                        className="sidebar-number-input"
+                        type="text"
+                        placeholder="ej: 10,11,21,22"
+                        value={(settings.quant_gate_blocked_hours_pst ?? []).join(",")}
+                        onChange={(e) => {
+                            const raw = e.target.value;
+                            const hours = raw
+                                .split(",")
+                                .map((s) => parseInt(s.trim(), 10))
+                                .filter((n) => !isNaN(n) && n >= 0 && n <= 23);
+                            handleKellySettingChange({
+                                quant_gate_blocked_hours_pst: hours,
+                            });
+                        }}
+                    />
+
                     <label className="field-label">Min Edge (%)</label>
                     <input
                         className="sidebar-number-input"
