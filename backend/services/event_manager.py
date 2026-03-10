@@ -405,6 +405,7 @@ class EventManager:
             "quant_gate_min_sample_strong_signal": 20,
             "quant_gate_strong_signal_threshold": 0.72,
             "quant_gate_blocked_hours_pst": [],  # e.g. [10, 11, 21, 22]
+            "quant_gate_enabled_slots": [],  # e.g. [3,4,5,6] — only these slots trade; empty = no filter
             "early_window_enabled": True,
             "early_window_start": 20,
             "early_window_end": 120,
@@ -1241,6 +1242,7 @@ class EventManager:
         price_diff_pct: float | None = None,
         spread_pct: float | None = None,
         window_profile: str = "base",
+        current_slot: int | None = None,
     ) -> dict:
         settings = self.settings
         gp = gate_params or {}
@@ -1310,6 +1312,18 @@ class EventManager:
                 return {
                     "enabled": False,
                     "reasons": [f"blocked_hour_pst:{_hour_pst}"],
+                    "edge_pct": None,
+                    "sample_size": sample_size,
+                    "percentile": percentile,
+                }
+
+        # Slot allow-list filter: only trade in the listed slots; empty = no filter
+        enabled_slots = settings.get("quant_gate_enabled_slots", [])
+        if enabled_slots and current_slot is not None:
+            if current_slot not in enabled_slots:
+                return {
+                    "enabled": False,
+                    "reasons": [f"slot_not_enabled:{current_slot}"],
                     "edge_pct": None,
                     "sample_size": sample_size,
                     "percentile": percentile,
@@ -1617,6 +1631,13 @@ class EventManager:
         spread_pct_up = _spread_pct(ask_up_raw, bid_up_raw)
         spread_pct_down = _spread_pct(ask_down_raw, bid_down_raw)
 
+        _hist = event_dict.get("quant_range_histogram")
+        _current_slot: int | None = None
+        if isinstance(_hist, dict):
+            _raw_slot = _hist.get("slot")
+            if isinstance(_raw_slot, (int, float)):
+                _current_slot = int(_raw_slot)
+
         event_dict["quant_buy_gate"] = {
             "up": self._compute_quant_buy_gate_side(
                 side="up",
@@ -1633,6 +1654,7 @@ class EventManager:
                 price_diff_pct=price_diff_pct,
                 spread_pct=spread_pct_up,
                 window_profile=window_profile,
+                current_slot=_current_slot,
             ),
             "down": self._compute_quant_buy_gate_side(
                 side="down",
@@ -1649,6 +1671,7 @@ class EventManager:
                 price_diff_pct=price_diff_pct,
                 spread_pct=spread_pct_down,
                 window_profile=window_profile,
+                current_slot=_current_slot,
             ),
         }
 
@@ -1776,6 +1799,18 @@ class EventManager:
             _hour_pst = datetime.now(tz=_ZI("America/Los_Angeles")).hour
             if _hour_pst in blocked_hours:
                 result["reason"] = f"blocked_hour_pst:{_hour_pst}"
+                return result
+
+        enabled_slots = self.settings.get("quant_gate_enabled_slots", [])
+        if enabled_slots:
+            _hist = event_dict.get("quant_range_histogram")
+            _slot = None
+            if isinstance(_hist, dict):
+                _raw = _hist.get("slot")
+                if isinstance(_raw, (int, float)):
+                    _slot = int(_raw)
+            if _slot is not None and _slot not in enabled_slots:
+                result["reason"] = f"slot_not_enabled:{_slot}"
                 return result
 
         if bool(self.settings.get("bot_enforce_timeframe_filter", True)):

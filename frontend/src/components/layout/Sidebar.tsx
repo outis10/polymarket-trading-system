@@ -58,6 +58,7 @@ export default function Sidebar({ send }: SidebarProps) {
     const [refreshingLiveEvents, setRefreshingLiveEvents] = useState(false);
     const [refreshLiveMessage, setRefreshLiveMessage] = useState("");
     const [blockedHoursRaw, setBlockedHoursRaw] = useState<string | null>(null);
+    const [enabledSlotsRaw, setEnabledSlotsRaw] = useState<string | null>(null);
 
     const handleModeChange = (mode: string) => {
         send({ type: "switch_mode", mode });
@@ -1130,6 +1131,25 @@ export default function Sidebar({ send }: SidebarProps) {
                                 .filter((n) => !isNaN(n) && n >= 0 && n <= 23);
                             handleKellySettingChange({ quant_gate_blocked_hours_pst: hours });
                             setBlockedHoursRaw(null);
+                        }}
+                    />
+
+                    <label className="field-label" title="Slots habilitados para operar (1–30). Solo estos slots pasan el gate. Vacío = sin filtro.">
+                        Enabled Slots <span style={{fontSize:"0.75em",opacity:0.6}}>vacío=todos</span>
+                    </label>
+                    <input
+                        className="sidebar-number-input"
+                        type="text"
+                        placeholder="ej: 3,4,5,6"
+                        value={enabledSlotsRaw ?? (settings.quant_gate_enabled_slots ?? []).join(",")}
+                        onChange={(e) => setEnabledSlotsRaw(e.target.value)}
+                        onBlur={(e) => {
+                            const slots = e.target.value
+                                .split(",")
+                                .map((s) => parseInt(s.trim(), 10))
+                                .filter((n) => !isNaN(n) && n >= 1 && n <= 30);
+                            handleKellySettingChange({ quant_gate_enabled_slots: slots });
+                            setEnabledSlotsRaw(null);
                         }}
                     />
 
