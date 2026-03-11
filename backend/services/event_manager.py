@@ -827,6 +827,28 @@ class EventManager:
                 return day_type, row["time_frame"]
         return None
 
+    def _get_current_time_frame(self) -> str | None:
+        """Return the time_frame name for the current wall-clock time.
+
+        Returns None if time_windows is not loaded.
+        Returns 'off' if the current hour falls in an off window.
+        """
+        if not self._time_windows or self._time_windows_tz is None:
+            return None
+        dt_local = datetime.now(tz=self._time_windows_tz)
+        weekday = dt_local.weekday()
+        day_type = "weekend" if weekday >= 5 else "workday"
+        local_hour = dt_local.hour + dt_local.minute / 60 + dt_local.second / 3600
+        for row in self._time_windows:
+            if row["day_type"] != day_type:
+                continue
+            end = row["end_hour"]
+            if row["start_hour"] <= local_hour < end or (
+                end == 24 and local_hour >= row["start_hour"]
+            ):
+                return row["time_frame"]
+        return None
+
     def _load_pm_5m_slot_ranges(
         self,
     ) -> tuple[
@@ -1302,7 +1324,19 @@ class EventManager:
                 "percentile": percentile,
             }
 
-        # Hour-block filter: skip trades during configured losing hours (PST)
+        # Time-window filter: block trades outside configured trading windows
+        if self._time_windows:
+            _current_tf = self._get_current_time_frame()
+            if _current_tf == "off":
+                return {
+                    "enabled": False,
+                    "reasons": ["off_window"],
+                    "edge_pct": None,
+                    "sample_size": sample_size,
+                    "percentile": percentile,
+                }
+
+        # Hour-block filter (override): skip trades during additional losing hours (PST)
         blocked_hours = settings.get("quant_gate_blocked_hours_pst", [])
         if blocked_hours:
             from zoneinfo import ZoneInfo as _ZI
@@ -1793,6 +1827,14 @@ class EventManager:
             "kelly_pct": None,
         }
 
+        # Time-window filter: block trades outside configured trading windows
+        if self._time_windows:
+            _current_tf = self._get_current_time_frame()
+            if _current_tf == "off":
+                result["reason"] = "off_window"
+                return result
+
+        # Hour-block filter (override): skip trades during additional losing hours (PST)
         blocked_hours = self.settings.get("quant_gate_blocked_hours_pst", [])
         if blocked_hours:
             from zoneinfo import ZoneInfo as _ZI

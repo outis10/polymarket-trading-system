@@ -252,7 +252,7 @@ def main() -> None:
         maybe_block = pd.to_numeric(df["ts_5m_block"], errors="coerce")
         if maybe_block.notna().all():
             df["_block_key"] = maybe_block.astype("int64")
-            df["_block_start"] = pd.to_datetime(df["_block_key"], unit="ms", utc=True)
+            df["_block_start"] = pd.to_datetime(df["_block_key"], unit="s", utc=True)
         else:
             df["_block_start"] = df["open_time_utc"].dt.floor("5min")
             df["_block_key"] = (df["_block_start"].astype("int64") // 1_000_000).astype(
