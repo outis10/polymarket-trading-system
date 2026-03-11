@@ -4,8 +4,8 @@ import os
 from typing import Optional
 from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv()
+# Load environment variables — supports ENV_FILE to load a custom .env file
+load_dotenv(os.environ.get("ENV_FILE", ".env"))
 
 
 @dataclass

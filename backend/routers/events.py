@@ -3,6 +3,7 @@
 import asyncio
 import csv
 import io
+import os
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -17,12 +18,79 @@ from ..ws.manager import manager
 router = APIRouter(prefix="/api", tags=["events"])
 
 
+def _output_dir() -> Path:
+    """Runtime output dir — reads from event_manager to respect OUTPUT_DIR env var."""
+    return Path(event_manager._opportunity_tracker.base_dir)
+
+
+def _normalize_paper_trade_row(r: dict) -> dict:
+    """Map paper_trades.csv fields to bot_orders schema so the frontend can treat them uniformly."""
+    pnl = r.get("pnl_simulated", "")
+    try:
+        won = "1" if float(pnl) > 0 else "0"
+    except (ValueError, TypeError):
+        won = ""
+    status = r.get("status", "")
+    resolution_status = "resolved" if status == "resolved" else "pending"
+    try:
+        edge_pct = str(round(float(r["QuantumEdge"]) * 100, 4)) if r.get("QuantumEdge") else ""
+    except (ValueError, TypeError):
+        edge_pct = ""
+    try:
+        edge_at_fill = str(round(float(r["edge_at_fill_pct"]), 4)) if r.get("edge_at_fill_pct") else ""
+    except (ValueError, TypeError):
+        edge_at_fill = ""
+    return {
+        "placed_at_utc": r.get("decision_time", ""),
+        "event_id": r.get("event_id", ""),
+        "ticker": r.get("ticker", ""),
+        "slot": r.get("slot", ""),
+        "range": r.get("range", ""),
+        "side": r.get("side_taken", ""),
+        "event_end_utc_at_send": r.get("event_end_utc", ""),
+        "token_id": "",
+        "shares": r.get("shares_simulated", ""),
+        "price": r.get("marketProb_at_decision", ""),
+        "notional_usd": r.get("stake_usd", ""),
+        "order_id": r.get("decision_id", ""),
+        "quant_prob": r.get("prob_up", ""),
+        "edge_pct": edge_pct,
+        "price_source_at_send": r.get("price_source_at_decision", ""),
+        "price_to_beat_at_send": r.get("price_to_beat_at_decision", ""),
+        "current_price_at_send": r.get("current_price_at_decision", ""),
+        "diff_vs_ptb_at_send": r.get("diff_vs_ptb_at_decision", ""),
+        "best_bid_at_send": r.get("best_bid_at_decision", ""),
+        "best_ask_at_send": r.get("best_ask_at_decision", ""),
+        "mid_at_send": r.get("mid_at_decision", ""),
+        "spread_at_send": r.get("spread_at_decision", ""),
+        "spread_pct_at_send": r.get("spread_pct_at_decision", ""),
+        "fill_price_real": r.get("fill_price_real", ""),
+        "filled_at_utc": r.get("decision_time", ""),
+        "fill_latency_ms": "",
+        "slippage_pct": "",
+        "filled_notional_usd_real": r.get("stake_usd", ""),
+        "filled_shares_real": r.get("shares_simulated", ""),
+        "fill_count": "",
+        "fills_detail_json": "",
+        "edge_at_fill_pct": edge_at_fill,
+        "kelly_pct": "",
+        "bankroll_usd": "",
+        "percentile_at_signal": "",
+        "close_price_at_resolution": r.get("close_price_at_resolution", ""),
+        "event_outcome_real": r.get("event_outcome_real", ""),
+        "won": won,
+        "pnl_simulated": pnl,
+        "resolution_status": resolution_status,
+        "status": "placed",
+    }
+
+
 def _load_bot_orders_rows(
     *,
     ticker: str | None,
     days: int,
 ) -> list[dict[str, Any]]:
-    root = Path("backtest_output")
+    root = _output_dir()
     rows: list[dict[str, Any]] = []
     ticker_filter = ticker.upper() if ticker else None
     cutoff_day = datetime.now(tz=timezone.utc).date() - timedelta(
@@ -259,7 +327,7 @@ async def get_paper_trades_raw(limit: int = 500, ticker: str | None = None):
     """Return raw paper-mode decision rows."""
     t = ticker.upper() if ticker else None
     rows = await asyncio.to_thread(
-        _read_csv_rows, Path("backtest_output/paper_trades.csv"), t, limit
+        _read_csv_rows, _output_dir() / "paper_trades.csv", t, limit
     )
     return {"count": len(rows), "ticker_filter": t, "rows": rows}
 
@@ -270,14 +338,23 @@ async def get_bot_orders_raw(
     ticker: str | None = None,
     days: int = 7,
 ):
-    """Return raw bot order rows from daily bot_orders_YYYY-MM-DD.csv logs."""
+    """Return raw bot order rows. In paper mode, serves paper_trades.csv instead."""
     ticker_filter = ticker.upper() if ticker else None
-    rows = await asyncio.to_thread(lambda: _load_bot_orders_rows(ticker=ticker, days=days))
-    rows = rows[-max(1, int(limit)):]
+    is_paper = bool(event_manager.settings.get("bot_paper_mode", False))
+    if is_paper:
+        t = ticker_filter
+        raw = await asyncio.to_thread(
+            _read_csv_rows, _output_dir() / "paper_trades.csv", t, limit
+        )
+        rows = [_normalize_paper_trade_row(r) for r in raw]
+    else:
+        rows = await asyncio.to_thread(lambda: _load_bot_orders_rows(ticker=ticker, days=days))
+        rows = rows[-max(1, int(limit)):]
     return {
         "count": len(rows),
         "ticker_filter": ticker_filter,
         "days": max(1, int(days)),
+        "paper_mode": is_paper,
         "rows": rows,
     }
 

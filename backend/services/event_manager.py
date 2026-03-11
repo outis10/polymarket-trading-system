@@ -37,7 +37,10 @@ from .price_provider import (
 logger = logging.getLogger(__name__)
 
 _BOT_ORDERS_LOG_DIR = os.path.normpath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "backtest_output")
+    os.environ.get(
+        "OUTPUT_DIR",
+        os.path.join(os.path.dirname(__file__), "..", "..", "backtest_output"),
+    )
 )
 _BOT_ORDERS_FIELDNAMES = [
     "placed_at_utc",
@@ -430,6 +433,7 @@ class EventManager:
             "bot_cooldown_seconds_per_event_side": 60,
             "bot_global_min_seconds_between_orders": 2,
             "bot_max_event_exposure_pct": 15.0,
+            "bot_max_ticker_exposure_pct": 0,
             "bot_drawdown_enabled": True,
             "bot_drawdown_stop_pct": 50.0,
             "bot_order_notional_cap_usd": 5.0,
@@ -446,6 +450,9 @@ class EventManager:
             "auto_redeem_threshold_usd": 20.0,
             "auto_redeem_bankroll_pct": 0.03,
             "fak_price_tolerance": 0.02,  # extra cents added to ask to survive book movement during latency
+            "bot_fak_retry_on_no_fill": True,
+            "bot_fak_retry_extra_tolerance": 0.01,  # price increment per retry attempt
+            "bot_fak_max_attempts": 3,              # total attempts on no_fill (1=no retry)
             "bot_min_diff_abs": {},  # per-asset absolute diff filter e.g. {"BTC": 20}
         }
         self._config: dict = {}
@@ -518,14 +525,13 @@ class EventManager:
         # Position tracker: fuente de verdad para shares compradas por evento
         # {event_id: {"up": {"shares": float, "avg_price": float, "token_id": str, "placed_at_utc": str}, ...}}
         self._position_tracker: dict[str, dict] = {}
-        tracker_dir = os.path.normpath(
-            os.path.join(os.path.dirname(__file__), "..", "..", "backtest_output")
-        )
+        _project_root = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
+        _default_output = os.path.join(_project_root, "backtest_output")
+        _default_settings = os.path.join(_project_root, "config", "runtime_settings.json")
+        tracker_dir = os.path.normpath(os.environ.get("OUTPUT_DIR", _default_output))
         self._opportunity_tracker = OpportunityTracker(base_dir=tracker_dir)
         self._runtime_settings_path = os.path.normpath(
-            os.path.join(
-                os.path.dirname(__file__), "..", "..", "config", "runtime_settings.json"
-            )
+            os.environ.get("SETTINGS_PATH", _default_settings)
         )
         self._persisted_setting_keys = set(self.settings.keys())
         self._last_paper_reconcile_at: datetime | None = None
@@ -537,15 +543,7 @@ class EventManager:
         records = []
         try:
             today_str = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
-            csv_path = os.path.normpath(
-                os.path.join(
-                    os.path.dirname(__file__),
-                    "..",
-                    "..",
-                    "backtest_output",
-                    f"bot_orders_{today_str}.csv",
-                )
-            )
+            csv_path = os.path.join(_BOT_ORDERS_LOG_DIR, f"bot_orders_{today_str}.csv")
             if not os.path.exists(csv_path):
                 return records
             with open(csv_path, newline="") as f:
@@ -2023,6 +2021,32 @@ class EventManager:
                 result["stake_usd"] = stake_usd
                 result["shares"] = shares
                 result["notional_usd"] = notional_usd
+
+            # Ticker-level exposure cap (0 = disabled)
+            ticker_cap_pct = max(
+                0.0, float(self.settings.get("bot_max_ticker_exposure_pct", 0))
+            )
+            if ticker_cap_pct > 0:
+                ticker_cap_usd = base_bankroll_guard * ticker_cap_pct / 100.0
+                ticker = self._extract_event_ticker(event_id, event_dict or {})
+                ticker_spend = sum(
+                    float(r.get("notional_usd", 0.0))
+                    for r in self._order_guard_records
+                    if r.get("ticker") == ticker and r.get("at_utc") >= start_day
+                )
+                remaining_ticker = ticker_cap_usd - ticker_spend
+                if remaining_ticker <= 0:
+                    result["reason"] = "ticker_exposure_cap_reached"
+                    return result
+                capped_notional = min(notional_usd, remaining_ticker)
+                if capped_notional < notional_usd:
+                    notional_usd = capped_notional
+                    stake_usd = capped_notional
+                    shares = stake_usd / ask_price
+                    result["stake_usd"] = stake_usd
+                    result["shares"] = shares
+                    result["notional_usd"] = notional_usd
+
         allowed, guard_reason = self.validate_order_risk_guards(
             event_id=event_id,
             event=event_dict,
@@ -2322,9 +2346,7 @@ class EventManager:
             return
         self._last_bot_orders_reconcile_at = now_utc
 
-        root = os.path.normpath(
-            os.path.join(os.path.dirname(__file__), "..", "..", "backtest_output")
-        )
+        root = _BOT_ORDERS_LOG_DIR
         if not os.path.isdir(root):
             return
 
@@ -2529,6 +2551,21 @@ class EventManager:
         if event_spend + notional_usd > event_cap_usd:
             return False, "event_exposure_cap_reached"
 
+        # Ticker-level exposure cap (0 = disabled)
+        ticker_cap_pct = max(
+            0.0, float(self.settings.get("bot_max_ticker_exposure_pct", 0))
+        )
+        if ticker_cap_pct > 0:
+            ticker_cap_usd = base_bankroll * ticker_cap_pct / 100.0
+            ticker = self._extract_event_ticker(event_id, event)
+            ticker_spend = sum(
+                float(r.get("notional_usd", 0.0))
+                for r in self._order_guard_records
+                if r.get("ticker") == ticker and r.get("at_utc") >= start_day
+            )
+            if ticker_spend + notional_usd > ticker_cap_usd:
+                return False, "ticker_exposure_cap_reached"
+
         return True, ""
 
     def format_risk_guard_block_reason(
@@ -2544,7 +2581,7 @@ class EventManager:
         """
         Expand compact risk-guard reason codes with actionable context.
         """
-        if reason not in {"event_exposure_cap_reached", "drawdown_circuit_breaker"}:
+        if reason not in {"event_exposure_cap_reached", "ticker_exposure_cap_reached", "drawdown_circuit_breaker"}:
             return reason
 
         base_bankroll = (
@@ -2581,6 +2618,24 @@ class EventManager:
             for r in records
             if r.get("event_id") == event_id and r.get("at_utc") >= start_day
         )
+        if reason == "ticker_exposure_cap_reached":
+            ticker = self._extract_event_ticker(event_id, event)
+            ticker_cap_pct = max(
+                0.0, float(self.settings.get("bot_max_ticker_exposure_pct", 0))
+            )
+            ticker_cap_usd = base_bankroll * ticker_cap_pct / 100.0
+            ticker_spend = sum(
+                float(r.get("notional_usd", 0.0))
+                for r in records
+                if r.get("ticker") == ticker and r.get("at_utc") >= start_day
+            )
+            return (
+                "ticker_exposure_cap_reached "
+                f"(ticker={ticker}, ticker_spend=${ticker_spend:.2f}, "
+                f"new_notional=${new_notional:.2f}, cap=${ticker_cap_usd:.2f}, "
+                f"bankroll=${base_bankroll:.2f})"
+            )
+
         return (
             "event_exposure_cap_reached "
             f"(event_spend=${event_spend:.2f}, new_notional=${new_notional:.2f}, "
@@ -3939,7 +3994,7 @@ class EventManager:
             _no_liq_signals = ("no orders found to match", "no match", "no orderbook")
             _retry_extra = float(self.settings.get("bot_fak_retry_extra_tolerance", 0.01))
             _retry_enabled = bool(self.settings.get("bot_fak_retry_on_no_fill", True))
-            _max_attempts = 2 if _retry_enabled else 1
+            _max_attempts = max(1, int(self.settings.get("bot_fak_max_attempts", 3))) if _retry_enabled else 1
 
             result = None
             _send_at_utc = datetime.now(tz=timezone.utc)
@@ -4104,6 +4159,17 @@ class EventManager:
                     event_id,
                     side,
                 )
+                # Rollback phantom exposure — CLOB returned no result, no USDC spent
+                self._bot_prev_gate_enabled[key] = False
+                self._order_guard_records = [
+                    r
+                    for r in self._order_guard_records
+                    if not (
+                        r.get("event_id") == event_id
+                        and r.get("outcome") == side
+                        and r.get("at_utc") == now_utc
+                    )
+                ]
                 # Update the pre-logged "sending" row to reflect the failure
                 _update_bot_order_log_row(
                     _prelog_ts,
@@ -4154,6 +4220,17 @@ class EventManager:
                         ]
                     else:
                         status = "failed"
+                        # Rollback phantom exposure — unknown error, no confirmed fill
+                        self._bot_prev_gate_enabled[key] = False
+                        self._order_guard_records = [
+                            r
+                            for r in self._order_guard_records
+                            if not (
+                                r.get("event_id") == event_id
+                                and r.get("outcome") == side
+                                and r.get("at_utc") == now_utc
+                            )
+                        ]
                     fail_info = {"fills_detail_json": f"error:{err_str[:120]}"}
                 _update_bot_order_log_row(
                     _prelog_ts,
