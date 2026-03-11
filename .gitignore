@@ -85,3 +85,4 @@ generate_credentials_manual.py
 frontend/node_modules/.package-lock.json
 frontend/node_modules/.vite/
 config/runtime_settings.json
+config/runtime_settings_v2.json

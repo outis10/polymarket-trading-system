@@ -2320,6 +2320,12 @@ class EventManager:
             row["status"] = "resolved"
             changed = True
             resolved_pnl_delta += pnl
+            # Release exposure: remove the guard record for this paper trade so the
+            # ticker cap is freed as soon as the event resolves (not after 2 days).
+            self._order_guard_records = [
+                g for g in self._order_guard_records
+                if not (g.get("event_id") == event_id and g.get("outcome") == side)
+            ]
 
         if changed:
             with open(_PAPER_TRADES_LOG_PATH, "w", newline="") as f:
