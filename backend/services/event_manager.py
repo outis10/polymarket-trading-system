@@ -89,7 +89,7 @@ _PAPER_TRADES_LOG_PATH = os.path.normpath(
     os.path.join(_BOT_ORDERS_LOG_DIR, "paper_trades.csv")
 )
 _PAPER_FEE_PCT_DEFAULT = 2.0
-_PAPER_SLIPPAGE_BUFFER_PCT_DEFAULT = 3.0
+_PAPER_SLIPPAGE_BUFFER_PCT_DEFAULT = 0.1  # real slippage measured at 0.014% on 702 live orders
 _PAPER_TRADES_FIELDNAMES = [
     "decision_id",
     "decision_time",
@@ -1974,7 +1974,7 @@ class EventManager:
         if bool(self.settings.get("bot_risk_enabled", True)) and not bool(
             self.settings.get("bot_paper_mode", False)
         ):
-            if bool(self.settings.get("bot_drawdown_enabled", True)):
+            if bool(self.settings.get("bot_drawdown_circuit_breaker_enabled", self.settings.get("bot_drawdown_enabled", True))):
                 drawdown_stop_pct = float(
                     self.settings.get("bot_drawdown_stop_pct", 50.0)
                 )
@@ -2298,8 +2298,8 @@ class EventManager:
             won = event_outcome_real == side
             pnl = (stake * (1.0 / q - 1.0)) if won else (-stake)
             spread_pct = _as_float(row.get("spread_pct_at_decision"))
-            fee_pct_used = _PAPER_FEE_PCT_DEFAULT
-            slippage_buffer_pct_used = _PAPER_SLIPPAGE_BUFFER_PCT_DEFAULT
+            fee_pct_used = float(self.settings.get("paper_fee_pct", _PAPER_FEE_PCT_DEFAULT))
+            slippage_buffer_pct_used = float(self.settings.get("paper_slippage_buffer_pct", _PAPER_SLIPPAGE_BUFFER_PCT_DEFAULT))
             spread_component = max(0.0, spread_pct or 0.0) * 0.5
             friction_rate = max(
                 0.0,
@@ -4226,17 +4226,21 @@ class EventManager:
                         ]
                     else:
                         status = "failed"
-                        # Rollback phantom exposure — unknown error, no confirmed fill
                         self._bot_prev_gate_enabled[key] = False
-                        self._order_guard_records = [
-                            r
-                            for r in self._order_guard_records
-                            if not (
-                                r.get("event_id") == event_id
-                                and r.get("outcome") == side
-                                and r.get("at_utc") == now_utc
-                            )
-                        ]
+                        # Network errors (Request exception / status_code=None): the order
+                        # may have already reached the CLOB. Keep the guard record to prevent
+                        # a double fill on re-evaluation. Only rollback for clear CLOB rejections.
+                        _is_network_error = "request exception" in err_str.lower()
+                        if not _is_network_error:
+                            self._order_guard_records = [
+                                r
+                                for r in self._order_guard_records
+                                if not (
+                                    r.get("event_id") == event_id
+                                    and r.get("outcome") == side
+                                    and r.get("at_utc") == now_utc
+                                )
+                            ]
                     fail_info = {"fills_detail_json": f"error:{err_str[:120]}"}
                 _update_bot_order_log_row(
                     _prelog_ts,
