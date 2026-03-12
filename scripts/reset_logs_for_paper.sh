@@ -17,13 +17,28 @@ for arg in "$@"; do
     --include-backend-log)
       INCLUDE_BACKEND_LOG="true"
       ;;
+    --dir)
+      shift
+      LOG_DIR="${ROOT_DIR}/${1}"
+      ;;
+    --dir=*)
+      LOG_DIR="${ROOT_DIR}/${arg#--dir=}"
+      ;;
+    --v2)
+      LOG_DIR="${ROOT_DIR}/backtest_output_v2"
+      ;;
     *)
       echo "Unknown arg: $arg"
-      echo "Usage: bash scripts/reset_logs_for_paper.sh [--include-backend-log]"
+      echo "Usage: bash scripts/reset_logs_for_paper.sh [--v2] [--dir <subdir>] [--include-backend-log]"
       exit 1
       ;;
   esac
 done
+
+if [[ ! -d "${LOG_DIR}" ]]; then
+  echo "Log dir not found: ${LOG_DIR}"
+  exit 1
+fi
 
 STAMP="$(date +%F_%H%M%S)"
 ARCHIVE_DIR="${LOG_DIR}/archive_${STAMP}"
@@ -80,4 +95,4 @@ echo "Done."
 echo "Cleaned operational logs for fresh paper-mode run."
 echo "Left untouched:"
 echo "- config/runtime_settings.json"
-echo "- backtest_output/merged_pm_5m_slot_ranges_4cryptos.csv"
+echo "- ${LOG_DIR}/merged_pm_5m_slot_ranges_4cryptos.csv (if present)"
