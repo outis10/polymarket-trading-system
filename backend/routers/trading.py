@@ -366,6 +366,7 @@ async def place_order(order: OrderRequest):
             # auto-order path — so the cap is enforced at the exact USD amount
             # regardless of fill price. SELL market orders stay share-based (exit full position).
             if not is_sell:
+                ask_price = quant_debug.get("ask_price_at_check")
                 result = client.place_fok_order(token_id, "BUY", notional_usd, ask_price)
             else:
                 result = client.place_market_order(token_id, side, effective_shares)

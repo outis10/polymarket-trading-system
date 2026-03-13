@@ -11,7 +11,7 @@ Salida:
     - Guarda backtest_output/bitacora_trades.csv con detalle completo
 
 Archivos que consume (todos en --dir):
-    bot_orders.csv             — órdenes ejecutadas por el bot (placed / failed)
+    bot_orders.csv | bot_orders_YYYY-MM-DD.csv  — órdenes ejecutadas por el bot
     opportunity_outcomes.csv   — resultados de señales (won, pnl, close_price, ...)
     opportunities_log.csv      — todas las señales detectadas
     opportunity_blocked.csv    — señales bloqueadas por quant gate
@@ -19,6 +19,7 @@ Archivos que consume (todos en --dir):
 """
 
 import argparse
+import glob
 import os
 import sys
 
@@ -35,6 +36,19 @@ def load(directory: str, filename: str) -> pd.DataFrame:
     return pd.read_csv(path)
 
 
+def load_bot_orders(directory: str) -> pd.DataFrame:
+    """Load bot_orders.csv or merge all bot_orders_YYYY-MM-DD.csv files."""
+    single = os.path.join(directory, "bot_orders.csv")
+    if os.path.exists(single):
+        return pd.read_csv(single)
+    dated = sorted(glob.glob(os.path.join(directory, "bot_orders_*.csv")))
+    if not dated:
+        print(f"  [WARN] No encontrado: bot_orders*.csv en {directory}")
+        return pd.DataFrame()
+    frames = [pd.read_csv(p) for p in dated]
+    return pd.concat(frames, ignore_index=True)
+
+
 def pct_bar(hit: float, total: int) -> str:
     filled = round(hit / 10)
     return f"{'█' * filled}{'░' * (10 - filled)} {hit:.0f}%  (n={total})"
@@ -48,7 +62,7 @@ def main(directory: str, date_filter: str | None) -> None:
         print(f"Filtro de fecha    : {date_filter}")
 
     # Carga
-    bot    = load(directory, "bot_orders.csv")
+    bot    = load_bot_orders(directory)
     outc   = load(directory, "opportunity_outcomes.csv")
     opps   = load(directory, "opportunities_log.csv")
     block  = load(directory, "opportunity_blocked.csv")
@@ -70,8 +84,14 @@ def main(directory: str, date_filter: str | None) -> None:
     failed = bot[bot["status"] == "failed"].copy()
 
     # Cruce con outcomes
+    # v2: bot_orders ya trae won/pnl_simulated embebidos — saltar merge
+    # v1: necesita join con opportunity_outcomes.csv
     merged = pd.DataFrame()
-    if not outc.empty and not placed.empty:
+    if "won" in placed.columns:
+        merged = placed.copy()
+        if "pnl_usd" not in merged.columns and "pnl_simulated" in merged.columns:
+            merged = merged.rename(columns={"pnl_simulated": "pnl_usd"})
+    elif not outc.empty and not placed.empty:
         merged = placed.merge(
             outc[[
                 "event_id", "side", "won", "pnl_usd", "close_price",
@@ -129,7 +149,8 @@ def main(directory: str, date_filter: str | None) -> None:
         print(f"  PnL resueltas    : ${resolved['pnl_usd'].sum():.4f}")
         print(f"  PnL avg WON      : ${won['pnl_usd'].mean():.4f}")
         print(f"  PnL avg LOST     : ${lost['pnl_usd'].mean():.4f}")
-        print(f"  Return promedio  : {resolved['return_pct'].mean():.2f}%")
+        if "return_pct" in resolved.columns:
+            print(f"  Return promedio  : {resolved['return_pct'].mean():.2f}%")
 
     # ── Por ticker ────────────────────────────────────────────────────────────
     if len(resolved) and "ticker" in resolved.columns:
