@@ -78,6 +78,28 @@ cd frontend && npx vite --mode v2
 
 ---
 
+## 2026-03-13 — Ajustes Bot V2 tras análisis día de pérdidas
+
+**Snapshot:** `runtime_settings_v2_2026-03-13.json`
+
+**Cambios:**
+- `quant_gate_min_edge_pct`: 7 → **10** (filtrar señales de baja calidad)
+- `bot_max_ticker_exposure_pct`: 15 → **0** (deshabilitado)
+- `monitored_tickers`: BTC/ETH/SOL/XRP → **BTC/ETH/SOL** (XRP removido)
+- `bot_paper_mode`: true → **false** (modo live)
+
+**Contexto:**
+- 106 trades resueltos el 2026-03-12 | WR 60% | PnL -$7.82
+- XRP concentraba las pérdidas: WR 52% en rangos near-flat [-0.02,0.00) y [0.00,0.02) → EV negativo a precio 0.60–0.70
+- `bot_max_ticker_exposure_pct` bloqueaba señales de alta calidad (edge 40%, prob 90%) en XRP → removido; el drawdown circuit breaker (50%) es la protección sistémica real
+- Simulación edge≥10%: 34 trades a 74% WR vs 72 trades a 62% con edge≥7% — calidad sobre volumen
+
+**Criterio de revisión `quant_gate_min_edge_pct`:**
+- Revisar el lunes post-pipeline con ≥50 trades acumulados
+- Si WR < 65% → considerar subir a 12%; si WR > 75% con N suficiente → mantener
+
+---
+
 **Configuración activa Bot A (live):**
 - Ticker: BTC
 - Timeframe: 5m
