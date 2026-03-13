@@ -48,6 +48,36 @@ cd frontend && npx vite --mode v2
 
 ---
 
+## 2026-03-12 — Ajustes Bot A y Bot V2 tras análisis de drawdown
+
+### Bot A (live)
+**Cambios:**
+- `quant_gate_enabled_slots`: [1-6] → **[1-12]** (slots 7-12 tienen WR alto con ask≥0.60)
+- `quant_gate_min_ask_price`: 0.30 → **0.60** (bucket [0.50-0.60) tenía WR 35.7%, PnL -$38.75 en 3 días)
+- `quant_gate_max_spread_pct`: 3 → **0** (desactivado, spreads BTC < 0.4% con ask alto)
+- `bot_drawdown_circuit_breaker_enabled`: **true** (activado)
+- `live_equity_start_bankroll_usd`: 100 → **140** (baseline corregido al bankroll actual)
+- Umbral de pausa: $70 (50% de $140)
+
+**Contexto:**
+- Análisis 79 órdenes resueltas (10-12 Mar): WR 41.8%, PnL -$67.67
+- BTC en tendencia bajista (46 DOWN / 33 UP). Modelo no captura trend.
+- Slot 4: 24 trades, 25% WR, -$49.35 — mayor destructor de capital
+- Rango [40,50): 0% WR, -$31.64 — todas las apuestas perdidas
+- Ask [0.50-0.60): WR 35.7%, -$38.75 en 28 trades → eliminado con nuevo min_ask
+
+### Bot V2 (paper)
+**Cambios:**
+- `quant_gate_min_ask_price`: 0.60 → **0.65**
+
+**Contexto:**
+- 251 trades resueltos | WR 65.3% | PnL bruto +$24.61
+- Bucket [0.60-0.65): 159 trades (63% del total), WR 61%, PnL -$4.52 — sin contribución al PnL
+- Bucket [0.65-0.70): WR 74.6%, PnL +$41.33 — el sweet spot real
+- Friction simulada: $71.85 (fee 2% + spread/2 + slippage 3%) — puede estar sobreestimada vs live
+
+---
+
 **Configuración activa Bot A (live):**
 - Ticker: BTC
 - Timeframe: 5m

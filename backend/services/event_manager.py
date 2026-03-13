@@ -46,6 +46,7 @@ _BOT_ORDERS_FIELDNAMES = [
     "placed_at_utc",
     "event_id",
     "ticker",
+    "timeframe",
     "slot",
     "range",
     "side",
@@ -89,12 +90,13 @@ _PAPER_TRADES_LOG_PATH = os.path.normpath(
     os.path.join(_BOT_ORDERS_LOG_DIR, "paper_trades.csv")
 )
 _PAPER_FEE_PCT_DEFAULT = 2.0
-_PAPER_SLIPPAGE_BUFFER_PCT_DEFAULT = 3.0
+_PAPER_SLIPPAGE_BUFFER_PCT_DEFAULT = 0.1  # real slippage measured at 0.014% on 702 live orders
 _PAPER_TRADES_FIELDNAMES = [
     "decision_id",
     "decision_time",
     "event_id",
     "ticker",
+    "timeframe",
     "event_end_utc",
     "price_to_beat_at_decision",
     "current_price_at_decision",
@@ -474,14 +476,14 @@ class EventManager:
         self._pm_ranges: dict[
             str, dict[int, list[tuple[float, float, float, float, int]]]
         ] = {}
-        # 5m slot table with time-window segmentation:
-        # {ticker: {(day_type, time_frame): {slot: [(inf, sup, prob_up, prob_down, count)]}}}
-        self._pm_5m_slot_ranges: dict[
+        # Slot table with time-window segmentation (all event types):
+        # {event_type: {ticker: {(day_type, time_frame): {slot: [(inf, sup, prob_up, prob_down, count)]}}}}
+        self._pm_slot_ranges: dict[
             str,
-            dict[tuple[str, str], dict[int, list[tuple[float, float, float, float, int]]]],
+            dict[str, dict[tuple[str, str], dict[int, list[tuple[float, float, float, float, int]]]]],
         ] = {}
-        # Max slot per ticker (cached from loaded data, e.g. 30 for 10s slots)
-        self._pm_5m_max_slot: dict[str, int] = {}
+        # Max slot per (event_type, ticker)
+        self._pm_slot_max_slot: dict[str, dict[str, int]] = {}
         # Time windows config loaded from config/time_windows.csv
         self._time_windows: list[dict] = []
         self._time_windows_tz: ZoneInfo | None = None
@@ -847,55 +849,55 @@ class EventManager:
                 return row["time_frame"]
         return None
 
-    def _load_pm_5m_slot_ranges(
+    def _load_pm_slot_ranges(
         self,
     ) -> tuple[
-        dict[str, dict[tuple[str, str], dict[int, list[tuple[float, float, float, float, int]]]]],
-        dict[str, int],
+        dict[str, dict[str, dict[tuple[str, str], dict[int, list[tuple[float, float, float, float, int]]]]]],
+        dict[str, dict[str, int]],
     ]:
-        """Load and index PM quantitative table for 5m slot-based model.
+        """Load and index PM quantitative table for slot-based model (all event types).
 
-        Returns (table, max_slot_per_ticker).
-        Table structure: {ticker: {(day_type, time_frame): {slot: [(inf, sup, prob_up, prob_down, count)]}}}
+        Returns (table, max_slot_per_event_type_ticker).
+        Table structure: {event_type: {ticker: {(day_type, time_frame): {slot: [(inf, sup, prob_up, prob_down, count)]}}}}
 
-        Requires the CSV to have day_type and time_frame columns (produced by the
-        updated pipeline). If these columns are absent the table is returned empty
-        and a warning is logged — re-run the pipeline to regenerate the CSV.
+        Loads from merged_pm_slot_ranges_4cryptos.csv (multi-event pipeline).
+        Falls back to merged_pm_5m_slot_ranges_4cryptos.csv (legacy 5m-only).
         """
-        csv_path = os.path.normpath(
-            os.path.join(
-                os.path.dirname(__file__),
-                "..",
-                "..",
-                "backtest_output",
-                "merged_pm_5m_slot_ranges_4cryptos.csv",
-            )
-        )
-        table: dict[
-            str,
-            dict[tuple[str, str], dict[int, list[tuple[float, float, float, float, int]]]],
-        ] = {}
-        max_slot_map: dict[str, int] = {}
+        base = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "backtest_output"))
+        csv_path = os.path.join(base, "merged_pm_slot_ranges_4cryptos.csv")
+        legacy_path = os.path.join(base, "merged_pm_5m_slot_ranges_4cryptos.csv")
 
         if not os.path.exists(csv_path):
-            logger.info("5m slot ranges CSV not found at %s (optional)", csv_path)
-            return table, max_slot_map
+            if os.path.exists(legacy_path):
+                csv_path = legacy_path
+                logger.info("Slot ranges: using legacy 5m CSV at %s", csv_path)
+            else:
+                logger.info("Slot ranges CSV not found at %s (optional)", csv_path)
+                return {}, {}
+
+        table: dict[
+            str,
+            dict[str, dict[tuple[str, str], dict[int, list[tuple[float, float, float, float, int]]]]],
+        ] = {}
+        max_slot_map: dict[str, dict[str, int]] = {}
 
         with open(csv_path, newline="") as f:
             reader = csv.DictReader(f)
             fieldnames = set(reader.fieldnames or [])
             if "day_type" not in fieldnames or "time_frame" not in fieldnames:
                 logger.warning(
-                    "5m slot ranges CSV at %s is missing day_type/time_frame columns. "
-                    "Re-run the pipeline to regenerate with time-window support.",
+                    "Slot ranges CSV at %s is missing day_type/time_frame columns. "
+                    "Re-run the pipeline to regenerate.",
                     csv_path,
                 )
-                return table, max_slot_map
+                return {}, {}
 
             for row in reader:
                 ticker = str(row.get("ticker", "")).strip().upper()
                 if not ticker:
                     continue
+                # Legacy CSV has no event_type column — default to "5m"
+                event_type = str(row.get("event_type", "5m")).strip() or "5m"
                 day_type = str(row.get("day_type", "")).strip()
                 time_frame = str(row.get("time_frame", "")).strip()
                 if not day_type or not time_frame:
@@ -910,31 +912,35 @@ class EventManager:
                 )
                 window_key: tuple[str, str] = (day_type, time_frame)
                 (
-                    table.setdefault(ticker, {})
+                    table.setdefault(event_type, {})
+                    .setdefault(ticker, {})
                     .setdefault(window_key, {})
                     .setdefault(slot, [])
                     .append(entry)
                 )
-                if ticker not in max_slot_map or slot > max_slot_map[ticker]:
-                    max_slot_map[ticker] = slot
+                et_map = max_slot_map.setdefault(event_type, {})
+                if ticker not in et_map or slot > et_map[ticker]:
+                    et_map[ticker] = slot
 
-        # Sort ranges within each (ticker, window, slot) by inf_range ascending.
+        # Sort ranges within each (event_type, ticker, window, slot) by inf_range ascending.
         for ticker_data in table.values():
             for window_data in ticker_data.values():
-                for slot_list in window_data.values():
-                    slot_list.sort(key=lambda x: x[0])
+                for slot_data in window_data.values():
+                    for slot_list in slot_data.values():
+                        slot_list.sort(key=lambda x: x[0])
 
         loaded = sum(
             len(ranges)
-            for td in table.values()
+            for et_data in table.values()
+            for td in et_data.values()
             for wd in td.values()
             for ranges in wd.values()
         )
         logger.info(
-            "PM 5m slot ranges loaded: %d rows, tickers=%s, windows=%s",
+            "PM slot ranges loaded: %d rows, event_types=%s, tickers=%s",
             loaded,
             list(table.keys()),
-            sorted({wk for td in table.values() for wk in td.keys()}),
+            sorted({t for et in table.values() for t in et.keys()}),
         )
         return table, max_slot_map
 
@@ -942,19 +948,18 @@ class EventManager:
         """Hot-reload both PM range tables from disk. Safe to call while running."""
         try:
             new_ranges = self._load_pm_ranges()
-            new_5m, new_max_slot = self._load_pm_5m_slot_ranges()
+            new_slots, new_max_slot = self._load_pm_slot_ranges()
             new_windows, new_tz = self._load_time_windows()
             self._pm_ranges = new_ranges
-            self._pm_5m_slot_ranges = new_5m
-            self._pm_5m_max_slot = new_max_slot
+            self._pm_slot_ranges = new_slots
+            self._pm_slot_max_slot = new_max_slot
             self._time_windows = new_windows
             self._time_windows_tz = new_tz
             tickers_ranges = list(new_ranges.keys())
-            tickers_5m = list(new_5m.keys())
             logger.info(
-                "Quant ranges hot-reloaded: ranges=%s 5m_slots=%s",
+                "Quant ranges hot-reloaded: ranges=%s slot_event_types=%s",
                 tickers_ranges,
-                tickers_5m,
+                list(new_slots.keys()),
             )
             return {
                 "ok": True,
@@ -990,20 +995,21 @@ class EventManager:
             return (prob_up, prob_down, count)
         return None
 
-    def _lookup_quant_probs_5m_slot(
+    def _lookup_quant_probs_slot(
         self,
         ticker: str,
         slot: int,
         price_diff: float,
+        event_type: str = "5m",
         event_start_utc: str | None = None,
     ) -> tuple[float, float, int] | None:
-        """Lookup 5m slot-model probabilities for the event's time window.
+        """Lookup slot-model probabilities for any event type and time window.
 
         Returns (prob_up, prob_down, sample_size) or None.
-        No fallback: if the specific (day_type, time_frame) window has no data,
+        No fallback: if the specific (event_type, day_type, time_frame) has no data,
         returns None so the gate blocks on insufficient sample.
         """
-        ticker_data = self._pm_5m_slot_ranges.get(ticker)
+        ticker_data = self._pm_slot_ranges.get(event_type, {}).get(ticker)
         if not ticker_data:
             return None
 
@@ -1014,7 +1020,7 @@ class EventManager:
         if not window_data:
             return None
 
-        max_slot = self._pm_5m_max_slot.get(ticker, 30)
+        max_slot = self._pm_slot_max_slot.get(event_type, {}).get(ticker, 30)
         slot_key = max(1, min(max_slot, int(slot)))
         ranges = window_data.get(slot_key)
         if not ranges:
@@ -1090,15 +1096,17 @@ class EventManager:
             "bins": bins,
         }
 
-    def _build_quant_histogram_5m_slot(
+    def _build_quant_histogram_slot(
         self,
         ticker: str,
         slot: int,
         price_diff: float,
+        event_type: str = "5m",
+        timeframe_minutes: int = 5,
         event_start_utc: str | None = None,
     ) -> dict | None:
-        """Build histogram payload for current ticker/slot/window context (5m slot model)."""
-        ticker_data = self._pm_5m_slot_ranges.get(ticker)
+        """Build histogram payload for current ticker/slot/window context (any event type)."""
+        ticker_data = self._pm_slot_ranges.get(event_type, {}).get(ticker)
         if not ticker_data:
             return None
 
@@ -1109,7 +1117,7 @@ class EventManager:
         if not window_data:
             return None
 
-        max_slot = self._pm_5m_max_slot.get(ticker, 30)
+        max_slot = self._pm_slot_max_slot.get(event_type, {}).get(ticker, 30)
         slot_key = max(1, min(max_slot, int(slot)))
         ranges = window_data.get(slot_key)
         if not ranges:
@@ -1148,15 +1156,15 @@ class EventManager:
             else:
                 current_percentile = 100.0
 
-        slot_seconds = max(1, int(300 / max_slot))
-        minute_approx = max(1, min(5, int(((slot_key - 1) * slot_seconds) // 60) + 1))
+        slot_seconds = max(1, int((timeframe_minutes * 60) / max_slot))
+        minute_approx = max(1, min(timeframe_minutes, int(((slot_key - 1) * slot_seconds) // 60) + 1))
         day_type, time_frame = window
         return {
             "ticker": ticker,
             "minute": minute_approx,
             "slot": slot_key,
             "slot_seconds": slot_seconds,
-            "bucket_type": "slot_5m",
+            "bucket_type": f"slot_{event_type}",
             "day_type": day_type,
             "time_frame": time_frame,
             "current_diff": price_diff,
@@ -1177,7 +1185,7 @@ class EventManager:
             not event_start_str
             or ptb <= 0
             or cp <= 0
-            or (not self._pm_ranges and not self._pm_5m_slot_ranges)
+            or (not self._pm_ranges and not self._pm_slot_ranges)
         ):
             event_dict["quant_prob_up"] = None
             event_dict["quant_prob_down"] = None
@@ -1206,23 +1214,28 @@ class EventManager:
 
             price_diff = cp - ptb
             timeframe_minutes = int(event_dict.get("timeframe_minutes", 15) or 15)
-            use_5m_slot_model = (
-                timeframe_minutes == 5 and ticker in self._pm_5m_slot_ranges
+            event_type = f"{timeframe_minutes}m"
+            use_slot_model = (
+                event_type in self._pm_slot_ranges
+                and ticker in self._pm_slot_ranges[event_type]
             )
-            if use_5m_slot_model:
-                max_slot = self._pm_5m_max_slot.get(ticker, 30)
-                slot_seconds = max(1, int(300 / max_slot))
+            if use_slot_model:
+                max_slot = self._pm_slot_max_slot.get(event_type, {}).get(ticker, 30)
+                slot_seconds = max(1, int((timeframe_minutes * 60) / max_slot))
                 current_slot = max(
                     1, min(max_slot, int(elapsed_seconds // slot_seconds) + 1)
                 )
                 event_start_utc = event_dict.get("event_start_utc") or event_start_str
-                quant = self._lookup_quant_probs_5m_slot(
-                    ticker, current_slot, price_diff, event_start_utc=event_start_utc
+                quant = self._lookup_quant_probs_slot(
+                    ticker, current_slot, price_diff,
+                    event_type=event_type, event_start_utc=event_start_utc
                 )
-                histogram = self._build_quant_histogram_5m_slot(
-                    ticker, current_slot, price_diff, event_start_utc=event_start_utc
+                histogram = self._build_quant_histogram_slot(
+                    ticker, current_slot, price_diff,
+                    event_type=event_type, timeframe_minutes=timeframe_minutes,
+                    event_start_utc=event_start_utc
                 )
-                event_dict["quant_source"] = "pm_5m_slot_ranges"
+                event_dict["quant_source"] = f"pm_slot_ranges_{event_type}"
             else:
                 quant = self._lookup_quant_probs(ticker, current_minute, price_diff)
                 histogram = self._build_quant_histogram(
@@ -1974,7 +1987,7 @@ class EventManager:
         if bool(self.settings.get("bot_risk_enabled", True)) and not bool(
             self.settings.get("bot_paper_mode", False)
         ):
-            if bool(self.settings.get("bot_drawdown_enabled", True)):
+            if bool(self.settings.get("bot_drawdown_circuit_breaker_enabled", self.settings.get("bot_drawdown_enabled", True))):
                 drawdown_stop_pct = float(
                     self.settings.get("bot_drawdown_stop_pct", 50.0)
                 )
@@ -2206,6 +2219,7 @@ class EventManager:
             "decision_time": now_utc.isoformat(),
             "event_id": event_id,
             "ticker": ticker,
+            "timeframe": f"{int(event_dict.get('timeframe_minutes', 5) or 5)}m",
             "event_end_utc": str(event_dict.get("event_end_utc", "") or ""),
             "price_to_beat_at_decision": price_to_beat,
             "current_price_at_decision": round(current_price, 6),
@@ -2298,8 +2312,8 @@ class EventManager:
             won = event_outcome_real == side
             pnl = (stake * (1.0 / q - 1.0)) if won else (-stake)
             spread_pct = _as_float(row.get("spread_pct_at_decision"))
-            fee_pct_used = _PAPER_FEE_PCT_DEFAULT
-            slippage_buffer_pct_used = _PAPER_SLIPPAGE_BUFFER_PCT_DEFAULT
+            fee_pct_used = float(self.settings.get("paper_fee_pct", _PAPER_FEE_PCT_DEFAULT))
+            slippage_buffer_pct_used = float(self.settings.get("paper_slippage_buffer_pct", _PAPER_SLIPPAGE_BUFFER_PCT_DEFAULT))
             spread_component = max(0.0, spread_pct or 0.0) * 0.5
             friction_rate = max(
                 0.0,
@@ -2824,7 +2838,7 @@ class EventManager:
         self.load_config()
         self._load_runtime_settings()
         self._pm_ranges = self._load_pm_ranges()
-        self._pm_5m_slot_ranges, self._pm_5m_max_slot = self._load_pm_5m_slot_ranges()
+        self._pm_slot_ranges, self._pm_slot_max_slot = self._load_pm_slot_ranges()
         self._time_windows, self._time_windows_tz = self._load_time_windows()
         self._running = True
 
@@ -3923,6 +3937,7 @@ class EventManager:
                 "placed_at_utc": now_utc.isoformat(),
                 "event_id": event_id,
                 "ticker": self._extract_event_ticker(event_id, event_dict),
+                "timeframe": f"{int(event_dict.get('timeframe_minutes', 5) or 5)}m",
                 "slot": slot_at_send if slot_at_send is not None else "",
                 "range": range_at_send or "",
                 "side": side,
@@ -4226,17 +4241,21 @@ class EventManager:
                         ]
                     else:
                         status = "failed"
-                        # Rollback phantom exposure — unknown error, no confirmed fill
                         self._bot_prev_gate_enabled[key] = False
-                        self._order_guard_records = [
-                            r
-                            for r in self._order_guard_records
-                            if not (
-                                r.get("event_id") == event_id
-                                and r.get("outcome") == side
-                                and r.get("at_utc") == now_utc
-                            )
-                        ]
+                        # Network errors (Request exception / status_code=None): the order
+                        # may have already reached the CLOB. Keep the guard record to prevent
+                        # a double fill on re-evaluation. Only rollback for clear CLOB rejections.
+                        _is_network_error = "request exception" in err_str.lower()
+                        if not _is_network_error:
+                            self._order_guard_records = [
+                                r
+                                for r in self._order_guard_records
+                                if not (
+                                    r.get("event_id") == event_id
+                                    and r.get("outcome") == side
+                                    and r.get("at_utc") == now_utc
+                                )
+                            ]
                     fail_info = {"fills_detail_json": f"error:{err_str[:120]}"}
                 _update_bot_order_log_row(
                     _prelog_ts,
