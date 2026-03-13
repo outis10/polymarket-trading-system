@@ -127,18 +127,6 @@ async def websocket_events(websocket: WebSocket):
                         event_manager.settings["quant_gate_min_edge_pct"] = float(
                             settings["quant_gate_min_edge_pct"]
                         )
-                    if "quant_gate_use_percentile" in settings:
-                        event_manager.settings["quant_gate_use_percentile"] = bool(
-                            settings["quant_gate_use_percentile"]
-                        )
-                    if "quant_gate_percentile_low" in settings:
-                        event_manager.settings["quant_gate_percentile_low"] = float(
-                            settings["quant_gate_percentile_low"]
-                        )
-                    if "quant_gate_percentile_high" in settings:
-                        event_manager.settings["quant_gate_percentile_high"] = float(
-                            settings["quant_gate_percentile_high"]
-                        )
                     if "quant_gate_min_price_c" in settings:
                         event_manager.settings["quant_gate_min_price_c"] = float(
                             settings["quant_gate_min_price_c"]

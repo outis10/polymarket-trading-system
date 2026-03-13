@@ -8,47 +8,6 @@ interface SidebarProps {
     send: (msg: Record<string, unknown>) => void;
 }
 
-type QuantProfile = "conservative" | "balanced" | "aggressive" | "custom";
-
-const QUANT_PRESETS = {
-    conservative: {
-        quant_gate_enabled: true,
-        quant_gate_min_sample: 120,
-        quant_gate_min_edge_pct: 4,
-        quant_gate_min_price_c: 10,
-        quant_gate_max_price_c: 90,
-        quant_gate_use_percentile: true,
-        quant_gate_percentile_low: 15,
-        quant_gate_percentile_high: 85,
-        quant_gate_edge_vs_ask_enabled: false,
-        quant_gate_min_edge_vs_ask_pct: 2,
-    },
-    balanced: {
-        quant_gate_enabled: true,
-        quant_gate_min_sample: 80,
-        quant_gate_min_edge_pct: 2.5,
-        quant_gate_min_price_c: 8,
-        quant_gate_max_price_c: 92,
-        quant_gate_use_percentile: true,
-        quant_gate_percentile_low: 20,
-        quant_gate_percentile_high: 80,
-        quant_gate_edge_vs_ask_enabled: false,
-        quant_gate_min_edge_vs_ask_pct: 2,
-    },
-    aggressive: {
-        quant_gate_enabled: true,
-        quant_gate_min_sample: 40,
-        quant_gate_min_edge_pct: 1.5,
-        quant_gate_min_price_c: 5,
-        quant_gate_max_price_c: 95,
-        quant_gate_use_percentile: false,
-        quant_gate_percentile_low: 20,
-        quant_gate_percentile_high: 80,
-        quant_gate_edge_vs_ask_enabled: false,
-        quant_gate_min_edge_vs_ask_pct: 2,
-    },
-} as const;
-
 export default function Sidebar({ send }: SidebarProps) {
     const sidebarOpen = useSettingsStore((s) => s.sidebarOpen);
     const setSidebarOpen = useSettingsStore((s) => s.setSidebarOpen);
@@ -135,54 +94,6 @@ export default function Sidebar({ send }: SidebarProps) {
         updateSettings(partial);
         send({ type: "update_settings", settings: partial });
     };
-    const approxEqual = (a: number, b: number) => Math.abs(a - b) < 0.0001;
-    const matchesPreset = (
-        preset: (typeof QUANT_PRESETS)[keyof typeof QUANT_PRESETS],
-    ) =>
-        (settings.quant_gate_enabled ?? true) === preset.quant_gate_enabled &&
-        (settings.quant_gate_use_percentile ?? true) ===
-            preset.quant_gate_use_percentile &&
-        approxEqual(
-            settings.quant_gate_min_sample ?? 120,
-            preset.quant_gate_min_sample,
-        ) &&
-        approxEqual(
-            settings.quant_gate_min_edge_pct ?? 4,
-            preset.quant_gate_min_edge_pct,
-        ) &&
-        approxEqual(
-            settings.quant_gate_min_price_c ?? 10,
-            preset.quant_gate_min_price_c,
-        ) &&
-        approxEqual(
-            settings.quant_gate_max_price_c ?? 90,
-            preset.quant_gate_max_price_c,
-        ) &&
-        approxEqual(
-            settings.quant_gate_percentile_low ?? 15,
-            preset.quant_gate_percentile_low,
-        ) &&
-        approxEqual(
-            settings.quant_gate_percentile_high ?? 85,
-            preset.quant_gate_percentile_high,
-        ) &&
-        (settings.quant_gate_edge_vs_ask_enabled ?? false) ===
-            preset.quant_gate_edge_vs_ask_enabled &&
-        approxEqual(
-            settings.quant_gate_min_edge_vs_ask_pct ?? 2,
-            preset.quant_gate_min_edge_vs_ask_pct,
-        );
-    const quantProfile: QuantProfile = matchesPreset(QUANT_PRESETS.conservative)
-        ? "conservative"
-        : matchesPreset(QUANT_PRESETS.balanced)
-          ? "balanced"
-          : matchesPreset(QUANT_PRESETS.aggressive)
-            ? "aggressive"
-            : "custom";
-    const applyQuantProfile = (profile: Exclude<QuantProfile, "custom">) => {
-        handleKellySettingChange(QUANT_PRESETS[profile]);
-    };
-
     const monitoredTickers = settings.monitored_tickers || [
         "BTC",
         "ETH",
@@ -923,39 +834,6 @@ export default function Sidebar({ send }: SidebarProps) {
 
                 <div className="sidebar-section">
                     <div className="sidebar-section-title">Quant Buy Gate</div>
-                    <label className="mode-option">
-                        <input
-                            type="radio"
-                            name="quant-profile"
-                            checked={quantProfile === "conservative"}
-                            onChange={() => applyQuantProfile("conservative")}
-                        />
-                        Conservative
-                    </label>
-                    <label className="mode-option">
-                        <input
-                            type="radio"
-                            name="quant-profile"
-                            checked={quantProfile === "balanced"}
-                            onChange={() => applyQuantProfile("balanced")}
-                        />
-                        Balanced
-                    </label>
-                    <label className="mode-option">
-                        <input
-                            type="radio"
-                            name="quant-profile"
-                            checked={quantProfile === "aggressive"}
-                            onChange={() => applyQuantProfile("aggressive")}
-                        />
-                        Aggressive
-                    </label>
-                    {quantProfile === "custom" && (
-                        <div className="field-hint">
-                            Current profile: Custom (edited manually)
-                        </div>
-                    )}
-
                     <label className="chart-option">
                         <input
                             type="checkbox"
@@ -1197,53 +1075,6 @@ export default function Sidebar({ send }: SidebarProps) {
                         onChange={(e) =>
                             handleKellySettingChange({
                                 quant_gate_max_price_c: Number(
-                                    e.target.value || 0,
-                                ),
-                            })
-                        }
-                    />
-
-                    <label className="chart-option">
-                        <input
-                            type="checkbox"
-                            checked={settings.quant_gate_use_percentile ?? true}
-                            onChange={(e) =>
-                                handleKellySettingChange({
-                                    quant_gate_use_percentile: e.target.checked,
-                                })
-                            }
-                        />
-                        Use Percentile Filter
-                    </label>
-
-                    <label className="field-label">Percentile Low</label>
-                    <input
-                        className="sidebar-number-input"
-                        type="number"
-                        min={0}
-                        max={100}
-                        step={1}
-                        value={settings.quant_gate_percentile_low ?? 15}
-                        onChange={(e) =>
-                            handleKellySettingChange({
-                                quant_gate_percentile_low: Number(
-                                    e.target.value || 0,
-                                ),
-                            })
-                        }
-                    />
-
-                    <label className="field-label">Percentile High</label>
-                    <input
-                        className="sidebar-number-input"
-                        type="number"
-                        min={0}
-                        max={100}
-                        step={1}
-                        value={settings.quant_gate_percentile_high ?? 85}
-                        onChange={(e) =>
-                            handleKellySettingChange({
-                                quant_gate_percentile_high: Number(
                                     e.target.value || 0,
                                 ),
                             })

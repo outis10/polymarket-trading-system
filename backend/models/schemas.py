@@ -132,9 +132,6 @@ class SettingsData(BaseModel):
     quant_gate_enabled: bool = True
     quant_gate_min_sample: int = 120
     quant_gate_min_edge_pct: float = 4.0
-    quant_gate_use_percentile: bool = True
-    quant_gate_percentile_low: float = 15.0
-    quant_gate_percentile_high: float = 85.0
     quant_gate_min_price_c: float = 10.0
     quant_gate_max_price_c: float = 90.0
     quant_gate_edge_vs_ask_enabled: bool = False

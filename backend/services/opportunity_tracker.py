@@ -33,9 +33,6 @@ class OpportunityTracker:
         "stake_usd",
         "quant_gate_min_sample",
         "quant_gate_min_edge_pct",
-        "quant_gate_use_percentile",
-        "quant_gate_percentile_low",
-        "quant_gate_percentile_high",
         "quant_gate_min_price_c",
         "quant_gate_max_price_c",
     ]
@@ -488,9 +485,6 @@ class OpportunityTracker:
             ),
             "quant_gate_min_sample": settings.get("quant_gate_min_sample"),
             "quant_gate_min_edge_pct": settings.get("quant_gate_min_edge_pct"),
-            "quant_gate_use_percentile": settings.get("quant_gate_use_percentile"),
-            "quant_gate_percentile_low": settings.get("quant_gate_percentile_low"),
-            "quant_gate_percentile_high": settings.get("quant_gate_percentile_high"),
             "quant_gate_min_price_c": settings.get("quant_gate_min_price_c"),
             "quant_gate_max_price_c": settings.get("quant_gate_max_price_c"),
         }

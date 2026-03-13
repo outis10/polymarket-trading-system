@@ -396,15 +396,8 @@ class EventManager:
             "quant_gate_enabled": True,
             "quant_gate_min_sample": 120,
             "quant_gate_min_edge_pct": 4.0,
-            "quant_gate_min_diff_pct": 0.0,
-            "quant_gate_use_percentile": True,
-            "quant_gate_percentile_low": 15.0,
-            "quant_gate_percentile_high": 85.0,
             "quant_gate_min_price_c": 10.0,
             "quant_gate_max_price_c": 90.0,
-            "quant_gate_edge_vs_ask_enabled": False,
-            "quant_gate_min_edge_vs_ask_pct": 2.0,
-            "quant_gate_min_prob": 0.0,
             "quant_gate_max_spread_pct": 0.0,
             "quant_gate_min_ask_price": 0.0,
             "quant_gate_min_sample_strong_signal": 20,
@@ -1274,15 +1267,6 @@ class EventManager:
         min_edge_pct = float(
             gp.get("min_edge_pct", settings.get("quant_gate_min_edge_pct", 4.0))
         )
-        use_percentile = bool(
-            gp.get("use_percentile", settings.get("quant_gate_use_percentile", True))
-        )
-        percentile_low = float(
-            gp.get("percentile_low", settings.get("quant_gate_percentile_low", 15.0))
-        )
-        percentile_high = float(
-            gp.get("percentile_high", settings.get("quant_gate_percentile_high", 85.0))
-        )
         min_price_c = float(
             gp.get("min_price_c", settings.get("quant_gate_min_price_c", 10.0))
         )
@@ -1416,14 +1400,6 @@ class EventManager:
         if price_c < min_price_c or price_c > max_price_c:
             reasons.append(f"price_outside_{min_price_c:.0f}-{max_price_c:.0f}c")
 
-        if use_percentile:
-            if percentile is None:
-                reasons.append("no_percentile")
-            elif percentile_low < percentile < percentile_high:
-                reasons.append(
-                    f"percentile_inside_{percentile_low:.0f}-{percentile_high:.0f}"
-                )
-
         return {
             "enabled": len(reasons) == 0,
             "reasons": reasons,
@@ -1442,9 +1418,6 @@ class EventManager:
             "gate_enabled": bool(settings.get("quant_gate_enabled", True)),
             "min_sample": int(settings.get("quant_gate_min_sample", 120)),
             "min_edge_pct": float(settings.get("quant_gate_min_edge_pct", 4.0)),
-            "use_percentile": bool(settings.get("quant_gate_use_percentile", True)),
-            "percentile_low": float(settings.get("quant_gate_percentile_low", 15.0)),
-            "percentile_high": float(settings.get("quant_gate_percentile_high", 85.0)),
             "min_price_c": float(settings.get("quant_gate_min_price_c", 10.0)),
             "max_price_c": float(settings.get("quant_gate_max_price_c", 90.0)),
             "edge_vs_ask_enabled": bool(
