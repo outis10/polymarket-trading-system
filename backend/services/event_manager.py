@@ -411,24 +411,6 @@ class EventManager:
             "quant_gate_strong_signal_threshold": 0.72,
             "quant_gate_blocked_hours_pst": [],  # e.g. [10, 11, 21, 22]
             "quant_gate_enabled_slots": [],  # e.g. [3,4,5,6] — only these slots trade; empty = no filter
-            "early_window_enabled": True,
-            "early_window_start": 20,
-            "early_window_end": 120,
-            "early_quant_gate_min_sample": 90,
-            "early_quant_gate_min_edge_pct": 4.0,
-            "early_quant_gate_edge_vs_ask_enabled": False,
-            "early_quant_gate_min_edge_vs_ask_pct": 2.0,
-            "early_quant_gate_min_prob": 0.0,
-            "early_quant_gate_min_diff_pct": 0.0,
-            "late_window_enabled": True,
-            "late_window_start": 180,
-            "late_window_end": 280,
-            "late_quant_gate_min_sample": 70,
-            "late_quant_gate_min_edge_pct": 3.0,
-            "late_quant_gate_edge_vs_ask_enabled": False,
-            "late_quant_gate_min_edge_vs_ask_pct": 1.0,
-            "late_quant_gate_min_prob": 0.0,
-            "late_quant_gate_min_diff_pct": 0.0,
             "monitored_tickers": ["BTC", "ETH", "SOL", "XRP"],
             "bot_risk_enabled": True,
             "bot_max_buys_per_event_side": 1,
@@ -1500,98 +1482,6 @@ class EventManager:
         )
         if time_left_seconds is not None and time_left_seconds < min_secs_before_end:
             return "blocked_end", {**params, "gate_enabled": False}
-
-        # ── Early window ──────────────────────────────────────────────────────
-        if (
-            bool(settings.get("early_window_enabled", False))
-            and elapsed_seconds is not None
-        ):
-            early_start = int(settings.get("early_window_start", 20))
-            early_end = int(settings.get("early_window_end", 120))
-            if elapsed_seconds < early_start:
-                # Too early — block gate entirely
-                return "blocked_early", {**params, "gate_enabled": False}
-            if elapsed_seconds <= early_end:
-                params.update(
-                    {
-                        "min_sample": int(
-                            settings.get(
-                                "early_quant_gate_min_sample", params["min_sample"]
-                            )
-                        ),
-                        "min_edge_pct": float(
-                            settings.get(
-                                "early_quant_gate_min_edge_pct", params["min_edge_pct"]
-                            )
-                        ),
-                        "edge_vs_ask_enabled": bool(
-                            settings.get(
-                                "early_quant_gate_edge_vs_ask_enabled",
-                                params["edge_vs_ask_enabled"],
-                            )
-                        ),
-                        "min_edge_vs_ask_pct": float(
-                            settings.get(
-                                "early_quant_gate_min_edge_vs_ask_pct",
-                                params["min_edge_vs_ask_pct"],
-                            )
-                        ),
-                        "min_prob": float(
-                            settings.get("early_quant_gate_min_prob")
-                            or params["min_prob"]
-                        ),
-                        "min_diff_pct": float(
-                            settings.get("early_quant_gate_min_diff_pct", 0.0)
-                        ),
-                    }
-                )
-                return "early", params
-
-        # ── Late window ───────────────────────────────────────────────────────
-        if (
-            bool(settings.get("late_window_enabled", False))
-            and elapsed_seconds is not None
-        ):
-            late_start = int(settings.get("late_window_start", 180))
-            late_end = int(settings.get("late_window_end", 280))
-            if elapsed_seconds > late_end:
-                # Too late — block gate entirely
-                return "blocked_late", {**params, "gate_enabled": False}
-            if elapsed_seconds >= late_start:
-                params.update(
-                    {
-                        "min_sample": int(
-                            settings.get(
-                                "late_quant_gate_min_sample", params["min_sample"]
-                            )
-                        ),
-                        "min_edge_pct": float(
-                            settings.get(
-                                "late_quant_gate_min_edge_pct", params["min_edge_pct"]
-                            )
-                        ),
-                        "edge_vs_ask_enabled": bool(
-                            settings.get(
-                                "late_quant_gate_edge_vs_ask_enabled",
-                                params["edge_vs_ask_enabled"],
-                            )
-                        ),
-                        "min_edge_vs_ask_pct": float(
-                            settings.get(
-                                "late_quant_gate_min_edge_vs_ask_pct",
-                                params["min_edge_vs_ask_pct"],
-                            )
-                        ),
-                        "min_prob": float(
-                            settings.get("late_quant_gate_min_prob")
-                            or params["min_prob"]
-                        ),
-                        "min_diff_pct": float(
-                            settings.get("late_quant_gate_min_diff_pct", 0.0)
-                        ),
-                    }
-                )
-                return "late", params
 
         return "base", params
 

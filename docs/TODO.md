@@ -13,7 +13,7 @@
   - si hay fill parcial, el estado refleja size real ejecutado;
   - evitar divergencia entre orden enviada y posicion registrada.
 
-- [ ] Prioridad media: limpieza de arquitectura de ventanas `early/late`.
+- [x] Prioridad media: limpieza de arquitectura de ventanas `early/late`.
   Hoy hay naming/config inconsistente entre schema, WS, frontend y runtime (`*_seconds` vs `*_start`/`*_end`).
   Si ya no se usa operativamente, conviene eliminar el mecanismo legacy completo para evitar falsa sensacion de control.
   Criterio de aceptacion:

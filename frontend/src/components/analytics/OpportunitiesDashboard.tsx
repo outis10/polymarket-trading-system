@@ -151,30 +151,6 @@ interface RawBotOrderResponse {
     rows: RawBotOrder[];
 }
 
-interface PipelineEvPoint {
-    idx: number;
-    ticker: string;
-    slot: number;
-    inf_range: number;
-    sup_range: number;
-    count: number;
-    ev_per_trade_pct: number;
-    cumulative_ev: number;
-    drawdown_pct: number;
-}
-
-interface PipelineEvResponse {
-    source: string;
-    ticker_filter: string | null;
-    min_count: number;
-    points_count: number;
-    total_samples: number;
-    avg_ev_per_trade_pct: number;
-    final_cumulative_ev: number;
-    max_drawdown_pct: number;
-    points: PipelineEvPoint[];
-}
-
 interface CalibrationBucket {
     key: string;
     rangeLabel: string;
@@ -255,10 +231,6 @@ export default function OpportunitiesDashboard() {
     const [blockedRows, setBlockedRows] = useState<RawBlocked[]>([]);
     const [paperRows, setPaperRows] = useState<RawPaperTrade[]>([]);
     const [botOrderRows, setBotOrderRows] = useState<RawBotOrder[]>([]);
-    const [pipelineEv, setPipelineEv] = useState<PipelineEvResponse | null>(
-        null,
-    );
-    const [pipelineError, setPipelineError] = useState("");
     const [resettingLiveBaseline, setResettingLiveBaseline] = useState(false);
     const [diagnosticTarget, setDiagnosticTarget] =
         useState<DiagnosticTarget | null>(null);
@@ -315,33 +287,6 @@ export default function OpportunitiesDashboard() {
         }
     };
 
-    const loadPipelineEv = async () => {
-        setPipelineError("");
-        try {
-            const tickerFilter =
-                chartScope === "all" || ticker === "ALL"
-                    ? ""
-                    : `&ticker=${ticker}`;
-            const res = await apiFetch(
-                `/api/stats/pipeline/ev-curve?min_count=20${tickerFilter}`,
-            );
-            if (!res.ok) {
-                throw new Error(
-                    `Failed to load pipeline curve (${res.status})`,
-                );
-            }
-            const json = (await res.json()) as PipelineEvResponse;
-            setPipelineEv(json);
-        } catch (e) {
-            setPipelineError(
-                e instanceof Error
-                    ? e.message
-                    : "Failed to load pipeline curve",
-            );
-            setPipelineEv(null);
-        }
-    };
-
     const handleResetLiveBaseline = async () => {
         if (resettingLiveBaseline) return;
         const ok = window.confirm(
@@ -385,11 +330,6 @@ export default function OpportunitiesDashboard() {
         return () => clearInterval(interval);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [days]);
-
-    useEffect(() => {
-        loadPipelineEv();
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [ticker, chartScope]);
 
     const rowsInWindow = useMemo(() => {
         return rawRows.filter((row) => {
@@ -694,16 +634,6 @@ export default function OpportunitiesDashboard() {
         return rows;
     }, [chartRows]);
 
-    const pipelineEvPoints = useMemo<EquityDrawdownPoint[]>(() => {
-        const rows = pipelineEv?.points || [];
-        const base = Date.UTC(2020, 0, 1, 0, 0, 0);
-        return rows.map((row, idx) => ({
-            ts: new Date(base + idx * 1000).toISOString(),
-            equity: asNumber(row.cumulative_ev),
-            drawdownPct: asNumber(row.drawdown_pct),
-        }));
-    }, [pipelineEv]);
-
     const paperMetrics = useMemo(() => {
         const resolvedRows = filteredPaperRows.filter(
             (r) => r.status === "resolved",
@@ -741,47 +671,6 @@ export default function OpportunitiesDashboard() {
             avgQePct: avgQe * 100,
         };
     }, [filteredPaperRows]);
-
-    const paperEquityPoints = useMemo<EquityDrawdownPoint[]>(() => {
-        const rows = filteredPaperRows
-            .filter((r) => r.status === "resolved")
-            .slice()
-            .sort(
-                (a, b) =>
-                    new Date(a.decision_time).getTime() -
-                    new Date(b.decision_time).getTime(),
-            );
-
-        let equity = 0;
-        let peak = 0;
-        let lastTsMs = Number.NEGATIVE_INFINITY;
-        return rows.map((row) => {
-            equity += asNumber(row.pnl_simulated);
-            peak = Math.max(peak, equity);
-            const drawdownPct = peak > 0 ? ((equity - peak) / peak) * 100 : 0;
-            let tsMs = new Date(row.decision_time).getTime();
-            if (!Number.isFinite(tsMs)) tsMs = Date.now();
-            if (tsMs <= lastTsMs) tsMs = lastTsMs + 1;
-            lastTsMs = tsMs;
-            return {
-                ts: new Date(tsMs).toISOString(),
-                equity,
-                drawdownPct,
-            };
-        });
-    }, [filteredPaperRows]);
-
-    const paperEquityMetrics = useMemo(() => {
-        const last = paperEquityPoints[paperEquityPoints.length - 1];
-        const maxDd = paperEquityPoints.reduce(
-            (acc, p) => Math.min(acc, p.drawdownPct),
-            0,
-        );
-        return {
-            finalEquity: last?.equity ?? 0,
-            maxDrawdownPct: maxDd,
-        };
-    }, [paperEquityPoints]);
 
     const paperTradingCurve = useMemo<TradingEquityPoint[]>(() => {
         const baseEquity = asNumber(
@@ -1047,7 +936,6 @@ export default function OpportunitiesDashboard() {
                 <button
                     onClick={() => {
                         void loadData();
-                        void loadPipelineEv();
                     }}
                     disabled={loading}
                 >
@@ -1056,10 +944,6 @@ export default function OpportunitiesDashboard() {
             </section>
 
             {error && <div className="analytics-error">{error}</div>}
-            {pipelineError && (
-                <div className="analytics-error">{pipelineError}</div>
-            )}
-
             <section className="analytics-kpis">
                 <article className="analytics-kpi-card">
                     <div className="kpi-label">Signals</div>
@@ -1218,87 +1102,6 @@ export default function OpportunitiesDashboard() {
                         </tbody>
                     </table>
                 </article>
-
-                {runtimeSettings.bot_paper_mode && <article className="analytics-panel analytics-panel-wide">
-                    <h3>Pipeline EV Curve (In-Sample)</h3>
-                    <div className="analytics-chart-help">
-                        <div>How to read</div>
-                        <ul>
-                            <li>
-                                This uses only
-                                `merged_pm_5m_slot_ranges_4cryptos.csv`.
-                            </li>
-                            <li>
-                                It is model in-sample EV, not live execution
-                                PnL.
-                            </li>
-                            <li>
-                                X-axis is ranked bins (slot/range), not
-                                wall-clock time.
-                            </li>
-                        </ul>
-                    </div>
-                    <div className="analytics-mini-kpis">
-                        <span>
-                            Source rows: {pipelineEv?.points_count ?? 0}
-                        </span>
-                        <span>
-                            Total samples: {pipelineEv?.total_samples ?? 0}
-                        </span>
-                        <span>
-                            Avg EV/Trade:{" "}
-                            {(pipelineEv?.avg_ev_per_trade_pct ?? 0).toFixed(2)}
-                            %
-                        </span>
-                        <span>
-                            Final Cum EV:{" "}
-                            {(pipelineEv?.final_cumulative_ev ?? 0).toFixed(2)}
-                        </span>
-                        <span>
-                            Max DD:{" "}
-                            {(pipelineEv?.max_drawdown_pct ?? 0).toFixed(2)}%
-                        </span>
-                    </div>
-                    <EquityDrawdownChart points={pipelineEvPoints} />
-                </article>}
-
-                {runtimeSettings.bot_paper_mode && <article className="analytics-panel analytics-panel-wide">
-                    <h3>Paper Mode Equity + Drawdown (Execution Proxy)</h3>
-                    <div className="analytics-chart-help">
-                        <div>How to read</div>
-                        <ul>
-                            <li>
-                                Source: `backtest_output/paper_trades.csv`
-                                generated by bot in paper mode.
-                            </li>
-                            <li>
-                                `QuantumEdge = prob_side -
-                                marketProb_at_decision`.
-                            </li>
-                            <li>
-                                `pnl_simulated` is resolved at event close and
-                                uses decision-time price as fill proxy.
-                            </li>
-                        </ul>
-                    </div>
-                    <div className="analytics-mini-kpis">
-                        <span>Total decisions: {paperMetrics.total}</span>
-                        <span>Resolved: {paperMetrics.resolved}</span>
-                        <span>Pending: {paperMetrics.pending}</span>
-                        <span>
-                            Avg QuantumEdge: {paperMetrics.avgQePct.toFixed(2)}%
-                        </span>
-                        <span>
-                            Final Equity: $
-                            {paperEquityMetrics.finalEquity.toFixed(2)}
-                        </span>
-                        <span>
-                            Max DD:{" "}
-                            {paperEquityMetrics.maxDrawdownPct.toFixed(2)}%
-                        </span>
-                    </div>
-                    <EquityDrawdownChart points={paperEquityPoints} />
-                </article>}
 
                 {runtimeSettings.bot_paper_mode && <article className="analytics-panel">
                     <h3>Paper Trading Equity Curve</h3>
