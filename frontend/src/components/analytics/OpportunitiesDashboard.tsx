@@ -71,6 +71,7 @@ interface RawPaperTrade {
     decision_time: string;
     event_id: string;
     ticker: string;
+    timeframe?: string;
     event_end_utc: string;
     price_to_beat_at_decision?: string;
     current_price_at_decision?: string;
@@ -102,6 +103,7 @@ interface RawBotOrder {
     placed_at_utc: string;
     event_id: string;
     ticker: string;
+    timeframe?: string;
     slot?: string;
     range?: string;
     side: "up" | "down";
@@ -1534,6 +1536,7 @@ export default function OpportunitiesDashboard() {
                         <tr>
                             <th title="Timestamp de la decisión en UTC">Decision (UTC)</th>
                             <th title="Activo subyacente (ej. BTC, ETH, SOL)">Ticker</th>
+                            <th title="Duración del evento (5m, 15m, 1h, 4h)">TF</th>
                             <th title="Sub-bloque temporal dentro del evento (en 5m/10s hay 30 slots)">Slot</th>
                             <th title="Bin de diferencia de precio vs PTB usado por el modelo quant">Range</th>
                             <th title="Probabilidad estimada por el modelo de que el evento cierre UP">Prob Up</th>
@@ -1583,6 +1586,7 @@ export default function OpportunitiesDashboard() {
                                                 .slice(0, 19)}
                                         </td>
                                         <td>{row.ticker}</td>
+                                        <td>{row.timeframe || "5m"}</td>
                                         <td>{row.slot || "n/a"}</td>
                                         <td>{row.range || "n/a"}</td>
                                         <td>{probUp.toFixed(4)}</td>
@@ -1728,6 +1732,7 @@ export default function OpportunitiesDashboard() {
                         <tr>
                             <th title="Timestamp de la orden en UTC">Decision (UTC)</th>
                             <th title="Activo subyacente (ej. BTC, ETH, SOL)">Ticker</th>
+                            <th title="Duración del evento (5m, 15m, 1h, 4h)">TF</th>
                             <th title="Sub-bloque temporal dentro del evento (en 5m/10s hay 30 slots)">Slot</th>
                             <th title="Bin de diferencia de precio vs PTB usado por el modelo quant">Range</th>
                             <th title="Probabilidad estimada por el modelo de que el evento cierre UP">Prob Up</th>
@@ -1790,6 +1795,7 @@ export default function OpportunitiesDashboard() {
                                                 .slice(0, 19)}
                                         </td>
                                         <td>{row.ticker}</td>
+                                        <td>{row.timeframe || "5m"}</td>
                                         <td>{row.slot || "n/a"}</td>
                                         <td>{row.range || "n/a"}</td>
                                         <td>
