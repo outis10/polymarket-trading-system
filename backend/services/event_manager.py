@@ -438,6 +438,8 @@ class EventManager:
             "bot_fak_retry_extra_tolerance": 0.01,  # price increment per retry attempt
             "bot_fak_max_attempts": 3,              # total attempts on no_fill (1=no retry)
             "bot_min_diff_abs": {},  # per-asset absolute diff filter e.g. {"BTC": 20}
+            "bot_strategy": "gate_transition",           # "gate_transition" | "best_side_reentry"
+            "bot_reentry_min_edge_improvement_pct": 2.0, # min edge gain (pp) required for re-entry
         }
         self._config: dict = {}
         self._task: Optional[asyncio.Task] = None
@@ -506,6 +508,8 @@ class EventManager:
         self._bot_pending_orders: set[tuple[str, str]] = set()
         # Cooldown after no_fill: maps key→timestamp after which retry is allowed
         self._no_fill_cooldown_until: dict[tuple[str, str], float] = {}
+        # best_side_reentry: track last edge (pp) at which an order was fired per (event_id, side)
+        self._bot_last_fired_edge: dict[tuple[str, str], float] = {}
         # Position tracker: fuente de verdad para shares compradas por evento
         # {event_id: {"up": {"shares": float, "avg_price": float, "token_id": str, "placed_at_utc": str}, ...}}
         self._position_tracker: dict[str, dict] = {}
@@ -3621,10 +3625,64 @@ class EventManager:
             merged[event_id] = new_event
         return merged
 
+    async def _bot_best_side_order(self, event_id: str, event_dict: dict) -> None:
+        """Strategy: evaluate both sides, fire on the one with highest net EV.
+        Re-entry is allowed when edge improves by bot_reentry_min_edge_improvement_pct (pp).
+        """
+        now_utc = datetime.now(tz=timezone.utc)
+        bankroll_usd: float | None = None
+        if not bool(self.settings.get("bot_paper_mode", False)):
+            try:
+                client = get_client()
+                if client:
+                    bal = await asyncio.to_thread(client.get_balance)
+                    if isinstance(bal, (int, float)) and bal > 0:
+                        bankroll_usd = float(bal)
+            except Exception:
+                pass
+
+        best_side: str | None = None
+        best_edge: float = -999.0
+        for side in ("up", "down"):
+            ev = self.evaluate_bot_order_candidate(
+                event_id=event_id,
+                event_dict=event_dict,
+                side=side,
+                now_utc=now_utc,
+                bankroll_usd=bankroll_usd,
+            )
+            if not bool(ev.get("eligible")):
+                continue
+            qp = float(ev.get("quant_prob") or 0.0)
+            ap = float(ev.get("ask_price") or 1.0)
+            edge = (qp - ap) * 100.0
+            if edge > best_edge:
+                best_edge = edge
+                best_side = side
+
+        if best_side is None:
+            return
+
+        key = (event_id, best_side)
+        min_improvement = max(0.0, float(self.settings.get("bot_reentry_min_edge_improvement_pct", 2.0)))
+        last_edge = self._bot_last_fired_edge.get(key)
+        if last_edge is not None and (best_edge - last_edge) < min_improvement:
+            return
+
+        await self._bot_maybe_place_order(
+            event_id, event_dict, best_side, override_gate_transition=True
+        )
+
     async def _bot_maybe_place_order(
-        self, event_id: str, event_dict: dict, side: str
+        self, event_id: str, event_dict: dict, side: str,
+        override_gate_transition: bool = False,
     ) -> None:
-        """Auto-place an order when gate transitions disabled→enabled in bot mode."""
+        """Auto-place an order when gate transitions disabled→enabled in bot mode.
+
+        When override_gate_transition=True (used by best_side_reentry), the
+        gate-transition check is bypassed and the order is placed immediately if
+        all other eligibility guards pass.
+        """
         key = (event_id, side)
         quant_gate = event_dict.get("quant_buy_gate")
         if not isinstance(quant_gate, dict):
@@ -3636,9 +3694,10 @@ class EventManager:
         prev_enabled = self._bot_prev_gate_enabled.get(key, False)
         self._bot_prev_gate_enabled[key] = now_enabled
 
-        # Only fire on disabled→enabled transition, and not if already pending
-        if not now_enabled or prev_enabled:
-            return
+        # Only fire on disabled→enabled transition (unless caller bypasses this check)
+        if not override_gate_transition:
+            if not now_enabled or prev_enabled:
+                return
         if key in self._bot_pending_orders:
             return
         # Cooldown: after a no_fill, wait before retrying the same signal
@@ -3787,6 +3846,8 @@ class EventManager:
                     (quant_prob - ask_price),
                     price_source_at_send,
                 )
+                # Record fired edge for best_side_reentry re-entry throttle
+                self._bot_last_fired_edge[key] = (quant_prob - ask_price) * 100.0
                 return
 
             # --- Book depth filter: skip if ask-side liquidity is too thin ---
@@ -3898,6 +3959,8 @@ class EventManager:
             )
             # Lock gate so a re-enable in the next tick doesn't re-trigger.
             self._bot_prev_gate_enabled[key] = True
+            # Record fired edge for best_side_reentry re-entry throttle
+            self._bot_last_fired_edge[key] = (quant_prob - ask_price) * 100.0
 
             # Apply price tolerance to survive order book movement during network latency.
             # ask_price is used for edge/slippage calculations; order_price is what hits the CLOB.
@@ -4256,12 +4319,18 @@ class EventManager:
             self._track_opportunities_for_event(
                 event_id, event_dict, datetime.now(tz=timezone.utc)
             )
-            # Bot auto-order: fire-and-forget for each gate side
+            # Bot auto-order: fire-and-forget, strategy-dependent
             if str(self.settings.get("trading_mode", "manual")).lower() == "bot":
-                for side in ("up", "down"):
+                _strategy = str(self.settings.get("bot_strategy", "gate_transition")).lower()
+                if _strategy == "best_side_reentry":
                     asyncio.create_task(
-                        self._bot_maybe_place_order(event_id, event_dict, side)
+                        self._bot_best_side_order(event_id, event_dict)
                     )
+                else:  # default: "gate_transition"
+                    for side in ("up", "down"):
+                        asyncio.create_task(
+                            self._bot_maybe_place_order(event_id, event_dict, side)
+                        )
             await manager.broadcast(
                 {
                     "type": "quant_metrics_update",
