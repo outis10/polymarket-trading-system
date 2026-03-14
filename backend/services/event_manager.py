@@ -26,6 +26,7 @@ from .chainlink import (
 from .demo import load_demo_events, update_demo_prices
 from .event_discovery import discover_live_events
 from .kraken import fetch_kraken_candle_open, fetch_kraken_klines
+from .execution_engine import estimate_fill_from_event, fill_estimate_to_log
 from .opportunity_tracker import OpportunityTracker
 from .polymarket import PolymarketStreamer, fetch_real_prices, get_client
 from .price_provider import (
@@ -76,6 +77,28 @@ _BOT_ORDERS_FIELDNAMES = [
     "fill_count",
     "fills_detail_json",
     "edge_at_fill_pct",
+    # --- execution observability (v1.1-a) ---
+    "realized_slippage_bps",
+    "implementation_shortfall_bps",
+    "implementation_shortfall_usd",
+    "fill_ratio",
+    "maker_vs_taker_mode",
+    # --- placeholders for future phases ---
+    "expected_avg_fill_price",            # Fase 2 (fill simulator)
+    "fill_sim_worst_price",               # Fase 2
+    "fill_sim_fillable_notional",         # Fase 2
+    "fill_sim_fillable_shares",           # Fase 2
+    "fill_sim_levels_consumed",           # Fase 2
+    "fill_sim_slippage_vs_ask_bps",       # Fase 2
+    "fill_sim_slippage_vs_mid_bps",       # Fase 2
+    "fill_sim_book_consumption_pct",      # Fase 2
+    "fill_sim_fully_fillable",            # Fase 2
+    "cancel_count",              # Fase 5 (lifecycle)
+    "replace_count",             # Fase 5 (lifecycle)
+    "post_only_attempted",       # Fase 4 (mode selector)
+    "adverse_selection_1s",      # Fase 7
+    "adverse_selection_3s",      # Fase 7
+    "adverse_selection_5s",      # Fase 7
     "kelly_pct",
     "bankroll_usd",
     "percentile_at_signal",
@@ -433,6 +456,9 @@ class EventManager:
             "bot_min_diff_abs": {},  # per-asset absolute diff filter e.g. {"BTC": 20}
             "bot_strategy": "gate_transition",           # "gate_transition" | "best_side_reentry"
             "bot_reentry_min_edge_improvement_pct": 2.0, # min edge gain (pp) required for re-entry
+            # --- Execution Engine (v1.1-b / Fase 3) ---
+            "execution_enabled": False,          # master switch; False = observe-only
+            "execution_min_net_edge_pct": 2.0,  # block if quant_prob - avg_fill_price < this (%)
         }
         self._config: dict = {}
         self._task: Optional[asyncio.Task] = None
@@ -943,7 +969,7 @@ class EventManager:
             return {
                 "ok": True,
                 "ranges_tickers": tickers_ranges,
-                "slot_ranges_tickers": tickers_5m,
+                "slot_ranges_event_types": list(new_slots.keys()),
             }
         except Exception as exc:
             logger.exception("Failed to hot-reload quant ranges: %s", exc)
@@ -3853,6 +3879,50 @@ class EventManager:
                 shares,
             )
 
+            # --- Fill Simulator (v1.1-b): estimate execution cost before sending ---
+            _fill_est = estimate_fill_from_event(
+                event_dict, side, notional_usd, mid=mid_at_send
+            )
+            _fill_sim_log = fill_estimate_to_log(_fill_est)
+            if _fill_est.avg_fill_price is not None:
+                logger.debug(
+                    "Bot fill-sim %s %s: avg=%.4f worst=%.4f levels=%d fully_fillable=%s",
+                    event_id,
+                    side,
+                    _fill_est.avg_fill_price,
+                    _fill_est.worst_fill_price or 0,
+                    _fill_est.levels_consumed,
+                    _fill_est.fully_fillable,
+                )
+
+            # --- Execution EV Gate (Fase 3) ---
+            # Blocks orders whose edge disappears after estimated execution cost.
+            # Only active when execution_enabled=True in runtime_settings.json.
+            _exec_enabled = bool(self.settings.get("execution_enabled", False))
+            _exec_min_net_edge = float(
+                self.settings.get("execution_min_net_edge_pct", 2.0)
+            ) / 100.0  # convert pct to ratio (e.g. 2.0 → 0.02)
+            if (
+                _exec_enabled
+                and _fill_est.avg_fill_price is not None
+                and _fill_est.avg_fill_price > 0
+            ):
+                _net_edge_after_fill = quant_prob - _fill_est.avg_fill_price
+                if _net_edge_after_fill < _exec_min_net_edge:
+                    logger.info(
+                        "Bot auto-order: BLOCKED by execution EV gate %s %s — "
+                        "net_edge_after_fill=%.4f < min=%.4f "
+                        "(avg_fill=%.4f quant_prob=%.4f)",
+                        event_id,
+                        side,
+                        _net_edge_after_fill,
+                        _exec_min_net_edge,
+                        _fill_est.avg_fill_price,
+                        quant_prob,
+                    )
+                    self._bot_prev_gate_enabled[key] = False  # allow re-trigger next tick
+                    return
+
             # --- Pre-log and guard registration BEFORE sending to CLOB ---
             # If the process is killed mid-flight, the CSV and guard records
             # already contain this order (status="sending"), preventing duplicates
@@ -3905,6 +3975,20 @@ class EventManager:
                 "fill_count": "",
                 "fills_detail_json": "",
                 "edge_at_fill_pct": "",
+                # execution observability (v1.1-a)
+                "realized_slippage_bps": "",
+                "implementation_shortfall_bps": "",
+                "implementation_shortfall_usd": "",
+                "fill_ratio": "",
+                "maker_vs_taker_mode": "fak",
+                # fill simulator (v1.1-b) — populated at pre-log time from order book snapshot
+                **_fill_sim_log,
+                "cancel_count": "",
+                "replace_count": "",
+                "post_only_attempted": "",
+                "adverse_selection_1s": "",
+                "adverse_selection_3s": "",
+                "adverse_selection_5s": "",
                 "kelly_pct": round(kelly_pct * 100, 4) if kelly_pct is not None else "",
                 "bankroll_usd": round(bankroll_usd, 2)
                 if bankroll_usd is not None
@@ -4011,6 +4095,31 @@ class EventManager:
                         if isinstance(fill_price_real, float) and fill_price_real > 0
                         else None
                     )
+                    # --- execution observability metrics (v1.1-a) ---
+                    _realized_slippage_bps = (
+                        round(slippage_pct * 100.0, 2)
+                        if isinstance(slippage_pct, float)
+                        else ""
+                    )
+                    _is_bps = (
+                        round((fill_price_real - mid_at_send) / mid_at_send * 10000.0, 2)
+                        if isinstance(fill_price_real, float)
+                        and isinstance(mid_at_send, float)
+                        and mid_at_send > 0
+                        else ""
+                    )
+                    _is_usd = (
+                        round((fill_price_real - mid_at_send) * filled_shares_real, 4)
+                        if isinstance(fill_price_real, float)
+                        and isinstance(mid_at_send, float)
+                        and filled_shares_real > 0
+                        else ""
+                    )
+                    _fill_ratio = (
+                        round(filled_shares_real / shares, 6)
+                        if filled_shares_real > 0 and isinstance(shares, (int, float)) and shares > 0
+                        else ""
+                    )
                     _update_bot_order_log_row(
                         _prelog_ts,
                         event_id,
@@ -4038,6 +4147,10 @@ class EventManager:
                             "edge_at_fill_pct": round(edge_at_fill_pct, 4)
                             if isinstance(edge_at_fill_pct, float)
                             else "",
+                            "realized_slippage_bps": _realized_slippage_bps,
+                            "implementation_shortfall_bps": _is_bps,
+                            "implementation_shortfall_usd": _is_usd,
+                            "fill_ratio": _fill_ratio,
                             "status": "placed",
                         },
                     )

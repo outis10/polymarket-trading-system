@@ -36,6 +36,21 @@ export interface RawBotOrderFull {
     kelly_pct?: string;
     bankroll_usd?: string;
     percentile_at_signal?: string;
+    // execution observability (v1.1-a)
+    realized_slippage_bps?: string;
+    implementation_shortfall_bps?: string;
+    implementation_shortfall_usd?: string;
+    fill_ratio?: string;
+    maker_vs_taker_mode?: string;
+    // fill simulator (v1.1-b)
+    expected_avg_fill_price?: string;
+    fill_sim_worst_price?: string;
+    fill_sim_fillable_notional?: string;
+    fill_sim_levels_consumed?: string;
+    fill_sim_slippage_vs_ask_bps?: string;
+    fill_sim_slippage_vs_mid_bps?: string;
+    fill_sim_book_consumption_pct?: string;
+    fill_sim_fully_fillable?: string;
     close_price_at_resolution?: string;
     event_outcome_real?: string;
     won?: string;
@@ -330,9 +345,55 @@ function BotOrderContent({
                 </div>
             )}
 
-            {/* 3. Risk Guards */}
+            {/* 3. Fill Simulator (v1.1-b) */}
+            {row.expected_avg_fill_price !== undefined && row.expected_avg_fill_price !== "" && (
+                <div className="order-diag-section">
+                    <SectionTitle>3. Fill Simulator (pre-send estimate)</SectionTitle>
+                    <CalcRow
+                        label="Expected avg fill price"
+                        value={fmt(n(row.expected_avg_fill_price))}
+                        sub="← from order book depth"
+                    />
+                    {row.fill_sim_worst_price !== undefined && row.fill_sim_worst_price !== "" && (
+                        <CalcRow label="Worst fill price" value={fmt(n(row.fill_sim_worst_price))} />
+                    )}
+                    {row.fill_sim_slippage_vs_ask_bps !== undefined && row.fill_sim_slippage_vs_ask_bps !== "" && (
+                        <CalcRow
+                            label="Predicted slippage vs ask"
+                            value={`${fmt(n(row.fill_sim_slippage_vs_ask_bps), 1)} bps`}
+                        />
+                    )}
+                    {row.fill_sim_slippage_vs_mid_bps !== undefined && row.fill_sim_slippage_vs_mid_bps !== "" && (
+                        <CalcRow
+                            label="Predicted IS vs mid"
+                            value={`${fmt(n(row.fill_sim_slippage_vs_mid_bps), 1)} bps`}
+                        />
+                    )}
+                    {row.fill_sim_levels_consumed !== undefined && row.fill_sim_levels_consumed !== "" && (
+                        <CalcRow label="Book levels consumed" value={row.fill_sim_levels_consumed} />
+                    )}
+                    {row.fill_sim_book_consumption_pct !== undefined && row.fill_sim_book_consumption_pct !== "" && (
+                        <CalcRow
+                            label="Book consumption"
+                            value={`${fmt(n(row.fill_sim_book_consumption_pct), 1)}%`}
+                        />
+                    )}
+                    {row.fill_sim_fully_fillable !== undefined && row.fill_sim_fully_fillable !== "" && (
+                        <CalcRow
+                            label="Fully fillable"
+                            value={
+                                <span style={{ color: row.fill_sim_fully_fillable === "1" ? "#3fb950" : "#f85149" }}>
+                                    {row.fill_sim_fully_fillable === "1" ? "Yes ✓" : "No — thin book ✗"}
+                                </span>
+                            }
+                        />
+                    )}
+                </div>
+            )}
+
+            {/* 4. Risk Guards */}
             <div className="order-diag-section">
-                <SectionTitle>3. Risk Guards</SectionTitle>
+                <SectionTitle>4. Risk Guards</SectionTitle>
                 <GuardRow
                     label="Min shares"
                     formula={`${fmt(shares, 2)} ≥ ${minShares} (pm_min_shares)`}
@@ -367,9 +428,9 @@ function BotOrderContent({
                 </div>
             </div>
 
-            {/* 4. CLOB Result */}
+            {/* 5. CLOB Result */}
             <div className="order-diag-section">
-                <SectionTitle>4. CLOB Result</SectionTitle>
+                <SectionTitle>5. CLOB Result</SectionTitle>
                 {isPlaced && (
                     <>
                         <CalcRow
@@ -404,6 +465,46 @@ function BotOrderContent({
                                     : "n/a"
                             }
                         />
+                        {row.realized_slippage_bps !== undefined && row.realized_slippage_bps !== "" && (
+                            <CalcRow
+                                label="Realized slippage"
+                                value={
+                                    <span style={{ color: n(row.realized_slippage_bps) > 10 ? "#f85149" : "#3fb950" }}>
+                                        {fmt(n(row.realized_slippage_bps), 1)} bps
+                                    </span>
+                                }
+                                sub="vs ask_price"
+                            />
+                        )}
+                        {row.implementation_shortfall_bps !== undefined && row.implementation_shortfall_bps !== "" && (
+                            <CalcRow
+                                label="Implementation shortfall"
+                                value={
+                                    <span style={{ color: n(row.implementation_shortfall_bps) > 50 ? "#f85149" : "inherit" }}>
+                                        {fmt(n(row.implementation_shortfall_bps), 1)} bps
+                                    </span>
+                                }
+                                sub="vs mid_at_send"
+                            />
+                        )}
+                        {row.implementation_shortfall_usd !== undefined && row.implementation_shortfall_usd !== "" && (
+                            <CalcRow
+                                label="IS cost (USD)"
+                                value={fmtUsd(n(row.implementation_shortfall_usd), 4)}
+                                sub="(fill − mid) × shares"
+                            />
+                        )}
+                        {row.expected_avg_fill_price !== undefined && row.expected_avg_fill_price !== "" && fillPrice > 0 && (
+                            <CalcRow
+                                label="Sim error"
+                                value={
+                                    <span style={{ color: Math.abs(n(row.expected_avg_fill_price) - fillPrice) > 0.001 ? "#f85149" : "#3fb950" }}>
+                                        {fmt((fillPrice - n(row.expected_avg_fill_price)) * 10000, 1)} bps
+                                    </span>
+                                }
+                                sub="fill_real − expected"
+                            />
+                        )}
                     </>
                 )}
                 {isNoFill && (
@@ -435,10 +536,10 @@ function BotOrderContent({
                 )}
             </div>
 
-            {/* 5. Outcome */}
+            {/* 6. Outcome */}
             {isResolved && outcome && (
                 <div className="order-diag-section">
-                    <SectionTitle>5. Outcome</SectionTitle>
+                    <SectionTitle>6. Outcome</SectionTitle>
                     <CalcRow
                         label="Result"
                         value={
