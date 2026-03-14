@@ -26,6 +26,7 @@ wheels/
 # Environment
 .env
 .env.v2
+.env.v*
 .venv
 .env.local
 .env.*.local
@@ -76,6 +77,14 @@ backtest_output/*
 !backtest_output/merged_pm_slot_ranges_4cryptos.csv
 backtest_output_v2/*
 !backtest_output_v2/merged_pm_slot_ranges_4cryptos.csv
+backtest_output_v3/*
+!backtest_output_v3/merged_pm_slot_ranges_4cryptos.csv
+backtest_output_v4/*
+!backtest_output_v4/merged_pm_slot_ranges_4cryptos.csv
+backtest_output_v5/*
+!backtest_output_v5/merged_pm_slot_ranges_4cryptos.csv
+backtest_output_v6/*
+!backtest_output_v6/merged_pm_slot_ranges_4cryptos.csv
 *.xlsx
 sum_range_up_down_probabilities*.csv
 
@@ -89,3 +98,4 @@ frontend/node_modules/.package-lock.json
 frontend/node_modules/.vite/
 config/runtime_settings.json
 config/runtime_settings_v2.json
+config/runtime_settings_v*.json

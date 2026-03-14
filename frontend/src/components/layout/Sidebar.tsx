@@ -864,7 +864,7 @@ export default function Sidebar({ send }: SidebarProps) {
                     />
 
                     <label className="field-label">
-                        Min Prob (% 0=off, 50=50%)
+                        Min Model Prob (% 0=off, 50=50%)
                     </label>
                     <input
                         className="sidebar-number-input"
@@ -872,13 +872,10 @@ export default function Sidebar({ send }: SidebarProps) {
                         min={0}
                         max={100}
                         step={1}
-                        defaultValue={Math.round(
+                        value={Math.round(
                             (settings.quant_gate_min_prob ?? 0) * 100,
                         )}
-                        key={Math.round(
-                            (settings.quant_gate_min_prob ?? 0) * 100,
-                        )}
-                        onBlur={(e) =>
+                        onChange={(e) =>
                             handleKellySettingChange({
                                 quant_gate_min_prob:
                                     Number(e.target.value || 0) / 100,
@@ -958,7 +955,12 @@ export default function Sidebar({ send }: SidebarProps) {
                         }
                     />
 
-                    <label className="field-label">Max Spread (%) <span style={{fontSize:"0.75em",opacity:0.6}}>0=off</span></label>
+                    <label className="field-label">
+                        Max Spread (%){" "}
+                        <span style={{ fontSize: "0.75em", opacity: 0.6 }}>
+                            0=off
+                        </span>
+                    </label>
                     <input
                         className="sidebar-number-input"
                         type="number"
@@ -967,7 +969,9 @@ export default function Sidebar({ send }: SidebarProps) {
                         step={0.5}
                         value={
                             settings.quant_gate_max_spread_pct != null
-                                ? +(settings.quant_gate_max_spread_pct * 100).toFixed(1)
+                                ? +(
+                                      settings.quant_gate_max_spread_pct * 100
+                                  ).toFixed(1)
                                 : 0
                         }
                         onChange={(e) =>
@@ -978,7 +982,12 @@ export default function Sidebar({ send }: SidebarProps) {
                         }
                     />
 
-                    <label className="field-label">Min Ask Price <span style={{fontSize:"0.75em",opacity:0.6}}>0=off</span></label>
+                    <label className="field-label">
+                        Min Ask Price{" "}
+                        <span style={{ fontSize: "0.75em", opacity: 0.6 }}>
+                            0=off
+                        </span>
+                    </label>
                     <input
                         className="sidebar-number-input"
                         type="number"
@@ -988,45 +997,71 @@ export default function Sidebar({ send }: SidebarProps) {
                         value={settings.quant_gate_min_ask_price ?? 0}
                         onChange={(e) =>
                             handleKellySettingChange({
-                                quant_gate_min_ask_price: Number(e.target.value || 0),
+                                quant_gate_min_ask_price: Number(
+                                    e.target.value || 0,
+                                ),
                             })
                         }
                     />
 
-                    <label className="field-label" title="Horas PST en las que el bot NO opera (ej: 10,11,21,22). Vacío = sin bloqueo.">
-                        Blocked Hours PST <span style={{fontSize:"0.75em",opacity:0.6}}>vacío=off</span>
+                    <label
+                        className="field-label"
+                        title="Horas PST en las que el bot NO opera (ej: 10,11,21,22). Vacío = sin bloqueo."
+                    >
+                        Blocked Hours PST{" "}
+                        <span style={{ fontSize: "0.75em", opacity: 0.6 }}>
+                            vacío=off
+                        </span>
                     </label>
                     <input
                         className="sidebar-number-input"
                         type="text"
                         placeholder="ej: 10,11,21,22"
-                        value={blockedHoursRaw ?? (settings.quant_gate_blocked_hours_pst ?? []).join(",")}
+                        value={
+                            blockedHoursRaw ??
+                            (settings.quant_gate_blocked_hours_pst ?? []).join(
+                                ",",
+                            )
+                        }
                         onChange={(e) => setBlockedHoursRaw(e.target.value)}
                         onBlur={(e) => {
                             const hours = e.target.value
                                 .split(",")
                                 .map((s) => parseInt(s.trim(), 10))
                                 .filter((n) => !isNaN(n) && n >= 0 && n <= 23);
-                            handleKellySettingChange({ quant_gate_blocked_hours_pst: hours });
+                            handleKellySettingChange({
+                                quant_gate_blocked_hours_pst: hours,
+                            });
                             setBlockedHoursRaw(null);
                         }}
                     />
 
-                    <label className="field-label" title="Slots habilitados para operar (1–30). Solo estos slots pasan el gate. Vacío = sin filtro.">
-                        Enabled Slots <span style={{fontSize:"0.75em",opacity:0.6}}>vacío=todos</span>
+                    <label
+                        className="field-label"
+                        title="Slots habilitados para operar (1–30). Solo estos slots pasan el gate. Vacío = sin filtro."
+                    >
+                        Enabled Slots{" "}
+                        <span style={{ fontSize: "0.75em", opacity: 0.6 }}>
+                            vacío=todos
+                        </span>
                     </label>
                     <input
                         className="sidebar-number-input"
                         type="text"
                         placeholder="ej: 3,4,5,6"
-                        value={enabledSlotsRaw ?? (settings.quant_gate_enabled_slots ?? []).join(",")}
+                        value={
+                            enabledSlotsRaw ??
+                            (settings.quant_gate_enabled_slots ?? []).join(",")
+                        }
                         onChange={(e) => setEnabledSlotsRaw(e.target.value)}
                         onBlur={(e) => {
                             const slots = e.target.value
                                 .split(",")
                                 .map((s) => parseInt(s.trim(), 10))
                                 .filter((n) => !isNaN(n) && n >= 1 && n <= 30);
-                            handleKellySettingChange({ quant_gate_enabled_slots: slots });
+                            handleKellySettingChange({
+                                quant_gate_enabled_slots: slots,
+                            });
                             setEnabledSlotsRaw(null);
                         }}
                     />
@@ -1112,7 +1147,6 @@ export default function Sidebar({ send }: SidebarProps) {
                             })
                         }
                     />
-
                 </div>
 
                 <hr className="sidebar-divider" />
