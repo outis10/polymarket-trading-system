@@ -136,6 +136,22 @@ interface RawBotOrder {
     kelly_pct?: string;
     bankroll_usd?: string;
     percentile_at_signal?: string;
+    // execution observability (v1.1-a)
+    realized_slippage_bps?: string;
+    implementation_shortfall_bps?: string;
+    implementation_shortfall_usd?: string;
+    fill_ratio?: string;
+    maker_vs_taker_mode?: string;
+    // fill simulator (v1.1-b)
+    expected_avg_fill_price?: string;
+    fill_sim_worst_price?: string;
+    fill_sim_fillable_notional?: string;
+    fill_sim_fillable_shares?: string;
+    fill_sim_levels_consumed?: string;
+    fill_sim_slippage_vs_ask_bps?: string;
+    fill_sim_slippage_vs_mid_bps?: string;
+    fill_sim_book_consumption_pct?: string;
+    fill_sim_fully_fillable?: string;
     close_price_at_resolution?: string;
     event_outcome_real?: "up" | "down" | "";
     won?: string;
@@ -855,6 +871,28 @@ export default function OpportunitiesDashboard() {
             latencyRows.length > 0
                 ? latencyRows.reduce((acc, r) => acc + asNumber(r.fill_latency_ms), 0) / latencyRows.length
                 : 0;
+        // --- execution observability (v1.1-a) ---
+        const slippageBpsRows = filteredBotOrderRows.filter(
+            (r) => r.realized_slippage_bps !== undefined && r.realized_slippage_bps !== "",
+        );
+        const avgSlippageBps =
+            slippageBpsRows.length > 0
+                ? slippageBpsRows.reduce((acc, r) => acc + asNumber(r.realized_slippage_bps), 0) / slippageBpsRows.length
+                : null;
+        const isbpsRows = filteredBotOrderRows.filter(
+            (r) => r.implementation_shortfall_bps !== undefined && r.implementation_shortfall_bps !== "",
+        );
+        const avgISBps =
+            isbpsRows.length > 0
+                ? isbpsRows.reduce((acc, r) => acc + asNumber(r.implementation_shortfall_bps), 0) / isbpsRows.length
+                : null;
+        const isUsdRows = filteredBotOrderRows.filter(
+            (r) => r.implementation_shortfall_usd !== undefined && r.implementation_shortfall_usd !== "",
+        );
+        const totalISUsd =
+            isUsdRows.length > 0
+                ? isUsdRows.reduce((acc, r) => acc + asNumber(r.implementation_shortfall_usd), 0)
+                : null;
         return {
             total,
             placed,
@@ -870,6 +908,10 @@ export default function OpportunitiesDashboard() {
             avgEdgeFill,
             avgStake,
             avgLatency,
+            avgSlippageBps,
+            avgISBps,
+            totalISUsd,
+            isUsdCount: isUsdRows.length,
         };
     }, [filteredBotOrderRows]);
 
@@ -1530,6 +1572,39 @@ export default function OpportunitiesDashboard() {
                         </span>
                     )}
                 </div>
+                {/* Execution Quality panel (v1.1-a) — only shown once data is available */}
+                {botOrderMetrics.isUsdCount > 0 && (
+                    <div className="analytics-mini-kpis" style={{ marginTop: "0.5rem", borderTop: "1px solid var(--border)", paddingTop: "0.5rem" }}>
+                        <strong style={{ marginRight: "0.5rem" }}>Execution Quality:</strong>
+                        {botOrderMetrics.avgSlippageBps !== null && (
+                            <span title="Slippage realizado vs ask_price en bps. Positivo = pagaste más que el ask.">
+                                Avg Slippage:{" "}
+                                <span style={{ color: (botOrderMetrics.avgSlippageBps ?? 0) > 10 ? "var(--red)" : "inherit" }}>
+                                    {(botOrderMetrics.avgSlippageBps ?? 0).toFixed(1)} bps
+                                </span>
+                            </span>
+                        )}
+                        {botOrderMetrics.avgISBps !== null && (
+                            <span title="Implementation Shortfall vs mid_at_send en bps. Mide el costo real de ejecución desde el mid.">
+                                Avg IS:{" "}
+                                <span style={{ color: (botOrderMetrics.avgISBps ?? 0) > 50 ? "var(--red)" : "inherit" }}>
+                                    {(botOrderMetrics.avgISBps ?? 0).toFixed(1)} bps
+                                </span>
+                            </span>
+                        )}
+                        {botOrderMetrics.totalISUsd !== null && (
+                            <span title="Implementation Shortfall acumulado en USD. Cuánto dejaste de ganar por no ejecutar al mid.">
+                                Total IS cost:{" "}
+                                <span style={{ color: (botOrderMetrics.totalISUsd ?? 0) > 0 ? "var(--red)" : "var(--green)" }}>
+                                    ${(botOrderMetrics.totalISUsd ?? 0).toFixed(2)}
+                                </span>
+                            </span>
+                        )}
+                        <span style={{ color: "var(--text-muted)", fontSize: "0.85em" }}>
+                            n={botOrderMetrics.isUsdCount}
+                        </span>
+                    </div>
+                )}
                 <table className="analytics-table">
                     <thead>
                         <tr>
