@@ -143,6 +143,14 @@ async def websocket_events(websocket: WebSocket):
                         event_manager.settings["quant_gate_min_edge_vs_ask_pct"] = (
                             float(settings["quant_gate_min_edge_vs_ask_pct"])
                         )
+                    if "quant_gate_min_ask_price" in settings:
+                        event_manager.settings["quant_gate_min_ask_price"] = float(
+                            settings["quant_gate_min_ask_price"]
+                        )
+                    if "quant_gate_max_ask_price" in settings:
+                        event_manager.settings["quant_gate_max_ask_price"] = float(
+                            settings["quant_gate_max_ask_price"]
+                        )
                     if "quant_gate_min_prob" in settings:
                         event_manager.settings["quant_gate_min_prob"] = float(
                             settings["quant_gate_min_prob"]
@@ -157,7 +165,9 @@ async def websocket_events(websocket: WebSocket):
                         raw = settings["quant_gate_enabled_slots"]
                         if isinstance(raw, list):
                             event_manager.settings["quant_gate_enabled_slots"] = [
-                                int(s) for s in raw if isinstance(s, (int, float)) and 1 <= int(s) <= 30
+                                int(s)
+                                for s in raw
+                                if isinstance(s, (int, float)) and 1 <= int(s) <= 30
                             ]
                     if "monitored_tickers" in settings:
                         raw_tickers = settings["monitored_tickers"]
@@ -202,6 +212,18 @@ async def websocket_events(websocket: WebSocket):
                     if "bot_paper_mode" in settings:
                         event_manager.settings["bot_paper_mode"] = bool(
                             settings["bot_paper_mode"]
+                        )
+                    if "bot_second_entry_opposite_enabled" in settings:
+                        event_manager.settings["bot_second_entry_opposite_enabled"] = (
+                            bool(settings["bot_second_entry_opposite_enabled"])
+                        )
+                    if "bot_second_entry_max_ask_price" in settings:
+                        event_manager.settings["bot_second_entry_max_ask_price"] = (
+                            float(settings["bot_second_entry_max_ask_price"])
+                        )
+                    if "bot_second_entry_min_edge_pct" in settings:
+                        event_manager.settings["bot_second_entry_min_edge_pct"] = float(
+                            settings["bot_second_entry_min_edge_pct"]
                         )
                     if "pm_min_shares" in settings:
                         event_manager.settings["pm_min_shares"] = float(

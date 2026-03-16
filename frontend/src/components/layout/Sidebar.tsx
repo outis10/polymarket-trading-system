@@ -630,6 +630,69 @@ export default function Sidebar({ send }: SidebarProps) {
                     </label>
 
                     <label
+                        className="chart-option"
+                        title="Permite una sola segunda entrada por evento, solo del lado contrario al primero. Usa ask max y edge mínimo propios."
+                    >
+                        <input
+                            type="checkbox"
+                            checked={
+                                settings.bot_second_entry_opposite_enabled ??
+                                false
+                            }
+                            onChange={(e) =>
+                                handleKellySettingChange({
+                                    bot_second_entry_opposite_enabled:
+                                        e.target.checked,
+                                })
+                            }
+                        />
+                        Enable 2nd Entry Opposite
+                    </label>
+
+                    <label
+                        className="field-label"
+                        title="Para la segunda entrada contraria, solo permite operar si el ask real del libro es menor o igual a este valor. 0 = off."
+                    >
+                        2nd Entry Max Ask
+                    </label>
+                    <input
+                        className="sidebar-number-input"
+                        type="number"
+                        min={0}
+                        max={0.99}
+                        step={0.01}
+                        value={settings.bot_second_entry_max_ask_price ?? 0}
+                        onChange={(e) =>
+                            handleKellySettingChange({
+                                bot_second_entry_max_ask_price: Number(
+                                    e.target.value || 0,
+                                ),
+                            })
+                        }
+                    />
+
+                    <label
+                        className="field-label"
+                        title="Para la segunda entrada contraria, edge mínimo requerido contra ask."
+                    >
+                        2nd Entry Min Edge (%)
+                    </label>
+                    <input
+                        className="sidebar-number-input"
+                        type="number"
+                        min={0}
+                        step={0.1}
+                        value={settings.bot_second_entry_min_edge_pct ?? 5}
+                        onChange={(e) =>
+                            handleKellySettingChange({
+                                bot_second_entry_min_edge_pct: Number(
+                                    e.target.value || 0,
+                                ),
+                            })
+                        }
+                    />
+
+                    <label
                         className="field-label"
                         title="Bloquea compras cuando quedan menos de N segundos para que termine el evento. 0 = desactivado."
                     >
@@ -879,6 +942,28 @@ export default function Sidebar({ send }: SidebarProps) {
                             handleKellySettingChange({
                                 quant_gate_min_prob:
                                     Number(e.target.value || 0) / 100,
+                            })
+                        }
+                    />
+
+                    <label className="field-label">
+                        Max Ask Price{" "}
+                        <span style={{ fontSize: "0.75em", opacity: 0.6 }}>
+                            0=off
+                        </span>
+                    </label>
+                    <input
+                        className="sidebar-number-input"
+                        type="number"
+                        min={0}
+                        max={0.99}
+                        step={0.05}
+                        value={settings.quant_gate_max_ask_price ?? 0}
+                        onChange={(e) =>
+                            handleKellySettingChange({
+                                quant_gate_max_ask_price: Number(
+                                    e.target.value || 0,
+                                ),
                             })
                         }
                     />

@@ -136,6 +136,8 @@ class SettingsData(BaseModel):
     quant_gate_max_price_c: float = 90.0
     quant_gate_edge_vs_ask_enabled: bool = False
     quant_gate_min_edge_vs_ask_pct: float = 2.0
+    quant_gate_min_ask_price: float = 0.0
+    quant_gate_max_ask_price: float = 0.0
     quant_gate_min_prob: float = 0.0
     quant_gate_min_diff_pct: float = 0.0
     quant_gate_min_sample_strong_signal: int = 20
@@ -150,6 +152,9 @@ class SettingsData(BaseModel):
     bot_drawdown_stop_pct: float = 50.0
     bot_order_notional_cap_usd: float = 5.0
     bot_paper_mode: bool = False
+    bot_second_entry_opposite_enabled: bool = False
+    bot_second_entry_max_ask_price: float = 0.0
+    bot_second_entry_min_edge_pct: float = 5.0
     pm_min_shares: float = 5.0
     pm_min_notional_usd: float = 1.0
     # Order book streaming controls

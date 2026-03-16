@@ -119,6 +119,7 @@ export interface SettingsData {
     quant_gate_min_diff_pct?: number;
     quant_gate_max_spread_pct?: number;
     quant_gate_min_ask_price?: number;
+    quant_gate_max_ask_price?: number;
     quant_gate_min_price_c?: number;
     quant_gate_max_price_c?: number;
     quant_gate_edge_vs_ask_enabled?: boolean;
@@ -136,6 +137,9 @@ export interface SettingsData {
     bot_drawdown_stop_pct?: number;
     bot_order_notional_cap_usd?: number;
     bot_paper_mode?: boolean;
+    bot_second_entry_opposite_enabled?: boolean;
+    bot_second_entry_max_ask_price?: number;
+    bot_second_entry_min_edge_pct?: number;
     pm_min_shares?: number;
     pm_min_notional_usd?: number;
     // Order book streaming controls

@@ -25,8 +25,8 @@ from .chainlink import (
 )
 from .demo import load_demo_events, update_demo_prices
 from .event_discovery import discover_live_events
-from .kraken import fetch_kraken_candle_open, fetch_kraken_klines
 from .execution_engine import estimate_fill_from_event, fill_estimate_to_log
+from .kraken import fetch_kraken_candle_open, fetch_kraken_klines
 from .opportunity_tracker import OpportunityTracker
 from .polymarket import PolymarketStreamer, fetch_real_prices, get_client
 from .price_provider import (
@@ -84,21 +84,21 @@ _BOT_ORDERS_FIELDNAMES = [
     "fill_ratio",
     "maker_vs_taker_mode",
     # --- placeholders for future phases ---
-    "expected_avg_fill_price",            # Fase 2 (fill simulator)
-    "fill_sim_worst_price",               # Fase 2
-    "fill_sim_fillable_notional",         # Fase 2
-    "fill_sim_fillable_shares",           # Fase 2
-    "fill_sim_levels_consumed",           # Fase 2
-    "fill_sim_slippage_vs_ask_bps",       # Fase 2
-    "fill_sim_slippage_vs_mid_bps",       # Fase 2
-    "fill_sim_book_consumption_pct",      # Fase 2
-    "fill_sim_fully_fillable",            # Fase 2
-    "cancel_count",              # Fase 5 (lifecycle)
-    "replace_count",             # Fase 5 (lifecycle)
-    "post_only_attempted",       # Fase 4 (mode selector)
-    "adverse_selection_1s",      # Fase 7
-    "adverse_selection_3s",      # Fase 7
-    "adverse_selection_5s",      # Fase 7
+    "expected_avg_fill_price",  # Fase 2 (fill simulator)
+    "fill_sim_worst_price",  # Fase 2
+    "fill_sim_fillable_notional",  # Fase 2
+    "fill_sim_fillable_shares",  # Fase 2
+    "fill_sim_levels_consumed",  # Fase 2
+    "fill_sim_slippage_vs_ask_bps",  # Fase 2
+    "fill_sim_slippage_vs_mid_bps",  # Fase 2
+    "fill_sim_book_consumption_pct",  # Fase 2
+    "fill_sim_fully_fillable",  # Fase 2
+    "cancel_count",  # Fase 5 (lifecycle)
+    "replace_count",  # Fase 5 (lifecycle)
+    "post_only_attempted",  # Fase 4 (mode selector)
+    "adverse_selection_1s",  # Fase 7
+    "adverse_selection_3s",  # Fase 7
+    "adverse_selection_5s",  # Fase 7
     "kelly_pct",
     "bankroll_usd",
     "percentile_at_signal",
@@ -113,7 +113,9 @@ _PAPER_TRADES_LOG_PATH = os.path.normpath(
     os.path.join(_BOT_ORDERS_LOG_DIR, "paper_trades.csv")
 )
 _PAPER_FEE_PCT_DEFAULT = 2.0
-_PAPER_SLIPPAGE_BUFFER_PCT_DEFAULT = 0.1  # real slippage measured at 0.014% on 702 live orders
+_PAPER_SLIPPAGE_BUFFER_PCT_DEFAULT = (
+    0.1  # real slippage measured at 0.014% on 702 live orders
+)
 _PAPER_TRADES_FIELDNAMES = [
     "decision_id",
     "decision_time",
@@ -423,6 +425,8 @@ class EventManager:
             "quant_gate_max_price_c": 90.0,
             "quant_gate_max_spread_pct": 0.0,
             "quant_gate_min_ask_price": 0.0,
+            "quant_gate_max_ask_price": 0.0,
+            "quant_gate_min_prob": 0.0,
             "quant_gate_min_sample_strong_signal": 20,
             "quant_gate_strong_signal_threshold": 0.72,
             "quant_gate_blocked_hours_pst": [],  # e.g. [10, 11, 21, 22]
@@ -438,6 +442,9 @@ class EventManager:
             "bot_drawdown_stop_pct": 50.0,
             "bot_order_notional_cap_usd": 5.0,
             "bot_paper_mode": False,
+            "bot_second_entry_opposite_enabled": False,
+            "bot_second_entry_max_ask_price": 0.0,
+            "bot_second_entry_min_edge_pct": 5.0,
             "pm_min_shares": 5.0,
             "pm_min_notional_usd": 1.0,
             "order_book_max_levels": 8,
@@ -452,12 +459,12 @@ class EventManager:
             "fak_price_tolerance": 0.02,  # extra cents added to ask to survive book movement during latency
             "bot_fak_retry_on_no_fill": True,
             "bot_fak_retry_extra_tolerance": 0.01,  # price increment per retry attempt
-            "bot_fak_max_attempts": 3,              # total attempts on no_fill (1=no retry)
+            "bot_fak_max_attempts": 3,  # total attempts on no_fill (1=no retry)
             "bot_min_diff_abs": {},  # per-asset absolute diff filter e.g. {"BTC": 20}
-            "bot_strategy": "gate_transition",           # "gate_transition" | "best_side_reentry"
-            "bot_reentry_min_edge_improvement_pct": 2.0, # min edge gain (pp) required for re-entry
+            "bot_strategy": "gate_transition",  # "gate_transition" | "best_side_reentry"
+            "bot_reentry_min_edge_improvement_pct": 2.0,  # min edge gain (pp) required for re-entry
             # --- Execution Engine (v1.1-b / Fase 3) ---
-            "execution_enabled": False,          # master switch; False = observe-only
+            "execution_enabled": False,  # master switch; False = observe-only
             "execution_min_net_edge_pct": 2.0,  # block if quant_prob - avg_fill_price < this (%)
         }
         self._config: dict = {}
@@ -483,7 +490,13 @@ class EventManager:
         # {event_type: {ticker: {(day_type, time_frame): {slot: [(inf, sup, prob_up, prob_down, count)]}}}}
         self._pm_slot_ranges: dict[
             str,
-            dict[str, dict[tuple[str, str], dict[int, list[tuple[float, float, float, float, int]]]]],
+            dict[
+                str,
+                dict[
+                    tuple[str, str],
+                    dict[int, list[tuple[float, float, float, float, int]]],
+                ],
+            ],
         ] = {}
         # Max slot per (event_type, ticker)
         self._pm_slot_max_slot: dict[str, dict[str, int]] = {}
@@ -532,9 +545,13 @@ class EventManager:
         # Position tracker: fuente de verdad para shares compradas por evento
         # {event_id: {"up": {"shares": float, "avg_price": float, "token_id": str, "placed_at_utc": str}, ...}}
         self._position_tracker: dict[str, dict] = {}
-        _project_root = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
+        _project_root = os.path.normpath(
+            os.path.join(os.path.dirname(__file__), "..", "..")
+        )
         _default_output = os.path.join(_project_root, "backtest_output")
-        _default_settings = os.path.join(_project_root, "config", "runtime_settings.json")
+        _default_settings = os.path.join(
+            _project_root, "config", "runtime_settings.json"
+        )
         tracker_dir = os.path.normpath(os.environ.get("OUTPUT_DIR", _default_output))
         self._opportunity_tracker = OpportunityTracker(base_dir=tracker_dir)
         self._runtime_settings_path = os.path.normpath(
@@ -745,7 +762,10 @@ class EventManager:
             )
         )
         if not os.path.exists(csv_path):
-            logger.warning("time_windows.csv not found at %s — windowed 5m model disabled", csv_path)
+            logger.warning(
+                "time_windows.csv not found at %s — windowed 5m model disabled",
+                csv_path,
+            )
             return [], None
 
         required_cols = {"day_type", "time_frame", "start_hour", "end_hour", "zone"}
@@ -783,7 +803,9 @@ class EventManager:
                 key=lambda r: r["start_hour"],
             )
             if not day_rows:
-                raise ValueError(f"time_windows.csv has no rows for day_type='{day_type}'")
+                raise ValueError(
+                    f"time_windows.csv has no rows for day_type='{day_type}'"
+                )
             if day_rows[0]["start_hour"] != 0:
                 raise ValueError(
                     f"time_windows.csv day_type='{day_type}': first window must start at 0"
@@ -796,7 +818,7 @@ class EventManager:
                 if day_rows[i - 1]["end_hour"] != day_rows[i]["start_hour"]:
                     raise ValueError(
                         f"time_windows.csv day_type='{day_type}': gap or overlap "
-                        f"between window {i-1} and {i}"
+                        f"between window {i - 1} and {i}"
                     )
 
         tz = ZoneInfo(rows[0]["zone"])
@@ -857,7 +879,16 @@ class EventManager:
     def _load_pm_slot_ranges(
         self,
     ) -> tuple[
-        dict[str, dict[str, dict[tuple[str, str], dict[int, list[tuple[float, float, float, float, int]]]]]],
+        dict[
+            str,
+            dict[
+                str,
+                dict[
+                    tuple[str, str],
+                    dict[int, list[tuple[float, float, float, float, int]]],
+                ],
+            ],
+        ],
         dict[str, dict[str, int]],
     ]:
         """Load and index PM quantitative table for slot-based model (all event types).
@@ -868,7 +899,9 @@ class EventManager:
         Loads from merged_pm_slot_ranges_4cryptos.csv (multi-event pipeline).
         Falls back to merged_pm_5m_slot_ranges_4cryptos.csv (legacy 5m-only).
         """
-        base = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "backtest_output"))
+        base = os.path.normpath(
+            os.path.join(os.path.dirname(__file__), "..", "..", "backtest_output")
+        )
         csv_path = os.path.join(base, "merged_pm_slot_ranges_4cryptos.csv")
         legacy_path = os.path.join(base, "merged_pm_5m_slot_ranges_4cryptos.csv")
 
@@ -882,7 +915,13 @@ class EventManager:
 
         table: dict[
             str,
-            dict[str, dict[tuple[str, str], dict[int, list[tuple[float, float, float, float, int]]]]],
+            dict[
+                str,
+                dict[
+                    tuple[str, str],
+                    dict[int, list[tuple[float, float, float, float, int]]],
+                ],
+            ],
         ] = {}
         max_slot_map: dict[str, dict[str, int]] = {}
 
@@ -1162,7 +1201,9 @@ class EventManager:
                 current_percentile = 100.0
 
         slot_seconds = max(1, int((timeframe_minutes * 60) / max_slot))
-        minute_approx = max(1, min(timeframe_minutes, int(((slot_key - 1) * slot_seconds) // 60) + 1))
+        minute_approx = max(
+            1, min(timeframe_minutes, int(((slot_key - 1) * slot_seconds) // 60) + 1)
+        )
         day_type, time_frame = window
         return {
             "ticker": ticker,
@@ -1232,13 +1273,19 @@ class EventManager:
                 )
                 event_start_utc = event_dict.get("event_start_utc") or event_start_str
                 quant = self._lookup_quant_probs_slot(
-                    ticker, current_slot, price_diff,
-                    event_type=event_type, event_start_utc=event_start_utc
+                    ticker,
+                    current_slot,
+                    price_diff,
+                    event_type=event_type,
+                    event_start_utc=event_start_utc,
                 )
                 histogram = self._build_quant_histogram_slot(
-                    ticker, current_slot, price_diff,
-                    event_type=event_type, timeframe_minutes=timeframe_minutes,
-                    event_start_utc=event_start_utc
+                    ticker,
+                    current_slot,
+                    price_diff,
+                    event_type=event_type,
+                    timeframe_minutes=timeframe_minutes,
+                    event_start_utc=event_start_utc,
                 )
                 event_dict["quant_source"] = f"pm_slot_ranges_{event_type}"
             else:
@@ -1347,6 +1394,7 @@ class EventManager:
         blocked_hours = settings.get("quant_gate_blocked_hours_pst", [])
         if blocked_hours:
             from zoneinfo import ZoneInfo as _ZI
+
             _pst = _ZI("America/Los_Angeles")
             _hour_pst = datetime.now(tz=_pst).hour
             if _hour_pst in blocked_hours:
@@ -1393,14 +1441,33 @@ class EventManager:
         max_spread_pct = float(
             gp.get("max_spread_pct", settings.get("quant_gate_max_spread_pct", 0.0))
         )
-        if max_spread_pct > 0 and spread_pct is not None and spread_pct > max_spread_pct:
+        if (
+            max_spread_pct > 0
+            and spread_pct is not None
+            and spread_pct > max_spread_pct
+        ):
             reasons.append(f"spread>{max_spread_pct:.2%}")
 
         min_ask_price = float(
             gp.get("min_ask_price", settings.get("quant_gate_min_ask_price", 0.0))
         )
-        if min_ask_price > 0 and ask_price is not None and not ask_is_proxy and ask_price < min_ask_price:
+        if (
+            min_ask_price > 0
+            and ask_price is not None
+            and not ask_is_proxy
+            and ask_price < min_ask_price
+        ):
             reasons.append(f"ask<{min_ask_price:.2f}")
+        max_ask_price = float(
+            gp.get("max_ask_price", settings.get("quant_gate_max_ask_price", 0.0))
+        )
+        if (
+            max_ask_price > 0
+            and ask_price is not None
+            and not ask_is_proxy
+            and ask_price > max_ask_price
+        ):
+            reasons.append(f"ask>{max_ask_price:.2f}")
 
         if quant_prob is not None:
             # edge_pct: informational — quant advantage vs mid-market
@@ -1452,6 +1519,8 @@ class EventManager:
             "min_edge_vs_ask_pct": float(
                 settings.get("quant_gate_min_edge_vs_ask_pct", 2.0)
             ),
+            "min_ask_price": float(settings.get("quant_gate_min_ask_price", 0.0)),
+            "max_ask_price": float(settings.get("quant_gate_max_ask_price", 0.0)),
             "min_prob": float(settings.get("quant_gate_min_prob", 0.0)),
             "min_diff_pct": float(settings.get("quant_gate_min_diff_pct", 0.0)),
         }
@@ -1742,6 +1811,7 @@ class EventManager:
         blocked_hours = self.settings.get("quant_gate_blocked_hours_pst", [])
         if blocked_hours:
             from zoneinfo import ZoneInfo as _ZI
+
             _hour_pst = datetime.now(tz=_ZI("America/Los_Angeles")).hour
             if _hour_pst in blocked_hours:
                 result["reason"] = f"blocked_hour_pst:{_hour_pst}"
@@ -1801,6 +1871,30 @@ class EventManager:
             result["reason"] = "no_ask_price"
             return result
 
+        entry_context = self._get_event_entry_context(
+            event_id=event_id,
+            side=side_norm,
+            now_utc=now_utc,
+        )
+        second_entry_enabled = bool(
+            self.settings.get("bot_second_entry_opposite_enabled", False)
+        )
+        if second_entry_enabled and bool(entry_context["event_entry_count"]):
+            if bool(entry_context["same_side_exists"]):
+                result["reason"] = "second_entry_same_side_blocked"
+                return result
+            if not bool(entry_context["is_second_entry_opposite_candidate"]):
+                result["reason"] = (
+                    f"second_entry_requires_{entry_context['opposite_side']}"
+                )
+                return result
+            second_entry_max_ask = max(
+                0.0, float(self.settings.get("bot_second_entry_max_ask_price", 0.0))
+            )
+            if second_entry_max_ask > 0 and ask_price > second_entry_max_ask:
+                result["reason"] = "second_entry_ask_above_max"
+                return result
+
         max_price_c = float(self.settings.get("quant_gate_max_price_c", 90.0))
         min_price_c = float(self.settings.get("quant_gate_min_price_c", 10.0))
         ask_price_c = ask_price * 100.0
@@ -1824,6 +1918,12 @@ class EventManager:
         result["quant_prob"] = quant_prob
 
         min_edge_pct = max(0.0, float(self.settings.get("kelly_min_edge_pct", 0.5)))
+        if second_entry_enabled and bool(
+            entry_context["is_second_entry_opposite_candidate"]
+        ):
+            min_edge_pct = max(
+                0.0, float(self.settings.get("bot_second_entry_min_edge_pct", 5.0))
+            )
         edge_pct = (quant_prob - ask_price) * 100.0
         if edge_pct < min_edge_pct:
             result["reason"] = "edge_below_min"
@@ -1880,7 +1980,12 @@ class EventManager:
         if bool(self.settings.get("bot_risk_enabled", True)) and not bool(
             self.settings.get("bot_paper_mode", False)
         ):
-            if bool(self.settings.get("bot_drawdown_circuit_breaker_enabled", self.settings.get("bot_drawdown_enabled", True))):
+            if bool(
+                self.settings.get(
+                    "bot_drawdown_circuit_breaker_enabled",
+                    self.settings.get("bot_drawdown_enabled", True),
+                )
+            ):
                 drawdown_stop_pct = float(
                     self.settings.get("bot_drawdown_stop_pct", 50.0)
                 )
@@ -2205,8 +2310,14 @@ class EventManager:
             won = event_outcome_real == side
             pnl = (stake * (1.0 / q - 1.0)) if won else (-stake)
             spread_pct = _as_float(row.get("spread_pct_at_decision"))
-            fee_pct_used = float(self.settings.get("paper_fee_pct", _PAPER_FEE_PCT_DEFAULT))
-            slippage_buffer_pct_used = float(self.settings.get("paper_slippage_buffer_pct", _PAPER_SLIPPAGE_BUFFER_PCT_DEFAULT))
+            fee_pct_used = float(
+                self.settings.get("paper_fee_pct", _PAPER_FEE_PCT_DEFAULT)
+            )
+            slippage_buffer_pct_used = float(
+                self.settings.get(
+                    "paper_slippage_buffer_pct", _PAPER_SLIPPAGE_BUFFER_PCT_DEFAULT
+                )
+            )
             spread_component = max(0.0, spread_pct or 0.0) * 0.5
             friction_rate = max(
                 0.0,
@@ -2230,7 +2341,8 @@ class EventManager:
             # Release exposure: remove the guard record for this paper trade so the
             # ticker cap is freed as soon as the event resolves (not after 2 days).
             self._order_guard_records = [
-                g for g in self._order_guard_records
+                g
+                for g in self._order_guard_records
                 if not (g.get("event_id") == event_id and g.get("outcome") == side)
             ]
 
@@ -2403,6 +2515,7 @@ class EventManager:
             return False, "global_order_cooldown_active"
 
         side = "up" if str(outcome).lower() == "up" else "down"
+        opposite_side = "down" if side == "up" else "up"
         per_event_limit = max(
             0, int(self.settings.get("bot_max_buys_per_event_side", 1))
         )
@@ -2416,24 +2529,45 @@ class EventManager:
             for r in self._order_guard_records
             if r.get("event_id") == event_id and r.get("at_utc") >= start_day
         ]
-        if per_event_limit > 0 and len(event_records) >= per_event_limit:
+        second_entry_enabled = bool(
+            self.settings.get("bot_second_entry_opposite_enabled", False)
+        )
+        same_side_records = [
+            r for r in event_records if str(r.get("outcome", "")).lower() == side
+        ]
+        opposite_side_records = [
+            r
+            for r in event_records
+            if str(r.get("outcome", "")).lower() == opposite_side
+        ]
+        allow_second_opposite = (
+            second_entry_enabled
+            and len(event_records) == 1
+            and not same_side_records
+            and bool(opposite_side_records)
+        )
+        effective_per_event_limit = (
+            max(per_event_limit, 2) if second_entry_enabled else per_event_limit
+        )
+        if (
+            effective_per_event_limit > 0
+            and len(event_records) >= effective_per_event_limit
+        ):
             return False, "max_buys_per_event_reached"
         if event_records and event_cooldown > 0:
             last_event_at = max(r["at_utc"] for r in event_records)
             if (now_utc - last_event_at).total_seconds() < event_cooldown:
                 return False, "event_cooldown_active"
 
+        if second_entry_enabled and event_records:
+            if same_side_records:
+                return False, "second_entry_same_side_blocked"
+            if not allow_second_opposite:
+                return False, f"second_entry_requires_{opposite_side}"
+
         # Block buying opposite side if already bought this event today (configurable)
         if bool(self.settings.get("bot_block_opposite_side", True)):
-            opposite_side = "down" if side == "up" else "up"
-            opposite_records = [
-                r
-                for r in self._order_guard_records
-                if r.get("event_id") == event_id
-                and r.get("outcome") == opposite_side
-                and r.get("at_utc") >= start_day
-            ]
-            if opposite_records:
+            if opposite_side_records and not allow_second_opposite:
                 return False, f"already_bought_{opposite_side}_this_event"
 
         ticker = self._extract_event_ticker(event_id, event)
@@ -2481,6 +2615,40 @@ class EventManager:
 
         return True, ""
 
+    def _get_event_entry_context(
+        self, *, event_id: str, side: str, now_utc: datetime
+    ) -> dict[str, object]:
+        records = self._clean_old_order_records(self._order_guard_records, now_utc)
+        start_day = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+        event_records = [
+            r
+            for r in records
+            if r.get("event_id") == event_id and r.get("at_utc") >= start_day
+        ]
+        side_norm = "up" if str(side).lower() == "up" else "down"
+        opposite_side = "down" if side_norm == "up" else "up"
+        same_side_records = [
+            r for r in event_records if str(r.get("outcome", "")).lower() == side_norm
+        ]
+        opposite_side_records = [
+            r
+            for r in event_records
+            if str(r.get("outcome", "")).lower() == opposite_side
+        ]
+        return {
+            "event_records": event_records,
+            "event_entry_count": len(event_records),
+            "same_side_exists": bool(same_side_records),
+            "opposite_side_exists": bool(opposite_side_records),
+            "side": side_norm,
+            "opposite_side": opposite_side,
+            "is_second_entry_opposite_candidate": (
+                len(event_records) == 1
+                and not same_side_records
+                and bool(opposite_side_records)
+            ),
+        }
+
     def format_risk_guard_block_reason(
         self,
         *,
@@ -2494,7 +2662,11 @@ class EventManager:
         """
         Expand compact risk-guard reason codes with actionable context.
         """
-        if reason not in {"event_exposure_cap_reached", "ticker_exposure_cap_reached", "drawdown_circuit_breaker"}:
+        if reason not in {
+            "event_exposure_cap_reached",
+            "ticker_exposure_cap_reached",
+            "drawdown_circuit_breaker",
+        }:
             return reason
 
         base_bankroll = (
@@ -3663,7 +3835,9 @@ class EventManager:
             return
 
         key = (event_id, best_side)
-        min_improvement = max(0.0, float(self.settings.get("bot_reentry_min_edge_improvement_pct", 2.0)))
+        min_improvement = max(
+            0.0, float(self.settings.get("bot_reentry_min_edge_improvement_pct", 2.0))
+        )
         last_edge = self._bot_last_fired_edge.get(key)
         if last_edge is not None and (best_edge - last_edge) < min_improvement:
             return
@@ -3673,7 +3847,10 @@ class EventManager:
         )
 
     async def _bot_maybe_place_order(
-        self, event_id: str, event_dict: dict, side: str,
+        self,
+        event_id: str,
+        event_dict: dict,
+        side: str,
         override_gate_transition: bool = False,
     ) -> None:
         """Auto-place an order when gate transitions disabled→enabled in bot mode.
@@ -3806,11 +3983,15 @@ class EventManager:
             if isinstance(_min_diff_abs, dict) and _min_diff_abs:
                 _asset_ticker = self._extract_event_ticker(event_id, event_dict).upper()
                 _diff_threshold = _min_diff_abs.get(_asset_ticker)
-                if _diff_threshold is not None and isinstance(diff_vs_ptb_at_send, float):
+                if _diff_threshold is not None and isinstance(
+                    diff_vs_ptb_at_send, float
+                ):
                     if abs(diff_vs_ptb_at_send) < float(_diff_threshold):
                         logger.debug(
                             "Bot auto-order blocked: |diff_vs_ptb| %.2f < %.2f for %s",
-                            abs(diff_vs_ptb_at_send), float(_diff_threshold), _asset_ticker,
+                            abs(diff_vs_ptb_at_send),
+                            float(_diff_threshold),
+                            _asset_ticker,
                         )
                         return
 
@@ -3867,7 +4048,9 @@ class EventManager:
                         _ask_depth_usd,
                         _min_ask_depth_usd,
                     )
-                    self._bot_prev_gate_enabled[key] = False  # allow re-trigger next tick
+                    self._bot_prev_gate_enabled[key] = (
+                        False  # allow re-trigger next tick
+                    )
                     return
 
             logger.info(
@@ -3899,9 +4082,9 @@ class EventManager:
             # Blocks orders whose edge disappears after estimated execution cost.
             # Only active when execution_enabled=True in runtime_settings.json.
             _exec_enabled = bool(self.settings.get("execution_enabled", False))
-            _exec_min_net_edge = float(
-                self.settings.get("execution_min_net_edge_pct", 2.0)
-            ) / 100.0  # convert pct to ratio (e.g. 2.0 → 0.02)
+            _exec_min_net_edge = (
+                float(self.settings.get("execution_min_net_edge_pct", 2.0)) / 100.0
+            )  # convert pct to ratio (e.g. 2.0 → 0.02)
             if (
                 _exec_enabled
                 and _fill_est.avg_fill_price is not None
@@ -3920,7 +4103,9 @@ class EventManager:
                         _fill_est.avg_fill_price,
                         quant_prob,
                     )
-                    self._bot_prev_gate_enabled[key] = False  # allow re-trigger next tick
+                    self._bot_prev_gate_enabled[key] = (
+                        False  # allow re-trigger next tick
+                    )
                     return
 
             # --- Pre-log and guard registration BEFORE sending to CLOB ---
@@ -4023,9 +4208,15 @@ class EventManager:
             # ask_price is used for edge/slippage calculations; order_price is what hits the CLOB.
             _fak_tolerance = float(self.settings.get("fak_price_tolerance", 0.03))
             _no_liq_signals = ("no orders found to match", "no match", "no orderbook")
-            _retry_extra = float(self.settings.get("bot_fak_retry_extra_tolerance", 0.01))
+            _retry_extra = float(
+                self.settings.get("bot_fak_retry_extra_tolerance", 0.01)
+            )
             _retry_enabled = bool(self.settings.get("bot_fak_retry_on_no_fill", True))
-            _max_attempts = max(1, int(self.settings.get("bot_fak_max_attempts", 3))) if _retry_enabled else 1
+            _max_attempts = (
+                max(1, int(self.settings.get("bot_fak_max_attempts", 3)))
+                if _retry_enabled
+                else 1
+            )
 
             result = None
             _send_at_utc = datetime.now(tz=timezone.utc)
@@ -4043,13 +4234,16 @@ class EventManager:
                     _send_at_utc = datetime.now(tz=timezone.utc)
                 try:
                     result = await asyncio.to_thread(
-                        client.place_fok_order, token_id, "BUY", notional_usd, order_price
+                        client.place_fok_order,
+                        token_id,
+                        "BUY",
+                        notional_usd,
+                        order_price,
                     )
                     break  # success — exit retry loop
                 except Exception as _attempt_exc:
-                    if (
-                        _attempt < _max_attempts - 1
-                        and any(s in str(_attempt_exc).lower() for s in _no_liq_signals)
+                    if _attempt < _max_attempts - 1 and any(
+                        s in str(_attempt_exc).lower() for s in _no_liq_signals
                     ):
                         continue  # try next attempt with higher tolerance
                     raise  # re-raise on last attempt or non-liquidity error
@@ -4102,7 +4296,9 @@ class EventManager:
                         else ""
                     )
                     _is_bps = (
-                        round((fill_price_real - mid_at_send) / mid_at_send * 10000.0, 2)
+                        round(
+                            (fill_price_real - mid_at_send) / mid_at_send * 10000.0, 2
+                        )
                         if isinstance(fill_price_real, float)
                         and isinstance(mid_at_send, float)
                         and mid_at_send > 0
@@ -4117,7 +4313,9 @@ class EventManager:
                     )
                     _fill_ratio = (
                         round(filled_shares_real / shares, 6)
-                        if filled_shares_real > 0 and isinstance(shares, (int, float)) and shares > 0
+                        if filled_shares_real > 0
+                        and isinstance(shares, (int, float))
+                        and shares > 0
                         else ""
                     )
                     _update_bot_order_log_row(
@@ -4305,7 +4503,7 @@ class EventManager:
                         "fill_latency_ms": _fill_latency_ms,
                         "status": status,
                         **fail_info,
-                    }
+                    },
                 )
             except Exception:
                 pass
@@ -4407,11 +4605,11 @@ class EventManager:
             )
             # Bot auto-order: fire-and-forget, strategy-dependent
             if str(self.settings.get("trading_mode", "manual")).lower() == "bot":
-                _strategy = str(self.settings.get("bot_strategy", "gate_transition")).lower()
+                _strategy = str(
+                    self.settings.get("bot_strategy", "gate_transition")
+                ).lower()
                 if _strategy == "best_side_reentry":
-                    asyncio.create_task(
-                        self._bot_best_side_order(event_id, event_dict)
-                    )
+                    asyncio.create_task(self._bot_best_side_order(event_id, event_dict))
                 else:  # default: "gate_transition"
                     for side in ("up", "down"):
                         asyncio.create_task(

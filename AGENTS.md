@@ -667,6 +667,35 @@ Implementar modulo Kelly configurable desde Settings:
   - toggle `Enable Edge vs Ask Filter`,
   - input `Min Edge vs Ask (%)`.
 
+## Estado actualizado (2026-03-16, banda configurable de ask en quant gate)
+
+- Quant gate ahora soporta banda configurable de ask:
+  - `quant_gate_min_ask_price` mantiene su meaning actual como piso,
+  - nuevo `quant_gate_max_ask_price` agrega techo de ask.
+- Regla backend por lado:
+  - bloquea con `ask<...` si el ask real está por debajo del mínimo,
+  - bloquea con `ask>...` si el ask real está por encima del máximo,
+  - ambos usan `0=off`.
+- UI Settings (Sidebar):
+  - input `Min Ask Price`,
+  - input `Max Ask Price`.
+
+## Estado actualizado (2026-03-16, segunda entrada contraria robusta)
+
+- Nueva politica opcional de bot para una segunda entrada por evento:
+  - `bot_second_entry_opposite_enabled`
+  - `bot_second_entry_max_ask_price`
+  - `bot_second_entry_min_edge_pct`
+- Comportamiento backend:
+  - si no hay entrada previa en el evento, aplica reglas normales,
+  - si ya existe una entrada y la politica está activa, la segunda solo puede ser del lado contrario,
+  - una segunda entrada del mismo lado se bloquea,
+  - la segunda entrada contraria puede usar `ask <= max_ask_price` y `edge >= min_edge_pct` propios,
+  - el límite efectivo por evento sube a 2 mientras esta política está activa para evitar depender de `bot_max_buys_per_event_side=2`.
+- UI Settings (Sidebar):
+  - toggle `Enable 2nd Entry Opposite`
+  - inputs `2nd Entry Max Ask` y `2nd Entry Min Edge (%)`
+
 ## Estado actualizado (2026-02-19, toggles UI cards)
 
 - Settings -> `Chart Options` agrega toggles nuevos:
