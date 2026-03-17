@@ -102,6 +102,7 @@ _BOT_ORDERS_FIELDNAMES = [
     "kelly_pct",
     "bankroll_usd",
     "percentile_at_signal",
+    "ladder_entry",
     "close_price_at_resolution",
     "event_outcome_real",
     "won",
@@ -466,6 +467,12 @@ class EventManager:
             # --- Execution Engine (v1.1-b / Fase 3) ---
             "execution_enabled": False,  # master switch; False = observe-only
             "execution_min_net_edge_pct": 2.0,  # block if quant_prob - avg_fill_price < this (%)
+            # --- Trade Ladder ---
+            # List of per-entry dicts: {min_ask, min_edge_pct, stake_multiplier, side_filter}
+            # min_ask: float | {"up": float, "down": float}
+            # side_filter: "any" | "opposite"
+            # Empty list = legacy single-entry + bot_second_entry_opposite_enabled behavior
+            "bot_trade_ladder": [],
         }
         self._config: dict = {}
         self._task: Optional[asyncio.Task] = None
@@ -1557,6 +1564,52 @@ class EventManager:
 
         return "base", params
 
+    def _resolve_ladder_entry(
+        self,
+        *,
+        event_id: str,
+        side: str,
+        now_utc: datetime,
+    ) -> tuple[dict | None, int, str | None]:
+        """Return (entry_config, entry_num, block_reason) for the next ladder step.
+
+        entry_num is 1-based (first order = 1).
+        When entry_config is None, block_reason explains why this attempt is blocked.
+        When bot_trade_ladder is empty, returns (None, 1, "ladder_not_configured").
+        """
+        ladder: list = self.settings.get("bot_trade_ladder", [])
+        if not ladder:
+            return None, 1, "ladder_not_configured"
+
+        records = self._clean_old_order_records(self._order_guard_records, now_utc)
+        start_day = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+        event_records = [
+            r
+            for r in records
+            if r.get("event_id") == event_id and r.get("at_utc") >= start_day
+        ]
+        entry_num = len(event_records) + 1  # 1-based
+
+        if entry_num > len(ladder):
+            return None, entry_num, "max_ladder_entries_reached"
+
+        entry_cfg: dict = ladder[entry_num - 1]
+        side_filter = str(entry_cfg.get("side_filter", "any")).lower()
+
+        if side_filter == "opposite":
+            if not event_records:
+                return None, entry_num, "ladder_opposite_no_prior_entry"
+            prior_sides = {str(r.get("outcome", "")).lower() for r in event_records}
+            # Current side must NOT appear in prior records (not yet traded)
+            # and the opposite must appear (was traded)
+            if side in prior_sides:
+                return None, entry_num, f"ladder_entry{entry_num}_requires_opposite"
+            opposite = "down" if side == "up" else "up"
+            if opposite not in prior_sides:
+                return None, entry_num, f"ladder_entry{entry_num}_requires_opposite"
+
+        return entry_cfg, entry_num, None
+
     def _effective_second_entry_min_edge_pct(
         self,
         *,
@@ -1918,29 +1971,56 @@ class EventManager:
             result["reason"] = "no_ask_price"
             return result
 
-        entry_context = self._get_event_entry_context(
-            event_id=event_id,
-            side=side_norm,
-            now_utc=now_utc,
-        )
-        second_entry_enabled = bool(
-            self.settings.get("bot_second_entry_opposite_enabled", False)
-        )
-        if second_entry_enabled and bool(entry_context["event_entry_count"]):
-            if bool(entry_context["same_side_exists"]):
-                result["reason"] = "second_entry_same_side_blocked"
-                return result
-            if not bool(entry_context["is_second_entry_opposite_candidate"]):
-                result["reason"] = (
-                    f"second_entry_requires_{entry_context['opposite_side']}"
+        # ── Trade Ladder: per-entry side + ask validation ──────────────────────
+        ladder: list = self.settings.get("bot_trade_ladder", [])
+        ladder_entry_cfg: dict | None = None
+        ladder_entry_num: int = 1
+        # Legacy second-entry context — only resolved when ladder is NOT active
+        entry_context: dict = {}
+        second_entry_enabled: bool = False
+        if ladder:
+            ladder_entry_cfg, ladder_entry_num, ladder_reason = (
+                self._resolve_ladder_entry(
+                    event_id=event_id, side=side_norm, now_utc=now_utc
                 )
-                return result
-            second_entry_max_ask = max(
-                0.0, float(self.settings.get("bot_second_entry_max_ask_price", 0.0))
             )
-            if second_entry_max_ask > 0 and ask_price > second_entry_max_ask:
-                result["reason"] = "second_entry_ask_above_max"
+            if ladder_entry_cfg is None:
+                result["reason"] = ladder_reason or "ladder_blocked"
                 return result
+            # Per-entry ask check (supports scalar or {"up": x, "down": y})
+            raw_min_ask = ladder_entry_cfg.get("min_ask", 0.0)
+            if isinstance(raw_min_ask, dict):
+                entry_min_ask = float(raw_min_ask.get(side_norm, 0.0))
+            else:
+                entry_min_ask = float(raw_min_ask)
+            if entry_min_ask > 0 and ask_price < entry_min_ask:
+                result["reason"] = f"ladder_entry{ladder_entry_num}_ask_below_min"
+                return result
+        else:
+            # Legacy second-entry logic
+            entry_context = self._get_event_entry_context(
+                event_id=event_id,
+                side=side_norm,
+                now_utc=now_utc,
+            )
+            second_entry_enabled = bool(
+                self.settings.get("bot_second_entry_opposite_enabled", False)
+            )
+            if second_entry_enabled and bool(entry_context["event_entry_count"]):
+                if bool(entry_context["same_side_exists"]):
+                    result["reason"] = "second_entry_same_side_blocked"
+                    return result
+                if not bool(entry_context["is_second_entry_opposite_candidate"]):
+                    result["reason"] = (
+                        f"second_entry_requires_{entry_context['opposite_side']}"
+                    )
+                    return result
+                second_entry_max_ask = max(
+                    0.0, float(self.settings.get("bot_second_entry_max_ask_price", 0.0))
+                )
+                if second_entry_max_ask > 0 and ask_price > second_entry_max_ask:
+                    result["reason"] = "second_entry_ask_above_max"
+                    return result
 
         max_price_c = float(self.settings.get("quant_gate_max_price_c", 90.0))
         min_price_c = float(self.settings.get("quant_gate_min_price_c", 10.0))
@@ -1964,13 +2044,18 @@ class EventManager:
         quant_prob = float(quant_prob_raw)
         result["quant_prob"] = quant_prob
 
-        min_edge_pct = max(0.0, float(self.settings.get("kelly_min_edge_pct", 0.5)))
-        if second_entry_enabled and bool(
-            entry_context["is_second_entry_opposite_candidate"]
-        ):
+        if ladder and ladder_entry_cfg is not None:
             min_edge_pct = max(
-                0.0, float(self.settings.get("bot_second_entry_min_edge_pct", 5.0))
+                0.0, float(ladder_entry_cfg.get("min_edge_pct", 0.0))
             )
+        else:
+            min_edge_pct = max(0.0, float(self.settings.get("kelly_min_edge_pct", 0.5)))
+            if second_entry_enabled and bool(
+                entry_context.get("is_second_entry_opposite_candidate")
+            ):
+                min_edge_pct = max(
+                    0.0, float(self.settings.get("bot_second_entry_min_edge_pct", 5.0))
+                )
         edge_pct = (quant_prob - ask_price) * 100.0
         if edge_pct < min_edge_pct:
             result["reason"] = "edge_below_min"
@@ -1988,6 +2073,7 @@ class EventManager:
         )
         kelly_pct = min(raw_kelly * kelly_fraction, max_bet_pct, max_event_exposure_pct)
         result["kelly_pct"] = kelly_pct
+        result["ladder_entry_num"] = ladder_entry_num
         base_bankroll = (
             self._get_paper_effective_bankroll_usd()
             if bool(self.settings.get("bot_paper_mode", False))
@@ -1999,6 +2085,11 @@ class EventManager:
         )
         base_bankroll = max(1.0, float(base_bankroll))
         stake_usd = kelly_pct * base_bankroll
+        if ladder and ladder_entry_cfg is not None:
+            stake_multiplier = max(
+                0.0, float(ladder_entry_cfg.get("stake_multiplier", 1.0))
+            )
+            stake_usd = stake_usd * stake_multiplier
 
         hard_cap = max(0.0, float(self.settings.get("bot_order_notional_cap_usd", 0.0)))
         if hard_cap > 0:
@@ -2563,9 +2654,6 @@ class EventManager:
 
         side = "up" if str(outcome).lower() == "up" else "down"
         opposite_side = "down" if side == "up" else "up"
-        per_event_limit = max(
-            0, int(self.settings.get("bot_max_buys_per_event_side", 1))
-        )
         event_cooldown = max(
             0.0, float(self.settings.get("bot_cooldown_seconds_per_event_side", 60))
         )
@@ -2576,46 +2664,57 @@ class EventManager:
             for r in self._order_guard_records
             if r.get("event_id") == event_id and r.get("at_utc") >= start_day
         ]
-        second_entry_enabled = bool(
-            self.settings.get("bot_second_entry_opposite_enabled", False)
-        )
-        same_side_records = [
-            r for r in event_records if str(r.get("outcome", "")).lower() == side
-        ]
-        opposite_side_records = [
-            r
-            for r in event_records
-            if str(r.get("outcome", "")).lower() == opposite_side
-        ]
-        allow_second_opposite = (
-            second_entry_enabled
-            and len(event_records) == 1
-            and not same_side_records
-            and bool(opposite_side_records)
-        )
-        effective_per_event_limit = (
-            max(per_event_limit, 2) if second_entry_enabled else per_event_limit
-        )
-        if (
-            effective_per_event_limit > 0
-            and len(event_records) >= effective_per_event_limit
-        ):
-            return False, "max_buys_per_event_reached"
+
+        ladder: list = self.settings.get("bot_trade_ladder", [])
+        if ladder:
+            # Ladder mode: max entries = len(ladder), side logic already validated
+            # upstream in evaluate_bot_order_candidate → _resolve_ladder_entry.
+            if len(ladder) > 0 and len(event_records) >= len(ladder):
+                return False, "max_ladder_entries_reached"
+        else:
+            # Legacy mode
+            per_event_limit = max(
+                0, int(self.settings.get("bot_max_buys_per_event_side", 1))
+            )
+            second_entry_enabled = bool(
+                self.settings.get("bot_second_entry_opposite_enabled", False)
+            )
+            same_side_records = [
+                r for r in event_records if str(r.get("outcome", "")).lower() == side
+            ]
+            opposite_side_records = [
+                r
+                for r in event_records
+                if str(r.get("outcome", "")).lower() == opposite_side
+            ]
+            allow_second_opposite = (
+                second_entry_enabled
+                and len(event_records) == 1
+                and not same_side_records
+                and bool(opposite_side_records)
+            )
+            effective_per_event_limit = (
+                max(per_event_limit, 2) if second_entry_enabled else per_event_limit
+            )
+            if (
+                effective_per_event_limit > 0
+                and len(event_records) >= effective_per_event_limit
+            ):
+                return False, "max_buys_per_event_reached"
+            if second_entry_enabled and event_records:
+                if same_side_records:
+                    return False, "second_entry_same_side_blocked"
+                if not allow_second_opposite:
+                    return False, f"second_entry_requires_{opposite_side}"
+            # Block buying opposite side if already bought this event today
+            if bool(self.settings.get("bot_block_opposite_side", True)):
+                if opposite_side_records and not allow_second_opposite:
+                    return False, f"already_bought_{opposite_side}_this_event"
+
         if event_records and event_cooldown > 0:
             last_event_at = max(r["at_utc"] for r in event_records)
             if (now_utc - last_event_at).total_seconds() < event_cooldown:
                 return False, "event_cooldown_active"
-
-        if second_entry_enabled and event_records:
-            if same_side_records:
-                return False, "second_entry_same_side_blocked"
-            if not allow_second_opposite:
-                return False, f"second_entry_requires_{opposite_side}"
-
-        # Block buying opposite side if already bought this event today (configurable)
-        if bool(self.settings.get("bot_block_opposite_side", True)):
-            if opposite_side_records and not allow_second_opposite:
-                return False, f"already_bought_{opposite_side}_this_event"
 
         ticker = self._extract_event_ticker(event_id, event)
         hard_order_cap = max(
@@ -3997,6 +4096,7 @@ class EventManager:
                 if isinstance(kelly_pct_raw, (int, float))
                 else None
             )
+            ladder_entry_num = int(evaluation.get("ladder_entry_num", 1) or 1)
             price_source_at_send = str(
                 evaluation.get("price_source_at_send") or "proxy_mid"
             )
@@ -4228,6 +4328,7 @@ class EventManager:
                 "percentile_at_signal": percentile_at_signal
                 if percentile_at_signal is not None
                 else "",
+                "ladder_entry": ladder_entry_num,
                 "close_price_at_resolution": "",
                 "event_outcome_real": "",
                 "won": "",
