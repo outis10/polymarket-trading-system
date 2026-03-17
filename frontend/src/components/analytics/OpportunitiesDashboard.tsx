@@ -693,6 +693,7 @@ export default function OpportunitiesDashboard() {
             runtimeSettings.kelly_paper_bankroll_usd ?? 1000,
         );
         const rows = filteredPaperRows
+            .filter((r) => asNumber(r.slot) !== 30)
             .slice()
             .sort(
                 (a, b) =>
@@ -735,10 +736,9 @@ export default function OpportunitiesDashboard() {
                 ? runtimeSettings.live_equity_start_bankroll_usd
                 : (runtimeSettings.kelly_live_bankroll_usd ?? 100),
         );
-        const startAt =
-            runtimeSettings.live_equity_start_at_utc
-                ? new Date(runtimeSettings.live_equity_start_at_utc).getTime()
-                : null;
+        const startAt = runtimeSettings.live_equity_start_at_utc
+            ? new Date(runtimeSettings.live_equity_start_at_utc).getTime()
+            : null;
 
         const placedOrders = filteredBotOrderRows
             .filter((r) => {
@@ -753,6 +753,7 @@ export default function OpportunitiesDashboard() {
                     const ts = new Date(r.placed_at_utc).getTime();
                     if (ts < startAt) return false;
                 }
+                if (asNumber(r.slot) === 30) return false;
                 return true;
             })
             .slice()
@@ -865,33 +866,56 @@ export default function OpportunitiesDashboard() {
                   }, 0) / placedRows.length
                 : 0;
         const latencyRows = filteredBotOrderRows.filter(
-            (r) => r.fill_latency_ms !== undefined && r.fill_latency_ms !== "" && asNumber(r.fill_latency_ms) > 0,
+            (r) =>
+                r.fill_latency_ms !== undefined &&
+                r.fill_latency_ms !== "" &&
+                asNumber(r.fill_latency_ms) > 0,
         );
         const avgLatency =
             latencyRows.length > 0
-                ? latencyRows.reduce((acc, r) => acc + asNumber(r.fill_latency_ms), 0) / latencyRows.length
+                ? latencyRows.reduce(
+                      (acc, r) => acc + asNumber(r.fill_latency_ms),
+                      0,
+                  ) / latencyRows.length
                 : 0;
         // --- execution observability (v1.1-a) ---
         const slippageBpsRows = filteredBotOrderRows.filter(
-            (r) => r.realized_slippage_bps !== undefined && r.realized_slippage_bps !== "",
+            (r) =>
+                r.realized_slippage_bps !== undefined &&
+                r.realized_slippage_bps !== "",
         );
         const avgSlippageBps =
             slippageBpsRows.length > 0
-                ? slippageBpsRows.reduce((acc, r) => acc + asNumber(r.realized_slippage_bps), 0) / slippageBpsRows.length
+                ? slippageBpsRows.reduce(
+                      (acc, r) => acc + asNumber(r.realized_slippage_bps),
+                      0,
+                  ) / slippageBpsRows.length
                 : null;
         const isbpsRows = filteredBotOrderRows.filter(
-            (r) => r.implementation_shortfall_bps !== undefined && r.implementation_shortfall_bps !== "",
+            (r) =>
+                r.implementation_shortfall_bps !== undefined &&
+                r.implementation_shortfall_bps !== "",
         );
         const avgISBps =
             isbpsRows.length > 0
-                ? isbpsRows.reduce((acc, r) => acc + asNumber(r.implementation_shortfall_bps), 0) / isbpsRows.length
+                ? isbpsRows.reduce(
+                      (acc, r) =>
+                          acc + asNumber(r.implementation_shortfall_bps),
+                      0,
+                  ) / isbpsRows.length
                 : null;
         const isUsdRows = filteredBotOrderRows.filter(
-            (r) => r.implementation_shortfall_usd !== undefined && r.implementation_shortfall_usd !== "",
+            (r) =>
+                r.implementation_shortfall_usd !== undefined &&
+                r.implementation_shortfall_usd !== "",
         );
         const totalISUsd =
             isUsdRows.length > 0
-                ? isUsdRows.reduce((acc, r) => acc + asNumber(r.implementation_shortfall_usd), 0)
+                ? isUsdRows.reduce(
+                      (acc, r) =>
+                          acc + asNumber(r.implementation_shortfall_usd),
+                      0,
+                  )
                 : null;
         return {
             total,
@@ -917,1021 +941,1237 @@ export default function OpportunitiesDashboard() {
 
     return (
         <>
-        <main className="analytics-page">
-            <section className="analytics-controls">
-                <label>
-                    Window
-                    <select
-                        value={days}
-                        onChange={(e) => setDays(Number(e.target.value))}
-                    >
-                        {DAYS_OPTIONS.map((value) => (
-                            <option key={value} value={value}>
-                                {value}d
-                            </option>
-                        ))}
-                    </select>
-                </label>
-                <label>
-                    Ticker
-                    <select
-                        value={ticker}
-                        onChange={(e) => setTicker(e.target.value as Ticker)}
-                    >
-                        {TICKERS.map((value) => (
-                            <option key={value} value={value}>
-                                {value}
-                            </option>
-                        ))}
-                    </select>
-                </label>
-                <label>
-                    Regime
-                    <select
-                        value={regimeFilter}
-                        onChange={(e) =>
-                            setRegimeFilter(e.target.value as RegimeFilter)
-                        }
-                    >
-                        {REGIME_OPTIONS.map((value) => (
-                            <option key={value.value} value={value.value}>
-                                {value.label}
-                            </option>
-                        ))}
-                    </select>
-                </label>
-                <label>
-                    Charts
-                    <select
-                        value={chartScope}
-                        onChange={(e) =>
-                            setChartScope(e.target.value as ChartScope)
-                        }
-                    >
-                        {CHART_SCOPE_OPTIONS.map((value) => (
-                            <option key={value.value} value={value.value}>
-                                {value.label}
-                            </option>
-                        ))}
-                    </select>
-                </label>
-                <button
-                    onClick={() => {
-                        void loadData();
-                    }}
-                    disabled={loading}
-                >
-                    {loading ? "Refreshing..." : "Refresh"}
-                </button>
-            </section>
-
-            {error && <div className="analytics-error">{error}</div>}
-            <section className="analytics-kpis">
-                <article className="analytics-kpi-card">
-                    <div className="kpi-label">Signals</div>
-                    <div className="kpi-value">{totals.signals}</div>
-                </article>
-                <article className="analytics-kpi-card">
-                    <div className="kpi-label">Hit Rate</div>
-                    <div className="kpi-value">
-                        {totals.hitRate.toFixed(2)}%
-                    </div>
-                </article>
-                <article className="analytics-kpi-card">
-                    <div className="kpi-label">Total PnL</div>
-                    <div className="kpi-value">${totals.pnl.toFixed(2)}</div>
-                </article>
-                <article className="analytics-kpi-card">
-                    <div className="kpi-label">Avg PnL / Signal</div>
-                    <div className="kpi-value">${totals.avgPnl.toFixed(2)}</div>
-                </article>
-            </section>
-
-            <section className="analytics-kpis">
-                <article className="analytics-kpi-card">
-                    <div className="kpi-label">Detected</div>
-                    <div className="kpi-value">
-                        {opportunityFunnel.detected}
-                    </div>
-                </article>
-                <article className="analytics-kpi-card">
-                    <div className="kpi-label">Registered</div>
-                    <div className="kpi-value">
-                        {opportunityFunnel.registered}
-                    </div>
-                </article>
-                <article className="analytics-kpi-card">
-                    <div className="kpi-label">Blocked</div>
-                    <div className="kpi-value">{opportunityFunnel.blocked}</div>
-                </article>
-                <article className="analytics-kpi-card">
-                    <div className="kpi-label">% Executable</div>
-                    <div className="kpi-value">
-                        {opportunityFunnel.executablePct.toFixed(2)}%
-                    </div>
-                </article>
-            </section>
-
-            <section className="analytics-charts-grid">
-                <article className="analytics-panel">
-                    <h3>Calibration (Predicted vs Real)</h3>
-                    <div className="analytics-chart-help">
-                        <div>How to read</div>
-                        <ul>
-                            <li>
-                                If real win rate is near predicted, the model is
-                                calibrated.
-                            </li>
-                            <li>
-                                Large gap means probabilities are
-                                over/under-estimated.
-                            </li>
-                            <li>Bins with very low n are weak evidence.</li>
-                        </ul>
-                    </div>
-                    <div className="analytics-mini-kpis">
-                        <span>Bins: {calibrationBuckets.length}</span>
-                        <span>
-                            Weighted MAE: {calibrationMae.toFixed(2)} pts
-                        </span>
-                    </div>
-                    <div className="analytics-calibration-list">
-                        {calibrationBuckets.length === 0 && (
-                            <div className="analytics-empty">
-                                No data with `quant_prob_side` in selected
-                                window.
-                            </div>
-                        )}
-                        {calibrationBuckets.map((bucket) => (
-                            <div className="cal-row" key={bucket.key}>
-                                <div className="cal-meta">
-                                    <span>{bucket.rangeLabel}</span>
-                                    <span>n={bucket.n}</span>
-                                </div>
-                                <div className="cal-bars">
-                                    <div
-                                        className="cal-bar cal-bar-expected"
-                                        style={{
-                                            width: `${bucket.expectedPct}%`,
-                                        }}
-                                    />
-                                    <div
-                                        className="cal-bar cal-bar-actual"
-                                        style={{
-                                            width: `${bucket.actualPct}%`,
-                                        }}
-                                    />
-                                </div>
-                                <div className="cal-values">
-                                    <span>
-                                        E {bucket.expectedPct.toFixed(1)}%
-                                    </span>
-                                    <span>
-                                        A {bucket.actualPct.toFixed(1)}%
-                                    </span>
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-                </article>
-
-                <article className="analytics-panel">
-                    <h3>Edge Buckets vs Outcome</h3>
-                    <div className="analytics-chart-help">
-                        <div>How to read</div>
-                        <ul>
-                            <li>
-                                Higher edge buckets should improve hit rate and
-                                avg pnl.
-                            </li>
-                            <li>
-                                If monotonicity breaks, edge filter is not
-                                monetizing.
-                            </li>
-                            <li>
-                                Use n to avoid overfitting on sparse buckets.
-                            </li>
-                        </ul>
-                    </div>
-                    <table className="analytics-table">
-                        <thead>
-                            <tr>
-                                <th>Edge Bucket</th>
-                                <th>Signals</th>
-                                <th>Hit Rate</th>
-                                <th>Total PnL</th>
-                                <th>Avg PnL</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {edgeBuckets.map((bucket) => {
-                                const hitRate =
-                                    bucket.n > 0
-                                        ? (bucket.wins / bucket.n) * 100
-                                        : 0;
-                                const avgPnl =
-                                    bucket.n > 0 ? bucket.pnl / bucket.n : 0;
-                                return (
-                                    <tr key={bucket.key}>
-                                        <td>{bucket.label}</td>
-                                        <td>{bucket.n}</td>
-                                        <td>{hitRate.toFixed(2)}%</td>
-                                        <td>${bucket.pnl.toFixed(2)}</td>
-                                        <td>${avgPnl.toFixed(2)}</td>
-                                    </tr>
-                                );
-                            })}
-                        </tbody>
-                    </table>
-                </article>
-
-                {runtimeSettings.bot_paper_mode && <article className="analytics-panel">
-                    <h3>Paper Trading Equity Curve</h3>
-                    <div className="analytics-mini-kpis">
-                        <span>Points: {paperTradingCurveMetrics.points}</span>
-                        <span>
-                            Start: $
-                            {paperTradingCurveMetrics.startEquity.toFixed(2)}
-                        </span>
-                        <span>
-                            Final: $
-                            {paperTradingCurveMetrics.finalEquity.toFixed(2)}
-                        </span>
-                    </div>
-                    <TradingEquityCurveChart
-                        points={paperTradingCurve}
-                        color="#3fb950"
-                    />
-                </article>}
-
-                <article className="analytics-panel analytics-panel-wide">
-                    <h3>Live Trading Equity Curve</h3>
-                    <div className="analytics-mini-kpis">
-                        <span>
-                            Resolved placed orders:{" "}
-                            {liveTradingCurveMetrics.points}
-                        </span>
-                        <span>
-                            Start: $
-                            {liveTradingCurveMetrics.startEquity.toFixed(2)}
-                        </span>
-                        <span>
-                            Final: $
-                            {liveTradingCurveMetrics.finalEquity.toFixed(2)}
-                        </span>
-                        <span>
-                            Baseline at:{" "}
-                            {runtimeSettings.live_equity_start_at_utc
-                                ? runtimeSettings.live_equity_start_at_utc
-                                      .replace("T", " ")
-                                      .slice(0, 19)
-                                : "not set"}
-                        </span>
-                    </div>
-                    <button
-                        className="analytics-danger-btn"
-                        onClick={handleResetLiveBaseline}
-                        disabled={resettingLiveBaseline}
-                    >
-                        {resettingLiveBaseline
-                            ? "Resetting..."
-                            : "Reset Live Baseline"}
-                    </button>
-                    <TradingEquityCurveChart
-                        points={liveTradingCurve}
-                        color="#58a6ff"
-                        drawdownThresholdPnl={
-                            runtimeSettings.bot_drawdown_enabled &&
-                            (runtimeSettings.bot_drawdown_stop_pct ?? 0) > 0
-                                ? -(
-                                      asNumber(
-                                          runtimeSettings.live_equity_start_bankroll_usd &&
-                                              runtimeSettings.live_equity_start_bankroll_usd > 0
-                                              ? runtimeSettings.live_equity_start_bankroll_usd
-                                              : (runtimeSettings.kelly_live_bankroll_usd ?? 100),
-                                      ) *
-                                      (runtimeSettings.bot_drawdown_stop_pct ?? 50) /
-                                      100
-                                  )
-                                : undefined
-                        }
-                    />
-                </article>
-            </section>
-
-            <section className="analytics-panels">
-                <article className="analytics-panel">
-                    <h3>By Ticker</h3>
-                    <table className="analytics-table">
-                        <thead>
-                            <tr>
-                                <th>Ticker</th>
-                                <th>Signals</th>
-                                <th>Hit Rate</th>
-                                <th>PnL</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {summaryForView.map((row) => (
-                                <tr key={row.ticker}>
-                                    <td>{row.ticker}</td>
-                                    <td>{row.signals}</td>
-                                    <td>{row.hit_rate_pct.toFixed(2)}%</td>
-                                    <td>${row.total_pnl_usd.toFixed(2)}</td>
-                                </tr>
+            <main className="analytics-page">
+                <section className="analytics-controls">
+                    <label>
+                        Window
+                        <select
+                            value={days}
+                            onChange={(e) => setDays(Number(e.target.value))}
+                        >
+                            {DAYS_OPTIONS.map((value) => (
+                                <option key={value} value={value}>
+                                    {value}d
+                                </option>
                             ))}
-                        </tbody>
-                    </table>
-                </article>
+                        </select>
+                    </label>
+                    <label>
+                        Ticker
+                        <select
+                            value={ticker}
+                            onChange={(e) =>
+                                setTicker(e.target.value as Ticker)
+                            }
+                        >
+                            {TICKERS.map((value) => (
+                                <option key={value} value={value}>
+                                    {value}
+                                </option>
+                            ))}
+                        </select>
+                    </label>
+                    <label>
+                        Regime
+                        <select
+                            value={regimeFilter}
+                            onChange={(e) =>
+                                setRegimeFilter(e.target.value as RegimeFilter)
+                            }
+                        >
+                            {REGIME_OPTIONS.map((value) => (
+                                <option key={value.value} value={value.value}>
+                                    {value.label}
+                                </option>
+                            ))}
+                        </select>
+                    </label>
+                    <label>
+                        Charts
+                        <select
+                            value={chartScope}
+                            onChange={(e) =>
+                                setChartScope(e.target.value as ChartScope)
+                            }
+                        >
+                            {CHART_SCOPE_OPTIONS.map((value) => (
+                                <option key={value.value} value={value.value}>
+                                    {value.label}
+                                </option>
+                            ))}
+                        </select>
+                    </label>
+                    <button
+                        onClick={() => {
+                            void loadData();
+                        }}
+                        disabled={loading}
+                    >
+                        {loading ? "Refreshing..." : "Refresh"}
+                    </button>
+                </section>
 
-                <article className="analytics-panel">
-                    <h3>By Side</h3>
-                    <table className="analytics-table">
-                        <thead>
-                            <tr>
-                                <th>Side</th>
-                                <th>Signals</th>
-                                <th>Hit Rate</th>
-                                <th>PnL</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {(["up", "down"] as const).map((side) => {
-                                const item = bySide[side];
-                                const hitRate =
-                                    item.n > 0 ? (item.wins / item.n) * 100 : 0;
-                                return (
-                                    <tr key={side}>
-                                        <td>{side.toUpperCase()}</td>
-                                        <td>{item.n}</td>
-                                        <td>{hitRate.toFixed(2)}%</td>
-                                        <td>${item.pnl.toFixed(2)}</td>
-                                    </tr>
-                                );
-                            })}
-                        </tbody>
-                    </table>
-                </article>
+                {error && <div className="analytics-error">{error}</div>}
+                <section className="analytics-kpis">
+                    <article className="analytics-kpi-card">
+                        <div className="kpi-label">Signals</div>
+                        <div className="kpi-value">{totals.signals}</div>
+                    </article>
+                    <article className="analytics-kpi-card">
+                        <div className="kpi-label">Hit Rate</div>
+                        <div className="kpi-value">
+                            {totals.hitRate.toFixed(2)}%
+                        </div>
+                    </article>
+                    <article className="analytics-kpi-card">
+                        <div className="kpi-label">Total PnL</div>
+                        <div className="kpi-value">
+                            ${totals.pnl.toFixed(2)}
+                        </div>
+                    </article>
+                    <article className="analytics-kpi-card">
+                        <div className="kpi-label">Avg PnL / Signal</div>
+                        <div className="kpi-value">
+                            ${totals.avgPnl.toFixed(2)}
+                        </div>
+                    </article>
+                </section>
 
-                <article className="analytics-panel">
-                    <h3>By Timeframe</h3>
-                    <table className="analytics-table">
-                        <thead>
-                            <tr>
-                                <th>TF</th>
-                                <th>Signals</th>
-                                <th>Hit Rate</th>
-                                <th>PnL</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {byTimeframe.map(([tf, item]) => {
-                                const hitRate =
-                                    item.n > 0 ? (item.wins / item.n) * 100 : 0;
-                                return (
-                                    <tr key={tf}>
-                                        <td>{tf}</td>
-                                        <td>{item.n}</td>
-                                        <td>{hitRate.toFixed(2)}%</td>
-                                        <td>${item.pnl.toFixed(2)}</td>
-                                    </tr>
-                                );
-                            })}
-                        </tbody>
-                    </table>
-                </article>
+                <section className="analytics-kpis">
+                    <article className="analytics-kpi-card">
+                        <div className="kpi-label">Detected</div>
+                        <div className="kpi-value">
+                            {opportunityFunnel.detected}
+                        </div>
+                    </article>
+                    <article className="analytics-kpi-card">
+                        <div className="kpi-label">Registered</div>
+                        <div className="kpi-value">
+                            {opportunityFunnel.registered}
+                        </div>
+                    </article>
+                    <article className="analytics-kpi-card">
+                        <div className="kpi-label">Blocked</div>
+                        <div className="kpi-value">
+                            {opportunityFunnel.blocked}
+                        </div>
+                    </article>
+                    <article className="analytics-kpi-card">
+                        <div className="kpi-label">% Executable</div>
+                        <div className="kpi-value">
+                            {opportunityFunnel.executablePct.toFixed(2)}%
+                        </div>
+                    </article>
+                </section>
 
-                <article className="analytics-panel">
-                    <h3>Weekday vs Weekend (UTC)</h3>
-                    <table className="analytics-table">
-                        <thead>
-                            <tr>
-                                <th>Regime</th>
-                                <th>Signals</th>
-                                <th>Hit Rate</th>
-                                <th>PnL</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {(["weekday", "weekend"] as const).map((regime) => {
-                                const item = byRegime[regime];
-                                const hitRate =
-                                    item.n > 0 ? (item.wins / item.n) * 100 : 0;
-                                return (
-                                    <tr key={regime}>
-                                        <td>
-                                            {regime === "weekday"
-                                                ? "Mon-Fri"
-                                                : "Sat-Sun"}
-                                        </td>
-                                        <td>{item.n}</td>
-                                        <td>{hitRate.toFixed(2)}%</td>
-                                        <td>${item.pnl.toFixed(2)}</td>
-                                    </tr>
-                                );
-                            })}
-                        </tbody>
-                    </table>
-                </article>
-            </section>
-
-            {runtimeSettings.bot_paper_mode && <section className="analytics-panel">
-                <h3>Paper Decisions (Raw)</h3>
-                <div className="analytics-chart-help">
-                    <div>How to extract</div>
-                    <ul>
-                        <li>
-                            API: `GET
-                            /api/stats/paper/raw?limit=5000&ticker=BTC`
-                        </li>
-                        <li>CSV file: `backtest_output/paper_trades.csv`</li>
-                        <li>
-                            `PnL Sim` is raw simulated PnL; `PnL Adj`
-                            discounts spread + slippage buffer.
-                        </li>
-                        <li>
-                            `WON` and `PnL` are populated after event close
-                            (`status=resolved`); before that they show
-                            `pending` / `n/a`.
-                        </li>
-                    </ul>
-                </div>
-                <div className="analytics-mini-kpis">
-                    <span>Total: {paperMetrics.total}</span>
-                    <span>Resolved: {paperMetrics.resolved}</span>
-                    <span>Pending: {paperMetrics.pending}</span>
-                    <span>Wins: {paperMetrics.wins}</span>
-                    <span>Losses: {paperMetrics.losses}</span>
-                    <span>
-                        Win Rate: {paperMetrics.winRate.toFixed(2)}%
-                    </span>
-                    <span>
-                        Total PnL Sim: ${paperMetrics.totalPnl.toFixed(2)}
-                    </span>
-                    <span>
-                        Avg PnL/Resolved: $
-                        {paperMetrics.avgPnlPerResolved.toFixed(2)}
-                    </span>
-                    <span>
-                        Avg QE: {paperMetrics.avgQePct.toFixed(2)}%
-                    </span>
-                </div>
-                <table className="analytics-table">
-                    <thead>
-                        <tr>
-                            <th title="Timestamp de la decisión en UTC">Decision (UTC)</th>
-                            <th title="Activo subyacente (ej. BTC, ETH, SOL)">Ticker</th>
-                            <th title="Duración del evento (5m, 15m, 1h, 4h)">TF</th>
-                            <th title="Sub-bloque temporal dentro del evento (en 5m/10s hay 30 slots)">Slot</th>
-                            <th title="Bin de diferencia de precio vs PTB usado por el modelo quant">Range</th>
-                            <th title="Probabilidad estimada por el modelo de que el evento cierre UP">Prob Up</th>
-                            <th title="Probabilidad estimada por el modelo de que el evento cierre DOWN (= 1 − Prob Up)">Prob Down</th>
-                            <th title="Probabilidad implícita de mercado, aproximada por el precio del contrato">Market Prob</th>
-                            <th title="Monto en USD asignado a la orden (notional)">Stake $</th>
-                            <th title="Cantidad de contratos/participaciones adquiridas">Shares</th>
-                            <th title="Quantum Edge: ventaja del modelo frente al mercado en el momento de la decisión">QE</th>
-                            <th title="Dirección tomada en la orden (UP o DOWN)">Side</th>
-                            <th title="Diferencia entre precio actual del subyacente y Price To Beat (PTB)">Diff vs PTB</th>
-                            <th title="Spread relativo en porcentaje: (ask − bid) / mid × 100">Spread %</th>
-                            <th title="Resultado binario: 1 si el evento resolvió en el lado tomado, 0 si no">WON</th>
-                            <th title="PnL simulado bruto (sin ajuste de fricción)">PnL Sim</th>
-                            <th title="PnL simulado ajustado por fricción estimada (spread, slippage)">PnL Adj</th>
-                            <th title="Estado de la decisión: pending, resolved">Status</th>
-                            <th title="Identificador del evento de Polymarket">Event</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {filteredPaperRows
-                            .slice()
-                            .reverse()
-                            .slice(0, 50)
-                            .map((row) => {
-                                const probUp = asNumber(row.prob_up);
-                                const side = String(
-                                    row.side_taken,
-                                ).toLowerCase();
-                                const probSide =
-                                    side === "down" ? 1 - probUp : probUp;
-                                const outcome = String(
-                                    row.event_outcome_real || "",
-                                ).toLowerCase();
-                                const won =
-                                    row.status === "resolved" &&
-                                    outcome !== "" &&
-                                    outcome === side;
-                                const spreadPct = asNumber(
-                                    row.spread_pct_at_decision,
-                                );
-                                const pnlAdj = asNumber(row.pnl_sim_adjusted);
-                                return (
-                                    <tr key={row.decision_id}>
-                                        <td>
-                                            {row.decision_time
-                                                .replace("T", " ")
-                                                .slice(0, 19)}
-                                        </td>
-                                        <td>{row.ticker}</td>
-                                        <td>{row.timeframe || "5m"}</td>
-                                        <td>{row.slot || "n/a"}</td>
-                                        <td>{row.range || "n/a"}</td>
-                                        <td>{probUp.toFixed(4)}</td>
-                                        <td>{(1 - probUp).toFixed(4)}</td>
-                                        <td>
-                                            {asNumber(
-                                                row.marketProb_at_decision,
-                                            ).toFixed(4)}
-                                        </td>
-                                        <td>
-                                            $
-                                            {asNumber(row.stake_usd).toFixed(2)}
-                                        </td>
-                                        <td>
-                                            {asNumber(row.shares_simulated) > 0
-                                                ? asNumber(
-                                                      row.shares_simulated,
-                                                  ).toFixed(4)
-                                                : "n/a"}
-                                        </td>
-                                        <td>
-                                            {(
-                                                asNumber(row.QuantumEdge) * 100
-                                            ).toFixed(2)}
-                                            %
-                                        </td>
-                                        <td>{side.toUpperCase()}</td>
-                                        <td>
-                                            {row.diff_vs_ptb_at_decision !==
-                                                undefined &&
-                                            row.diff_vs_ptb_at_decision !== ""
-                                                ? asNumber(
-                                                      row.diff_vs_ptb_at_decision,
-                                                  ).toFixed(2)
-                                                : "n/a"}
-                                        </td>
-                                        <td>
-                                            {spreadPct > 0
-                                                ? `${spreadPct.toFixed(2)}%`
-                                                : "n/a"}
-                                        </td>
-                                        <td>
-                                            {row.status !== "resolved" ? (
-                                                <span className="outcome-pending">
-                                                    pending
-                                                </span>
-                                            ) : won ? (
-                                                <span className="outcome-won">
-                                                    ✓
-                                                </span>
-                                            ) : (
-                                                <span className="outcome-lost">
-                                                    ✗
-                                                </span>
-                                            )}
-                                        </td>
-                                        <td>
-                                            $
-                                            {asNumber(
-                                                row.pnl_simulated,
-                                            ).toFixed(2)}
-                                        </td>
-                                        <td>
-                                            {pnlAdj !== 0
-                                                ? `$${pnlAdj.toFixed(2)}`
-                                                : "n/a"}
-                                        </td>
-                                        <td>{row.status}</td>
-                                        <td
+                <section className="analytics-charts-grid">
+                    <article className="analytics-panel">
+                        <h3>Calibration (Predicted vs Real)</h3>
+                        <div className="analytics-chart-help">
+                            <div>How to read</div>
+                            <ul>
+                                <li>
+                                    If real win rate is near predicted, the
+                                    model is calibrated.
+                                </li>
+                                <li>
+                                    Large gap means probabilities are
+                                    over/under-estimated.
+                                </li>
+                                <li>Bins with very low n are weak evidence.</li>
+                            </ul>
+                        </div>
+                        <div className="analytics-mini-kpis">
+                            <span>Bins: {calibrationBuckets.length}</span>
+                            <span>
+                                Weighted MAE: {calibrationMae.toFixed(2)} pts
+                            </span>
+                        </div>
+                        <div className="analytics-calibration-list">
+                            {calibrationBuckets.length === 0 && (
+                                <div className="analytics-empty">
+                                    No data with `quant_prob_side` in selected
+                                    window.
+                                </div>
+                            )}
+                            {calibrationBuckets.map((bucket) => (
+                                <div className="cal-row" key={bucket.key}>
+                                    <div className="cal-meta">
+                                        <span>{bucket.rangeLabel}</span>
+                                        <span>n={bucket.n}</span>
+                                    </div>
+                                    <div className="cal-bars">
+                                        <div
+                                            className="cal-bar cal-bar-expected"
                                             style={{
-                                                fontSize: "0.7em",
-                                                color: "var(--text-muted)",
+                                                width: `${bucket.expectedPct}%`,
                                             }}
-                                        >
-                                            {row.event_id
-                                                ? row.event_id.slice(0, 8) +
-                                                  "…"
-                                                : "n/a"}
-                                        </td>
-                                    </tr>
-                                );
-                            })}
-                    </tbody>
-                </table>
-            </section>}
+                                        />
+                                        <div
+                                            className="cal-bar cal-bar-actual"
+                                            style={{
+                                                width: `${bucket.actualPct}%`,
+                                            }}
+                                        />
+                                    </div>
+                                    <div className="cal-values">
+                                        <span>
+                                            E {bucket.expectedPct.toFixed(1)}%
+                                        </span>
+                                        <span>
+                                            A {bucket.actualPct.toFixed(1)}%
+                                        </span>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </article>
 
-            <section className="analytics-panel">
-                <h3>Bot Orders (Execution Log)</h3>
-                <div className="analytics-chart-help">
-                    <div>How to read</div>
-                    <ul>
-                        <li>
-                            Source: `backtest_output/bot_orders_YYYY-MM-DD.csv`.
-                        </li>
-                        <li>
-                            Export CSV: `GET
-                            /api/stats/bot-orders/export.csv?days=7&ticker=BTC`.
-                        </li>
-                        <li>
-                            `edge_pct` is edge at send; `edge_at_fill_pct` is
-                            edge versus actual fill price when available.
-                        </li>
-                        <li>
-                            `WON` and `PnL` are populated after event close
-                            (`resolution_status=resolved`); before that they
-                            show `pending` / `n/a`.
-                        </li>
-                    </ul>
-                </div>
-                <div className="analytics-mini-kpis">
-                    <span>Total rows: {botOrderMetrics.total}</span>
-                    <span>Placed: {botOrderMetrics.placed}</span>
-                    <span>Failed: {botOrderMetrics.failed}</span>
-                    <span>Resolved: {botOrderMetrics.resolved}</span>
-                    <span>Wins: {botOrderMetrics.wins}</span>
-                    <span>Losses: {botOrderMetrics.losses}</span>
-                    <span>Win Rate: {botOrderMetrics.winRate.toFixed(2)}%</span>
-                    <span>
-                        Total PnL Sim: ${botOrderMetrics.totalPnlSim.toFixed(2)}
-                    </span>
-                    <span>
-                        Avg PnL/Resolved: $
-                        {botOrderMetrics.avgPnlPerResolved.toFixed(2)}
-                    </span>
-                    <span>With fill price: {botOrderMetrics.withFill}</span>
-                    <span>
-                        Avg Edge@Send: {botOrderMetrics.avgEdgeSend.toFixed(2)}%
-                    </span>
-                    <span>
-                        Avg Edge@Fill: {botOrderMetrics.avgEdgeFill.toFixed(2)}%
-                    </span>
-                    <span>
-                        Avg Stake: ${botOrderMetrics.avgStake.toFixed(2)}
-                    </span>
-                    {botOrderMetrics.avgLatency > 0 && (
-                        <span>
-                            Avg Latency: {botOrderMetrics.avgLatency.toFixed(0)} ms
-                        </span>
+                    <article className="analytics-panel">
+                        <h3>Edge Buckets vs Outcome</h3>
+                        <div className="analytics-chart-help">
+                            <div>How to read</div>
+                            <ul>
+                                <li>
+                                    Higher edge buckets should improve hit rate
+                                    and avg pnl.
+                                </li>
+                                <li>
+                                    If monotonicity breaks, edge filter is not
+                                    monetizing.
+                                </li>
+                                <li>
+                                    Use n to avoid overfitting on sparse
+                                    buckets.
+                                </li>
+                            </ul>
+                        </div>
+                        <table className="analytics-table">
+                            <thead>
+                                <tr>
+                                    <th>Edge Bucket</th>
+                                    <th>Signals</th>
+                                    <th>Hit Rate</th>
+                                    <th>Total PnL</th>
+                                    <th>Avg PnL</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {edgeBuckets.map((bucket) => {
+                                    const hitRate =
+                                        bucket.n > 0
+                                            ? (bucket.wins / bucket.n) * 100
+                                            : 0;
+                                    const avgPnl =
+                                        bucket.n > 0
+                                            ? bucket.pnl / bucket.n
+                                            : 0;
+                                    return (
+                                        <tr key={bucket.key}>
+                                            <td>{bucket.label}</td>
+                                            <td>{bucket.n}</td>
+                                            <td>{hitRate.toFixed(2)}%</td>
+                                            <td>${bucket.pnl.toFixed(2)}</td>
+                                            <td>${avgPnl.toFixed(2)}</td>
+                                        </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
+                    </article>
+
+                    {runtimeSettings.bot_paper_mode && (
+                        <article className="analytics-panel">
+                            <h3>Paper Trading Equity Curve</h3>
+                            <div className="analytics-mini-kpis">
+                                <span>
+                                    Points: {paperTradingCurveMetrics.points}
+                                </span>
+                                <span>
+                                    Start: $
+                                    {paperTradingCurveMetrics.startEquity.toFixed(
+                                        2,
+                                    )}
+                                </span>
+                                <span>
+                                    Final: $
+                                    {paperTradingCurveMetrics.finalEquity.toFixed(
+                                        2,
+                                    )}
+                                </span>
+                            </div>
+                            <TradingEquityCurveChart
+                                points={paperTradingCurve}
+                                color="#3fb950"
+                            />
+                        </article>
                     )}
-                </div>
-                {/* Execution Quality panel (v1.1-a) — only shown once data is available */}
-                {botOrderMetrics.isUsdCount > 0 && (
-                    <div className="analytics-mini-kpis" style={{ marginTop: "0.5rem", borderTop: "1px solid var(--border)", paddingTop: "0.5rem" }}>
-                        <strong style={{ marginRight: "0.5rem" }}>Execution Quality:</strong>
-                        {botOrderMetrics.avgSlippageBps !== null && (
-                            <span title="Slippage realizado vs ask_price en bps. Positivo = pagaste más que el ask.">
-                                Avg Slippage:{" "}
-                                <span style={{ color: (botOrderMetrics.avgSlippageBps ?? 0) > 10 ? "var(--red)" : "inherit" }}>
-                                    {(botOrderMetrics.avgSlippageBps ?? 0).toFixed(1)} bps
-                                </span>
+
+                    <article className="analytics-panel analytics-panel-wide">
+                        <h3>Live Trading Equity Curve</h3>
+                        <div className="analytics-mini-kpis">
+                            <span>
+                                Resolved placed orders:{" "}
+                                {liveTradingCurveMetrics.points}
                             </span>
-                        )}
-                        {botOrderMetrics.avgISBps !== null && (
-                            <span title="Implementation Shortfall vs mid_at_send en bps. Mide el costo real de ejecución desde el mid.">
-                                Avg IS:{" "}
-                                <span style={{ color: (botOrderMetrics.avgISBps ?? 0) > 50 ? "var(--red)" : "inherit" }}>
-                                    {(botOrderMetrics.avgISBps ?? 0).toFixed(1)} bps
-                                </span>
+                            <span>
+                                Start: $
+                                {liveTradingCurveMetrics.startEquity.toFixed(2)}
                             </span>
-                        )}
-                        {botOrderMetrics.totalISUsd !== null && (
-                            <span title="Implementation Shortfall acumulado en USD. Cuánto dejaste de ganar por no ejecutar al mid.">
-                                Total IS cost:{" "}
-                                <span style={{ color: (botOrderMetrics.totalISUsd ?? 0) > 0 ? "var(--red)" : "var(--green)" }}>
-                                    ${(botOrderMetrics.totalISUsd ?? 0).toFixed(2)}
-                                </span>
+                            <span>
+                                Final: $
+                                {liveTradingCurveMetrics.finalEquity.toFixed(2)}
                             </span>
-                        )}
-                        <span style={{ color: "var(--text-muted)", fontSize: "0.85em" }}>
-                            n={botOrderMetrics.isUsdCount}
-                        </span>
-                    </div>
-                )}
-                <table className="analytics-table">
-                    <thead>
-                        <tr>
-                            <th title="Timestamp de la orden en UTC">Decision (UTC)</th>
-                            <th title="Activo subyacente (ej. BTC, ETH, SOL)">Ticker</th>
-                            <th title="Duración del evento (5m, 15m, 1h, 4h)">TF</th>
-                            <th title="Sub-bloque temporal dentro del evento (en 5m/10s hay 30 slots)">Slot</th>
-                            <th title="Bin de diferencia de precio vs PTB usado por el modelo quant">Range</th>
-                            <th title="Probabilidad estimada por el modelo de que el evento cierre UP">Prob Up</th>
-                            <th title="Probabilidad estimada por el modelo de que el evento cierre DOWN (= 1 − Prob Up)">Prob Down</th>
-                            <th title="Probabilidad implícita de mercado, aproximada por el precio ask del contrato al momento del envío">Market Prob</th>
-                            <th title="Dirección tomada en la orden (UP o DOWN)">Side</th>
-                            <th title="Monto real en USD enviado al CLOB (notional)">Stake $ (real)</th>
-                            <th title="Cantidad de contratos/participaciones adquiridas">Shares</th>
-                            <th title="Quantum Edge: ventaja del modelo frente al mercado en el momento de envío">QE</th>
-                            <th title="ΔEdge = QE Real (edge vs fill price) − QE (edge vs ask al envío). Negativo = la ejecución erosionó el edge; positivo = fill mejor de lo esperado">ΔEdge</th>
-                            <th title="Diferencia entre precio actual del subyacente y Price To Beat (PTB)">Diff vs PTB</th>
-                            <th title="Spread relativo en porcentaje: (ask − bid) / mid × 100">Spread %</th>
-                            <th title="Latencia total desde envío de orden hasta recepción del fill del CLOB, en milisegundos">Latency (ms)</th>
-                            <th title="Slippage en porcentaje: (fill_price − arrival_price) / arrival_price × 100. Positivo = peor ejecución">Slippage %</th>
-                            <th title="Resultado binario: 1 si el evento resolvió en el lado tomado, 0 si no">WON</th>
-                            <th title="PnL neto de la orden (usando precio real de fill)">PnL</th>
-                            <th title="Estado de la orden: placed, no_fill, failed, resolved">Status</th>
-                            <th title="Identificador del evento de Polymarket">Event</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {filteredBotOrderRows
-                            .slice()
-                            .reverse()
-                            .slice(0, 50)
-                            .map((row, idx) => {
-                                const side = String(
-                                    row.side || "",
-                                ).toLowerCase();
-                                const probSide = asNumber(row.quant_prob);
-                                const probUp =
-                                    side === "down" ? 1 - probSide : probSide;
-                                const outcome = String(
-                                    row.event_outcome_real || "",
-                                ).toLowerCase();
-                                const won = String(row.won || "") === "1";
-                                const statusLower = String(
-                                    row.status,
-                                ).toLowerCase();
-                                const resolutionStatus =
-                                    statusLower === "failed"
-                                        ? "failed"
-                                        : statusLower === "no_fill"
-                                          ? "no_fill"
-                                          : row.resolution_status || "pending";
-                                return (
-                                    <tr
-                                        key={`${row.placed_at_utc}-${row.event_id}-${idx}`}
-                                        className="analytics-table-row-clickable"
-                                        onClick={() =>
-                                            setDiagnosticTarget({
-                                                kind: "bot_order",
-                                                row: row as RawBotOrderFull,
-                                            })
-                                        }
-                                    >
-                                        <td>
-                                            {row.placed_at_utc
-                                                .replace("T", " ")
-                                                .slice(0, 19)}
-                                        </td>
+                            <span>
+                                Baseline at:{" "}
+                                {runtimeSettings.live_equity_start_at_utc
+                                    ? runtimeSettings.live_equity_start_at_utc
+                                          .replace("T", " ")
+                                          .slice(0, 19)
+                                    : "not set"}
+                            </span>
+                        </div>
+                        <button
+                            className="analytics-danger-btn"
+                            onClick={handleResetLiveBaseline}
+                            disabled={resettingLiveBaseline}
+                        >
+                            {resettingLiveBaseline
+                                ? "Resetting..."
+                                : "Reset Live Baseline"}
+                        </button>
+                        <TradingEquityCurveChart
+                            points={liveTradingCurve}
+                            color="#58a6ff"
+                            drawdownThresholdPnl={
+                                runtimeSettings.bot_drawdown_enabled &&
+                                (runtimeSettings.bot_drawdown_stop_pct ?? 0) > 0
+                                    ? -(
+                                          (asNumber(
+                                              runtimeSettings.live_equity_start_bankroll_usd &&
+                                                  runtimeSettings.live_equity_start_bankroll_usd >
+                                                      0
+                                                  ? runtimeSettings.live_equity_start_bankroll_usd
+                                                  : (runtimeSettings.kelly_live_bankroll_usd ??
+                                                        100),
+                                          ) *
+                                              (runtimeSettings.bot_drawdown_stop_pct ??
+                                                  50)) /
+                                          100
+                                      )
+                                    : undefined
+                            }
+                        />
+                    </article>
+                </section>
+
+                <section className="analytics-panels">
+                    <article className="analytics-panel">
+                        <h3>By Ticker</h3>
+                        <table className="analytics-table">
+                            <thead>
+                                <tr>
+                                    <th>Ticker</th>
+                                    <th>Signals</th>
+                                    <th>Hit Rate</th>
+                                    <th>PnL</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {summaryForView.map((row) => (
+                                    <tr key={row.ticker}>
                                         <td>{row.ticker}</td>
-                                        <td>{row.timeframe || "5m"}</td>
-                                        <td>{row.slot || "n/a"}</td>
-                                        <td>{row.range || "n/a"}</td>
-                                        <td>
-                                            {Number.isFinite(probUp)
-                                                ? probUp.toFixed(4)
-                                                : "n/a"}
-                                        </td>
-                                        <td>
-                                            {Number.isFinite(probUp)
-                                                ? (1 - probUp).toFixed(4)
-                                                : "n/a"}
-                                        </td>
-                                        <td>
-                                            {asNumber(row.price).toFixed(4)}
-                                        </td>
-                                        <td>
-                                            {String(
-                                                row.side || "",
-                                            ).toUpperCase()}
-                                        </td>
-                                        <td>
-                                            {asNumber(
-                                                row.filled_notional_usd_real,
-                                            ) > 0
-                                                ? `$${asNumber(row.filled_notional_usd_real).toFixed(2)}`
-                                                : `$${asNumber(row.notional_usd).toFixed(2)}~`}
-                                        </td>
-                                        <td>
-                                            {asNumber(row.shares).toFixed(4)}
-                                        </td>
-                                        <td>
-                                            {asNumber(row.edge_pct).toFixed(2)}%
-                                        </td>
-                                        <td>
-                                            {row.edge_at_fill_pct !== undefined &&
-                                            row.edge_at_fill_pct !== ""
-                                                ? (() => {
-                                                      const delta =
-                                                          asNumber(
-                                                              row.edge_at_fill_pct,
-                                                          ) -
-                                                          asNumber(row.edge_pct);
-                                                      return (
-                                                          <span
-                                                              style={{
-                                                                  color:
-                                                                      delta >= 0
-                                                                          ? "#4caf50"
-                                                                          : "#f44336",
-                                                              }}
-                                                          >
-                                                              {delta >= 0
-                                                                  ? "+"
-                                                                  : ""}
-                                                              {delta.toFixed(2)}%
-                                                          </span>
-                                                      );
-                                                  })()
-                                                : "n/a"}
-                                        </td>
-                                        <td>
-                                            {row.diff_vs_ptb_at_send !==
-                                                undefined &&
-                                            row.diff_vs_ptb_at_send !== ""
-                                                ? asNumber(
-                                                      row.diff_vs_ptb_at_send,
-                                                  ).toFixed(2)
-                                                : "n/a"}
-                                        </td>
-                                        <td>
-                                            {row.spread_pct_at_send !==
-                                                undefined &&
-                                            row.spread_pct_at_send !== ""
-                                                ? `${(
-                                                      asNumber(
-                                                          row.spread_pct_at_send,
-                                                      ) * 100
-                                                  ).toFixed(2)}%`
-                                                : "n/a"}
-                                        </td>
-                                        <td>
-                                            {row.fill_latency_ms !== undefined &&
-                                            row.fill_latency_ms !== ""
-                                                ? `${row.fill_latency_ms} ms`
-                                                : "n/a"}
-                                        </td>
-                                        <td>
-                                            {row.slippage_pct !== undefined &&
-                                            row.slippage_pct !== ""
-                                                ? `${asNumber(row.slippage_pct).toFixed(4)}%`
-                                                : "n/a"}
-                                        </td>
-                                        <td>
-                                            {outcome
-                                                ? won
-                                                    ? "YES"
-                                                    : "NO"
-                                                : "pending"}
-                                        </td>
-                                        <td>
-                                            {row.pnl_simulated !== undefined &&
-                                            row.pnl_simulated !== ""
-                                                ? `$${asNumber(row.pnl_simulated).toFixed(2)}`
-                                                : "n/a"}
-                                        </td>
-                                        <td
-                                            title={
-                                                (resolutionStatus === "failed" ||
-                                                    resolutionStatus ===
-                                                        "no_fill") &&
-                                                row.fills_detail_json
-                                                    ? row.fills_detail_json
-                                                    : undefined
+                                        <td>{row.signals}</td>
+                                        <td>{row.hit_rate_pct.toFixed(2)}%</td>
+                                        <td>${row.total_pnl_usd.toFixed(2)}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </article>
+
+                    <article className="analytics-panel">
+                        <h3>By Side</h3>
+                        <table className="analytics-table">
+                            <thead>
+                                <tr>
+                                    <th>Side</th>
+                                    <th>Signals</th>
+                                    <th>Hit Rate</th>
+                                    <th>PnL</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {(["up", "down"] as const).map((side) => {
+                                    const item = bySide[side];
+                                    const hitRate =
+                                        item.n > 0
+                                            ? (item.wins / item.n) * 100
+                                            : 0;
+                                    return (
+                                        <tr key={side}>
+                                            <td>{side.toUpperCase()}</td>
+                                            <td>{item.n}</td>
+                                            <td>{hitRate.toFixed(2)}%</td>
+                                            <td>${item.pnl.toFixed(2)}</td>
+                                        </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
+                    </article>
+
+                    <article className="analytics-panel">
+                        <h3>By Timeframe</h3>
+                        <table className="analytics-table">
+                            <thead>
+                                <tr>
+                                    <th>TF</th>
+                                    <th>Signals</th>
+                                    <th>Hit Rate</th>
+                                    <th>PnL</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {byTimeframe.map(([tf, item]) => {
+                                    const hitRate =
+                                        item.n > 0
+                                            ? (item.wins / item.n) * 100
+                                            : 0;
+                                    return (
+                                        <tr key={tf}>
+                                            <td>{tf}</td>
+                                            <td>{item.n}</td>
+                                            <td>{hitRate.toFixed(2)}%</td>
+                                            <td>${item.pnl.toFixed(2)}</td>
+                                        </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
+                    </article>
+
+                    <article className="analytics-panel">
+                        <h3>Weekday vs Weekend (UTC)</h3>
+                        <table className="analytics-table">
+                            <thead>
+                                <tr>
+                                    <th>Regime</th>
+                                    <th>Signals</th>
+                                    <th>Hit Rate</th>
+                                    <th>PnL</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {(["weekday", "weekend"] as const).map(
+                                    (regime) => {
+                                        const item = byRegime[regime];
+                                        const hitRate =
+                                            item.n > 0
+                                                ? (item.wins / item.n) * 100
+                                                : 0;
+                                        return (
+                                            <tr key={regime}>
+                                                <td>
+                                                    {regime === "weekday"
+                                                        ? "Mon-Fri"
+                                                        : "Sat-Sun"}
+                                                </td>
+                                                <td>{item.n}</td>
+                                                <td>{hitRate.toFixed(2)}%</td>
+                                                <td>${item.pnl.toFixed(2)}</td>
+                                            </tr>
+                                        );
+                                    },
+                                )}
+                            </tbody>
+                        </table>
+                    </article>
+                </section>
+
+                {runtimeSettings.bot_paper_mode && (
+                    <section className="analytics-panel">
+                        <h3>Paper Decisions (Raw)</h3>
+                        <div className="analytics-chart-help">
+                            <div>How to extract</div>
+                            <ul>
+                                <li>
+                                    API: `GET
+                                    /api/stats/paper/raw?limit=5000&ticker=BTC`
+                                </li>
+                                <li>
+                                    CSV file: `backtest_output/paper_trades.csv`
+                                </li>
+                                <li>
+                                    `PnL Sim` is raw simulated PnL; `PnL Adj`
+                                    discounts spread + slippage buffer.
+                                </li>
+                                <li>
+                                    `WON` and `PnL` are populated after event
+                                    close (`status=resolved`); before that they
+                                    show `pending` / `n/a`.
+                                </li>
+                            </ul>
+                        </div>
+                        <div className="analytics-mini-kpis">
+                            <span>Total: {paperMetrics.total}</span>
+                            <span>Resolved: {paperMetrics.resolved}</span>
+                            <span>Pending: {paperMetrics.pending}</span>
+                            <span>Wins: {paperMetrics.wins}</span>
+                            <span>Losses: {paperMetrics.losses}</span>
+                            <span>
+                                Win Rate: {paperMetrics.winRate.toFixed(2)}%
+                            </span>
+                            <span>
+                                Total PnL Sim: $
+                                {paperMetrics.totalPnl.toFixed(2)}
+                            </span>
+                            <span>
+                                Avg PnL/Resolved: $
+                                {paperMetrics.avgPnlPerResolved.toFixed(2)}
+                            </span>
+                            <span>
+                                Avg QE: {paperMetrics.avgQePct.toFixed(2)}%
+                            </span>
+                        </div>
+                        <table className="analytics-table">
+                            <thead>
+                                <tr>
+                                    <th title="Timestamp de la decisión en UTC">
+                                        Decision (UTC)
+                                    </th>
+                                    <th title="Activo subyacente (ej. BTC, ETH, SOL)">
+                                        Ticker
+                                    </th>
+                                    <th title="Duración del evento (5m, 15m, 1h, 4h)">
+                                        TF
+                                    </th>
+                                    <th title="Sub-bloque temporal dentro del evento (en 5m/10s hay 30 slots)">
+                                        Slot
+                                    </th>
+                                    <th title="Bin de diferencia de precio vs PTB usado por el modelo quant">
+                                        Range
+                                    </th>
+                                    <th title="Probabilidad estimada por el modelo de que el evento cierre UP">
+                                        Prob Up
+                                    </th>
+                                    <th title="Probabilidad estimada por el modelo de que el evento cierre DOWN (= 1 − Prob Up)">
+                                        Prob Down
+                                    </th>
+                                    <th title="Probabilidad implícita de mercado, aproximada por el precio del contrato">
+                                        Market Prob
+                                    </th>
+                                    <th title="Monto en USD asignado a la orden (notional)">
+                                        Stake $
+                                    </th>
+                                    <th title="Cantidad de contratos/participaciones adquiridas">
+                                        Shares
+                                    </th>
+                                    <th title="Quantum Edge: ventaja del modelo frente al mercado en el momento de la decisión">
+                                        QE
+                                    </th>
+                                    <th title="Dirección tomada en la orden (UP o DOWN)">
+                                        Side
+                                    </th>
+                                    <th title="Diferencia entre precio actual del subyacente y Price To Beat (PTB)">
+                                        Diff vs PTB
+                                    </th>
+                                    <th title="Spread relativo en porcentaje: (ask − bid) / mid × 100">
+                                        Spread %
+                                    </th>
+                                    <th title="Resultado binario: 1 si el evento resolvió en el lado tomado, 0 si no">
+                                        WON
+                                    </th>
+                                    <th title="PnL simulado bruto (sin ajuste de fricción)">
+                                        PnL Sim
+                                    </th>
+                                    <th title="PnL simulado ajustado por fricción estimada (spread, slippage)">
+                                        PnL Adj
+                                    </th>
+                                    <th title="Estado de la decisión: pending, resolved">
+                                        Status
+                                    </th>
+                                    <th title="Identificador del evento de Polymarket">
+                                        Event
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {filteredPaperRows
+                                    .slice()
+                                    .reverse()
+                                    .slice(0, 50)
+                                    .map((row) => {
+                                        const probUp = asNumber(row.prob_up);
+                                        const side = String(
+                                            row.side_taken,
+                                        ).toLowerCase();
+                                        const probSide =
+                                            side === "down"
+                                                ? 1 - probUp
+                                                : probUp;
+                                        const outcome = String(
+                                            row.event_outcome_real || "",
+                                        ).toLowerCase();
+                                        const won =
+                                            row.status === "resolved" &&
+                                            outcome !== "" &&
+                                            outcome === side;
+                                        const spreadPct = asNumber(
+                                            row.spread_pct_at_decision,
+                                        );
+                                        const pnlAdj = asNumber(
+                                            row.pnl_sim_adjusted,
+                                        );
+                                        return (
+                                            <tr key={row.decision_id}>
+                                                <td>
+                                                    {row.decision_time
+                                                        .replace("T", " ")
+                                                        .slice(0, 19)}
+                                                </td>
+                                                <td>{row.ticker}</td>
+                                                <td>{row.timeframe || "5m"}</td>
+                                                <td>{row.slot || "n/a"}</td>
+                                                <td>{row.range || "n/a"}</td>
+                                                <td>{probUp.toFixed(4)}</td>
+                                                <td>
+                                                    {(1 - probUp).toFixed(4)}
+                                                </td>
+                                                <td>
+                                                    {asNumber(
+                                                        row.marketProb_at_decision,
+                                                    ).toFixed(4)}
+                                                </td>
+                                                <td>
+                                                    $
+                                                    {asNumber(
+                                                        row.stake_usd,
+                                                    ).toFixed(2)}
+                                                </td>
+                                                <td>
+                                                    {asNumber(
+                                                        row.shares_simulated,
+                                                    ) > 0
+                                                        ? asNumber(
+                                                              row.shares_simulated,
+                                                          ).toFixed(4)
+                                                        : "n/a"}
+                                                </td>
+                                                <td>
+                                                    {(
+                                                        asNumber(
+                                                            row.QuantumEdge,
+                                                        ) * 100
+                                                    ).toFixed(2)}
+                                                    %
+                                                </td>
+                                                <td>{side.toUpperCase()}</td>
+                                                <td>
+                                                    {row.diff_vs_ptb_at_decision !==
+                                                        undefined &&
+                                                    row.diff_vs_ptb_at_decision !==
+                                                        ""
+                                                        ? asNumber(
+                                                              row.diff_vs_ptb_at_decision,
+                                                          ).toFixed(2)
+                                                        : "n/a"}
+                                                </td>
+                                                <td>
+                                                    {spreadPct > 0
+                                                        ? `${spreadPct.toFixed(2)}%`
+                                                        : "n/a"}
+                                                </td>
+                                                <td>
+                                                    {row.status !==
+                                                    "resolved" ? (
+                                                        <span className="outcome-pending">
+                                                            pending
+                                                        </span>
+                                                    ) : won ? (
+                                                        <span className="outcome-won">
+                                                            ✓
+                                                        </span>
+                                                    ) : (
+                                                        <span className="outcome-lost">
+                                                            ✗
+                                                        </span>
+                                                    )}
+                                                </td>
+                                                <td>
+                                                    $
+                                                    {asNumber(
+                                                        row.pnl_simulated,
+                                                    ).toFixed(2)}
+                                                </td>
+                                                <td>
+                                                    {pnlAdj !== 0
+                                                        ? `$${pnlAdj.toFixed(2)}`
+                                                        : "n/a"}
+                                                </td>
+                                                <td>{row.status}</td>
+                                                <td
+                                                    style={{
+                                                        fontSize: "0.7em",
+                                                        color: "var(--text-muted)",
+                                                    }}
+                                                >
+                                                    {row.event_id
+                                                        ? row.event_id.slice(
+                                                              0,
+                                                              8,
+                                                          ) + "…"
+                                                        : "n/a"}
+                                                </td>
+                                            </tr>
+                                        );
+                                    })}
+                            </tbody>
+                        </table>
+                    </section>
+                )}
+
+                <section className="analytics-panel">
+                    <h3>Bot Orders (Execution Log)</h3>
+                    <div className="analytics-chart-help">
+                        <div>How to read</div>
+                        <ul>
+                            <li>
+                                Source:
+                                `backtest_output/bot_orders_YYYY-MM-DD.csv`.
+                            </li>
+                            <li>
+                                Export CSV: `GET
+                                /api/stats/bot-orders/export.csv?days=7&ticker=BTC`.
+                            </li>
+                            <li>
+                                `edge_pct` is edge at send; `edge_at_fill_pct`
+                                is edge versus actual fill price when available.
+                            </li>
+                            <li>
+                                `WON` and `PnL` are populated after event close
+                                (`resolution_status=resolved`); before that they
+                                show `pending` / `n/a`.
+                            </li>
+                        </ul>
+                    </div>
+                    <div className="analytics-mini-kpis">
+                        <span>Total rows: {botOrderMetrics.total}</span>
+                        <span>Placed: {botOrderMetrics.placed}</span>
+                        <span>Failed: {botOrderMetrics.failed}</span>
+                        <span>Resolved: {botOrderMetrics.resolved}</span>
+                        <span>Wins: {botOrderMetrics.wins}</span>
+                        <span>Losses: {botOrderMetrics.losses}</span>
+                        <span>
+                            Win Rate: {botOrderMetrics.winRate.toFixed(2)}%
+                        </span>
+                        <span>
+                            Total PnL Sim: $
+                            {botOrderMetrics.totalPnlSim.toFixed(2)}
+                        </span>
+                        <span>
+                            Avg PnL/Resolved: $
+                            {botOrderMetrics.avgPnlPerResolved.toFixed(2)}
+                        </span>
+                        <span>With fill price: {botOrderMetrics.withFill}</span>
+                        <span>
+                            Avg Edge@Send:{" "}
+                            {botOrderMetrics.avgEdgeSend.toFixed(2)}%
+                        </span>
+                        <span>
+                            Avg Edge@Fill:{" "}
+                            {botOrderMetrics.avgEdgeFill.toFixed(2)}%
+                        </span>
+                        <span>
+                            Avg Stake: ${botOrderMetrics.avgStake.toFixed(2)}
+                        </span>
+                        {botOrderMetrics.avgLatency > 0 && (
+                            <span>
+                                Avg Latency:{" "}
+                                {botOrderMetrics.avgLatency.toFixed(0)} ms
+                            </span>
+                        )}
+                    </div>
+                    {/* Execution Quality panel (v1.1-a) — only shown once data is available */}
+                    {botOrderMetrics.isUsdCount > 0 && (
+                        <div
+                            className="analytics-mini-kpis"
+                            style={{
+                                marginTop: "0.5rem",
+                                borderTop: "1px solid var(--border)",
+                                paddingTop: "0.5rem",
+                            }}
+                        >
+                            <strong style={{ marginRight: "0.5rem" }}>
+                                Execution Quality:
+                            </strong>
+                            {botOrderMetrics.avgSlippageBps !== null && (
+                                <span title="Slippage realizado vs ask_price en bps. Positivo = pagaste más que el ask.">
+                                    Avg Slippage:{" "}
+                                    <span
+                                        style={{
+                                            color:
+                                                (botOrderMetrics.avgSlippageBps ??
+                                                    0) > 10
+                                                    ? "var(--red)"
+                                                    : "inherit",
+                                        }}
+                                    >
+                                        {(
+                                            botOrderMetrics.avgSlippageBps ?? 0
+                                        ).toFixed(1)}{" "}
+                                        bps
+                                    </span>
+                                </span>
+                            )}
+                            {botOrderMetrics.avgISBps !== null && (
+                                <span title="Implementation Shortfall vs mid_at_send en bps. Mide el costo real de ejecución desde el mid.">
+                                    Avg IS:{" "}
+                                    <span
+                                        style={{
+                                            color:
+                                                (botOrderMetrics.avgISBps ??
+                                                    0) > 50
+                                                    ? "var(--red)"
+                                                    : "inherit",
+                                        }}
+                                    >
+                                        {(
+                                            botOrderMetrics.avgISBps ?? 0
+                                        ).toFixed(1)}{" "}
+                                        bps
+                                    </span>
+                                </span>
+                            )}
+                            {botOrderMetrics.totalISUsd !== null && (
+                                <span title="Implementation Shortfall acumulado en USD. Cuánto dejaste de ganar por no ejecutar al mid.">
+                                    Total IS cost:{" "}
+                                    <span
+                                        style={{
+                                            color:
+                                                (botOrderMetrics.totalISUsd ??
+                                                    0) > 0
+                                                    ? "var(--red)"
+                                                    : "var(--green)",
+                                        }}
+                                    >
+                                        $
+                                        {(
+                                            botOrderMetrics.totalISUsd ?? 0
+                                        ).toFixed(2)}
+                                    </span>
+                                </span>
+                            )}
+                            <span
+                                style={{
+                                    color: "var(--text-muted)",
+                                    fontSize: "0.85em",
+                                }}
+                            >
+                                n={botOrderMetrics.isUsdCount}
+                            </span>
+                        </div>
+                    )}
+                    <table className="analytics-table">
+                        <thead>
+                            <tr>
+                                <th title="Timestamp de la orden en UTC">
+                                    Decision (UTC)
+                                </th>
+                                <th title="Activo subyacente (ej. BTC, ETH, SOL)">
+                                    Ticker
+                                </th>
+                                <th title="Duración del evento (5m, 15m, 1h, 4h)">
+                                    TF
+                                </th>
+                                <th title="Sub-bloque temporal dentro del evento (en 5m/10s hay 30 slots)">
+                                    Slot
+                                </th>
+                                <th title="Bin de diferencia de precio vs PTB usado por el modelo quant">
+                                    Range
+                                </th>
+                                <th title="Probabilidad estimada por el modelo de que el evento cierre UP">
+                                    Prob Up
+                                </th>
+                                <th title="Probabilidad estimada por el modelo de que el evento cierre DOWN (= 1 − Prob Up)">
+                                    Prob Down
+                                </th>
+                                <th title="Probabilidad implícita de mercado, aproximada por el precio ask del contrato al momento del envío">
+                                    Market Prob
+                                </th>
+                                <th title="Dirección tomada en la orden (UP o DOWN)">
+                                    Side
+                                </th>
+                                <th title="Monto real en USD enviado al CLOB (notional)">
+                                    Stake $ (real)
+                                </th>
+                                <th title="Cantidad de contratos/participaciones adquiridas">
+                                    Shares
+                                </th>
+                                <th title="Quantum Edge: ventaja del modelo frente al mercado en el momento de envío">
+                                    QE
+                                </th>
+                                <th title="ΔEdge = QE Real (edge vs fill price) − QE (edge vs ask al envío). Negativo = la ejecución erosionó el edge; positivo = fill mejor de lo esperado">
+                                    ΔEdge
+                                </th>
+                                <th title="Diferencia entre precio actual del subyacente y Price To Beat (PTB)">
+                                    Diff vs PTB
+                                </th>
+                                <th title="Spread relativo en porcentaje: (ask − bid) / mid × 100">
+                                    Spread %
+                                </th>
+                                <th title="Latencia total desde envío de orden hasta recepción del fill del CLOB, en milisegundos">
+                                    Latency (ms)
+                                </th>
+                                <th title="Slippage en porcentaje: (fill_price − arrival_price) / arrival_price × 100. Positivo = peor ejecución">
+                                    Slippage %
+                                </th>
+                                <th title="Resultado binario: 1 si el evento resolvió en el lado tomado, 0 si no">
+                                    WON
+                                </th>
+                                <th title="PnL neto de la orden (usando precio real de fill)">
+                                    PnL
+                                </th>
+                                <th title="Estado de la orden: placed, no_fill, failed, resolved">
+                                    Status
+                                </th>
+                                <th title="Identificador del evento de Polymarket">
+                                    Event
+                                </th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {filteredBotOrderRows
+                                .slice()
+                                .reverse()
+                                .slice(0, 50)
+                                .map((row, idx) => {
+                                    const side = String(
+                                        row.side || "",
+                                    ).toLowerCase();
+                                    const probSide = asNumber(row.quant_prob);
+                                    const probUp =
+                                        side === "down"
+                                            ? 1 - probSide
+                                            : probSide;
+                                    const outcome = String(
+                                        row.event_outcome_real || "",
+                                    ).toLowerCase();
+                                    const won = String(row.won || "") === "1";
+                                    const statusLower = String(
+                                        row.status,
+                                    ).toLowerCase();
+                                    const resolutionStatus =
+                                        statusLower === "failed"
+                                            ? "failed"
+                                            : statusLower === "no_fill"
+                                              ? "no_fill"
+                                              : row.resolution_status ||
+                                                "pending";
+                                    return (
+                                        <tr
+                                            key={`${row.placed_at_utc}-${row.event_id}-${idx}`}
+                                            className="analytics-table-row-clickable"
+                                            onClick={() =>
+                                                setDiagnosticTarget({
+                                                    kind: "bot_order",
+                                                    row: row as RawBotOrderFull,
+                                                })
                                             }
                                         >
-                                            {resolutionStatus}
-                                            {(resolutionStatus === "failed" ||
-                                                resolutionStatus ===
-                                                    "no_fill") &&
-                                                row.fills_detail_json && (
-                                                    <span
-                                                        style={{
-                                                            fontSize: "0.7em",
-                                                            opacity: 0.7,
-                                                            marginLeft: 4,
-                                                            display: "block",
-                                                        }}
-                                                    >
-                                                        {row.fills_detail_json
-                                                            .replace(
-                                                                /^error:/,
-                                                                "",
-                                                            )
-                                                            .slice(0, 80)}
-                                                    </span>
+                                            <td>
+                                                {row.placed_at_utc
+                                                    .replace("T", " ")
+                                                    .slice(0, 19)}
+                                            </td>
+                                            <td>{row.ticker}</td>
+                                            <td>{row.timeframe || "5m"}</td>
+                                            <td>{row.slot || "n/a"}</td>
+                                            <td>{row.range || "n/a"}</td>
+                                            <td>
+                                                {Number.isFinite(probUp)
+                                                    ? probUp.toFixed(4)
+                                                    : "n/a"}
+                                            </td>
+                                            <td>
+                                                {Number.isFinite(probUp)
+                                                    ? (1 - probUp).toFixed(4)
+                                                    : "n/a"}
+                                            </td>
+                                            <td>
+                                                {asNumber(row.price).toFixed(4)}
+                                            </td>
+                                            <td>
+                                                {String(
+                                                    row.side || "",
+                                                ).toUpperCase()}
+                                            </td>
+                                            <td>
+                                                {asNumber(
+                                                    row.filled_notional_usd_real,
+                                                ) > 0
+                                                    ? `$${asNumber(row.filled_notional_usd_real).toFixed(2)}`
+                                                    : `$${asNumber(row.notional_usd).toFixed(2)}~`}
+                                            </td>
+                                            <td>
+                                                {asNumber(row.shares).toFixed(
+                                                    4,
                                                 )}
+                                            </td>
+                                            <td>
+                                                {asNumber(row.edge_pct).toFixed(
+                                                    2,
+                                                )}
+                                                %
+                                            </td>
+                                            <td>
+                                                {row.edge_at_fill_pct !==
+                                                    undefined &&
+                                                row.edge_at_fill_pct !== ""
+                                                    ? (() => {
+                                                          const delta =
+                                                              asNumber(
+                                                                  row.edge_at_fill_pct,
+                                                              ) -
+                                                              asNumber(
+                                                                  row.edge_pct,
+                                                              );
+                                                          return (
+                                                              <span
+                                                                  style={{
+                                                                      color:
+                                                                          delta >=
+                                                                          0
+                                                                              ? "#4caf50"
+                                                                              : "#f44336",
+                                                                  }}
+                                                              >
+                                                                  {delta >= 0
+                                                                      ? "+"
+                                                                      : ""}
+                                                                  {delta.toFixed(
+                                                                      2,
+                                                                  )}
+                                                                  %
+                                                              </span>
+                                                          );
+                                                      })()
+                                                    : "n/a"}
+                                            </td>
+                                            <td>
+                                                {row.diff_vs_ptb_at_send !==
+                                                    undefined &&
+                                                row.diff_vs_ptb_at_send !== ""
+                                                    ? asNumber(
+                                                          row.diff_vs_ptb_at_send,
+                                                      ).toFixed(2)
+                                                    : "n/a"}
+                                            </td>
+                                            <td>
+                                                {row.spread_pct_at_send !==
+                                                    undefined &&
+                                                row.spread_pct_at_send !== ""
+                                                    ? `${(
+                                                          asNumber(
+                                                              row.spread_pct_at_send,
+                                                          ) * 100
+                                                      ).toFixed(2)}%`
+                                                    : "n/a"}
+                                            </td>
+                                            <td>
+                                                {row.fill_latency_ms !==
+                                                    undefined &&
+                                                row.fill_latency_ms !== ""
+                                                    ? `${row.fill_latency_ms} ms`
+                                                    : "n/a"}
+                                            </td>
+                                            <td>
+                                                {row.slippage_pct !==
+                                                    undefined &&
+                                                row.slippage_pct !== ""
+                                                    ? `${asNumber(row.slippage_pct).toFixed(4)}%`
+                                                    : "n/a"}
+                                            </td>
+                                            <td>
+                                                {outcome
+                                                    ? won
+                                                        ? "YES"
+                                                        : "NO"
+                                                    : "pending"}
+                                            </td>
+                                            <td>
+                                                {row.pnl_simulated !==
+                                                    undefined &&
+                                                row.pnl_simulated !== ""
+                                                    ? `$${asNumber(row.pnl_simulated).toFixed(2)}`
+                                                    : "n/a"}
+                                            </td>
+                                            <td
+                                                title={
+                                                    (resolutionStatus ===
+                                                        "failed" ||
+                                                        resolutionStatus ===
+                                                            "no_fill") &&
+                                                    row.fills_detail_json
+                                                        ? row.fills_detail_json
+                                                        : undefined
+                                                }
+                                            >
+                                                {resolutionStatus}
+                                                {(resolutionStatus ===
+                                                    "failed" ||
+                                                    resolutionStatus ===
+                                                        "no_fill") &&
+                                                    row.fills_detail_json && (
+                                                        <span
+                                                            style={{
+                                                                fontSize:
+                                                                    "0.7em",
+                                                                opacity: 0.7,
+                                                                marginLeft: 4,
+                                                                display:
+                                                                    "block",
+                                                            }}
+                                                        >
+                                                            {row.fills_detail_json
+                                                                .replace(
+                                                                    /^error:/,
+                                                                    "",
+                                                                )
+                                                                .slice(0, 80)}
+                                                        </span>
+                                                    )}
+                                            </td>
+                                            <td className="analytics-event-id">
+                                                {row.event_id}
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
+                        </tbody>
+                    </table>
+                </section>
+
+                <section className="analytics-panel">
+                    <h3>Recent Outcomes</h3>
+                    <table className="analytics-table">
+                        <thead>
+                            <tr>
+                                <th>Closed (UTC)</th>
+                                <th>Ticker</th>
+                                <th>TF</th>
+                                <th>Side</th>
+                                <th>Percentile @ Signal</th>
+                                <th>Won</th>
+                                <th>PnL</th>
+                                <th>Event</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {filteredRows
+                                .slice()
+                                .reverse()
+                                .slice(0, 50)
+                                .map((row) => (
+                                    <tr key={row.signal_id}>
+                                        <td>
+                                            {row.closed_at_utc
+                                                .replace("T", " ")
+                                                .slice(0, 19)}
+                                        </td>
+                                        <td>{row.ticker}</td>
+                                        <td>{row.timeframe_minutes}m</td>
+                                        <td>{row.side.toUpperCase()}</td>
+                                        <td>
+                                            {Number.isFinite(
+                                                Number(
+                                                    row.percentile_at_signal,
+                                                ),
+                                            )
+                                                ? `${asNumber(row.percentile_at_signal).toFixed(1)}%`
+                                                : "n/a"}
+                                        </td>
+                                        <td>
+                                            {row.won === "1" ? "YES" : "NO"}
+                                        </td>
+                                        <td>
+                                            ${asNumber(row.pnl_usd).toFixed(2)}
                                         </td>
                                         <td className="analytics-event-id">
                                             {row.event_id}
                                         </td>
                                     </tr>
-                                );
-                            })}
-                    </tbody>
-                </table>
-            </section>
+                                ))}
+                        </tbody>
+                    </table>
+                </section>
 
-            <section className="analytics-panel">
-                <h3>Recent Outcomes</h3>
-                <table className="analytics-table">
-                    <thead>
-                        <tr>
-                            <th>Closed (UTC)</th>
-                            <th>Ticker</th>
-                            <th>TF</th>
-                            <th>Side</th>
-                            <th>Percentile @ Signal</th>
-                            <th>Won</th>
-                            <th>PnL</th>
-                            <th>Event</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {filteredRows
-                            .slice()
-                            .reverse()
-                            .slice(0, 50)
-                            .map((row) => (
-                                <tr key={row.signal_id}>
-                                    <td>
-                                        {row.closed_at_utc
-                                            .replace("T", " ")
-                                            .slice(0, 19)}
-                                    </td>
-                                    <td>{row.ticker}</td>
-                                    <td>{row.timeframe_minutes}m</td>
-                                    <td>{row.side.toUpperCase()}</td>
-                                    <td>
-                                        {Number.isFinite(
-                                            Number(row.percentile_at_signal),
-                                        )
-                                            ? `${asNumber(row.percentile_at_signal).toFixed(1)}%`
-                                            : "n/a"}
-                                    </td>
-                                    <td>{row.won === "1" ? "YES" : "NO"}</td>
-                                    <td>${asNumber(row.pnl_usd).toFixed(2)}</td>
-                                    <td className="analytics-event-id">
-                                        {row.event_id}
-                                    </td>
-                                </tr>
-                            ))}
-                    </tbody>
-                </table>
-            </section>
+                <section className="analytics-panel">
+                    <h3>Blocked Opportunities (Not Registered)</h3>
+                    <table className="analytics-table">
+                        <thead>
+                            <tr>
+                                <th>Detected (UTC)</th>
+                                <th>Ticker</th>
+                                <th>TF</th>
+                                <th>Side</th>
+                                <th>Reason</th>
+                                <th>Est. Stake</th>
+                                <th>Event</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {filteredBlockedRows
+                                .slice()
+                                .reverse()
+                                .slice(0, 50)
+                                .map((row) => (
+                                    <tr
+                                        key={row.blocked_id}
+                                        className="analytics-table-row-clickable"
+                                        onClick={() =>
+                                            setDiagnosticTarget({
+                                                kind: "blocked",
+                                                row: row as RawBlockedFull,
+                                            })
+                                        }
+                                    >
+                                        <td>
+                                            {row.detected_at_utc
+                                                .replace("T", " ")
+                                                .slice(0, 19)}
+                                        </td>
+                                        <td>{row.ticker}</td>
+                                        <td>{row.timeframe_minutes}m</td>
+                                        <td>{row.side.toUpperCase()}</td>
+                                        <td>{row.blocked_reason}</td>
+                                        <td>
+                                            {asNumber(row.estimated_stake_usd) >
+                                            0
+                                                ? `$${asNumber(
+                                                      row.estimated_stake_usd,
+                                                  ).toFixed(2)}`
+                                                : "N/A"}
+                                        </td>
+                                        <td className="analytics-event-id">
+                                            {row.event_id}
+                                        </td>
+                                    </tr>
+                                ))}
+                        </tbody>
+                    </table>
+                </section>
+            </main>
 
-            <section className="analytics-panel">
-                <h3>Blocked Opportunities (Not Registered)</h3>
-                <table className="analytics-table">
-                    <thead>
-                        <tr>
-                            <th>Detected (UTC)</th>
-                            <th>Ticker</th>
-                            <th>TF</th>
-                            <th>Side</th>
-                            <th>Reason</th>
-                            <th>Est. Stake</th>
-                            <th>Event</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {filteredBlockedRows
-                            .slice()
-                            .reverse()
-                            .slice(0, 50)
-                            .map((row) => (
-                                <tr
-                                    key={row.blocked_id}
-                                    className="analytics-table-row-clickable"
-                                    onClick={() =>
-                                        setDiagnosticTarget({
-                                            kind: "blocked",
-                                            row: row as RawBlockedFull,
-                                        })
-                                    }
-                                >
-                                    <td>
-                                        {row.detected_at_utc
-                                            .replace("T", " ")
-                                            .slice(0, 19)}
-                                    </td>
-                                    <td>{row.ticker}</td>
-                                    <td>{row.timeframe_minutes}m</td>
-                                    <td>{row.side.toUpperCase()}</td>
-                                    <td>{row.blocked_reason}</td>
-                                    <td>
-                                        {asNumber(row.estimated_stake_usd) > 0
-                                            ? `$${asNumber(
-                                                  row.estimated_stake_usd,
-                                              ).toFixed(2)}`
-                                            : "N/A"}
-                                    </td>
-                                    <td className="analytics-event-id">
-                                        {row.event_id}
-                                    </td>
-                                </tr>
-                            ))}
-                    </tbody>
-                </table>
-            </section>
-        </main>
-
-        {diagnosticTarget && (
-            <OrderDiagnosticModal
-                target={diagnosticTarget}
-                settings={runtimeSettings as unknown as Record<string, unknown>}
-                onClose={() => setDiagnosticTarget(null)}
-            />
-        )}
+            {diagnosticTarget && (
+                <OrderDiagnosticModal
+                    target={diagnosticTarget}
+                    settings={
+                        runtimeSettings as unknown as Record<string, unknown>
+                    }
+                    onClose={() => setDiagnosticTarget(null)}
+                />
+            )}
         </>
     );
 }
