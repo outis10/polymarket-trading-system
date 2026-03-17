@@ -1557,6 +1557,29 @@ class EventManager:
 
         return "base", params
 
+    def _effective_second_entry_min_edge_pct(
+        self,
+        *,
+        event_id: str,
+        side: str,
+        now_utc: datetime,
+        base_edge_pct: float,
+    ) -> float:
+        """Return contextual edge threshold without mutating persisted settings."""
+        if not bool(self.settings.get("bot_second_entry_opposite_enabled", False)):
+            return base_edge_pct
+        entry_context = self._get_event_entry_context(
+            event_id=event_id,
+            side=side,
+            now_utc=now_utc,
+        )
+        if not bool(entry_context.get("is_second_entry_opposite_candidate")):
+            return base_edge_pct
+        return max(
+            0.0,
+            float(self.settings.get("bot_second_entry_min_edge_pct", base_edge_pct)),
+        )
+
     def _apply_quant_buy_gates(self, event_dict: dict) -> None:
         histogram = event_dict.get("quant_range_histogram")
         percentile: float | None = None
@@ -1585,6 +1608,30 @@ class EventManager:
         yes_price = float(event_dict.get("yes_price", 0.5) or 0.5)
         no_price = float(event_dict.get("no_price", 0.5) or 0.5)
         window_profile, gate_params = self._resolve_quant_gate_window_params(event_dict)
+        event_id = str(event_dict.get("id") or event_dict.get("event_id") or "")
+        now_utc = datetime.now(tz=timezone.utc)
+        if event_id:
+            gate_params_up = {
+                **gate_params,
+                "min_edge_pct": self._effective_second_entry_min_edge_pct(
+                    event_id=event_id,
+                    side="up",
+                    now_utc=now_utc,
+                    base_edge_pct=float(gate_params.get("min_edge_pct", 0.0)),
+                ),
+            }
+            gate_params_down = {
+                **gate_params,
+                "min_edge_pct": self._effective_second_entry_min_edge_pct(
+                    event_id=event_id,
+                    side="down",
+                    now_utc=now_utc,
+                    base_edge_pct=float(gate_params.get("min_edge_pct", 0.0)),
+                ),
+            }
+        else:
+            gate_params_up = gate_params
+            gate_params_down = gate_params
         ask_up_raw = None
         ask_down_raw = None
         bid_up_raw = None
@@ -1656,7 +1703,7 @@ class EventManager:
                 ask_is_proxy=ask_up_is_proxy,
                 sample_size=int(sample_size) if isinstance(sample_size, int) else None,
                 percentile=percentile,
-                gate_params=gate_params,
+                gate_params=gate_params_up,
                 price_diff_abs=price_diff_abs,
                 price_diff_pct=price_diff_pct,
                 spread_pct=spread_pct_up,
@@ -1673,7 +1720,7 @@ class EventManager:
                 ask_is_proxy=ask_down_is_proxy,
                 sample_size=int(sample_size) if isinstance(sample_size, int) else None,
                 percentile=percentile,
-                gate_params=gate_params,
+                gate_params=gate_params_down,
                 price_diff_abs=price_diff_abs,
                 price_diff_pct=price_diff_pct,
                 spread_pct=spread_pct_down,
