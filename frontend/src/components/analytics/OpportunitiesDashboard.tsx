@@ -91,6 +91,7 @@ interface RawPaperTrade {
     friction_cost_usd?: string;
     edge_at_fill_pct?: string;
     status: "pending" | "resolved";
+    ladder_entry?: string;
 }
 
 interface RawPaperTradeResponse {
@@ -136,6 +137,7 @@ interface RawBotOrder {
     kelly_pct?: string;
     bankroll_usd?: string;
     percentile_at_signal?: string;
+    ladder_entry?: string;
     // execution observability (v1.1-a)
     realized_slippage_bps?: string;
     implementation_shortfall_bps?: string;
@@ -198,6 +200,22 @@ const CHART_SCOPE_OPTIONS: Array<{ value: ChartScope; label: string }> = [
 const asNumber = (value: unknown) => {
     const n = Number(value);
     return Number.isFinite(n) ? n : 0;
+};
+
+const fmtPst = (isoStr: string | undefined | null): string => {
+    if (!isoStr) return "";
+    const d = new Date(isoStr);
+    if (isNaN(d.getTime())) return isoStr;
+    return d.toLocaleString("en-US", {
+        timeZone: "America/Los_Angeles",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+    }) + " PST";
 };
 
 const isWeekendUtc = (timestamp: string) => {
@@ -1182,9 +1200,7 @@ export default function OpportunitiesDashboard() {
                         <span>
                             Baseline at:{" "}
                             {runtimeSettings.live_equity_start_at_utc
-                                ? runtimeSettings.live_equity_start_at_utc
-                                      .replace("T", " ")
-                                      .slice(0, 19)
+                                ? fmtPst(runtimeSettings.live_equity_start_at_utc)
                                 : "not set"}
                         </span>
                     </div>
@@ -1380,6 +1396,7 @@ export default function OpportunitiesDashboard() {
                     <thead>
                         <tr>
                             <th title="Timestamp de la decisión en UTC">Decision (UTC)</th>
+                            <th title="Número de entrada del ladder (1=primera, 2=segunda, 3=tercera)">#</th>
                             <th title="Activo subyacente (ej. BTC, ETH, SOL)">Ticker</th>
                             <th title="Duración del evento (5m, 15m, 1h, 4h)">TF</th>
                             <th title="Sub-bloque temporal dentro del evento (en 5m/10s hay 30 slots)">Slot</th>
@@ -1426,9 +1443,10 @@ export default function OpportunitiesDashboard() {
                                 return (
                                     <tr key={row.decision_id}>
                                         <td>
-                                            {row.decision_time
-                                                .replace("T", " ")
-                                                .slice(0, 19)}
+                                            {fmtPst(row.decision_time)}
+                                        </td>
+                                        <td style={{ textAlign: "center", fontWeight: 600 }}>
+                                            {row.ladder_entry || 1}
                                         </td>
                                         <td>{row.ticker}</td>
                                         <td>{row.timeframe || "5m"}</td>
@@ -1609,6 +1627,7 @@ export default function OpportunitiesDashboard() {
                     <thead>
                         <tr>
                             <th title="Timestamp de la orden en UTC">Decision (UTC)</th>
+                            <th title="Número de entrada del ladder (1=primera, 2=segunda, 3=tercera)">#</th>
                             <th title="Activo subyacente (ej. BTC, ETH, SOL)">Ticker</th>
                             <th title="Duración del evento (5m, 15m, 1h, 4h)">TF</th>
                             <th title="Sub-bloque temporal dentro del evento (en 5m/10s hay 30 slots)">Slot</th>
@@ -1668,9 +1687,10 @@ export default function OpportunitiesDashboard() {
                                         }
                                     >
                                         <td>
-                                            {row.placed_at_utc
-                                                .replace("T", " ")
-                                                .slice(0, 19)}
+                                            {fmtPst(row.placed_at_utc)}
+                                        </td>
+                                        <td style={{ textAlign: "center", fontWeight: 600 }}>
+                                            {row.ladder_entry || 1}
                                         </td>
                                         <td>{row.ticker}</td>
                                         <td>{row.timeframe || "5m"}</td>
@@ -1844,9 +1864,7 @@ export default function OpportunitiesDashboard() {
                             .map((row) => (
                                 <tr key={row.signal_id}>
                                     <td>
-                                        {row.closed_at_utc
-                                            .replace("T", " ")
-                                            .slice(0, 19)}
+                                        {fmtPst(row.closed_at_utc)}
                                     </td>
                                     <td>{row.ticker}</td>
                                     <td>{row.timeframe_minutes}m</td>
@@ -1900,9 +1918,7 @@ export default function OpportunitiesDashboard() {
                                     }
                                 >
                                     <td>
-                                        {row.detected_at_utc
-                                            .replace("T", " ")
-                                            .slice(0, 19)}
+                                        {fmtPst(row.detected_at_utc)}
                                     </td>
                                     <td>{row.ticker}</td>
                                     <td>{row.timeframe_minutes}m</td>

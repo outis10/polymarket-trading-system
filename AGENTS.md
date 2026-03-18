@@ -800,9 +800,31 @@ Implementar modulo Kelly configurable desde Settings:
   - cooldown global (`bot_global_min_seconds_between_orders`),
   - cooldown por evento (`bot_cooldown_seconds_per_event_side`),
   - máximo compras por evento (`bot_max_buys_per_event_side`),
-  - bloqueo de lado opuesto (`bot_block_opposite_side`),
   - caps de exposición event/ticker
   funcionan con memoria entre decisiones paper, igual que en live.
+
+## Estado actualizado (2026-03-18, cleanup bot opposite-side guard)
+
+- Se removió el setting `bot_block_opposite_side` del backend y frontend.
+- Motivo: con `bot_trade_ladder` agregaba ruido y ya no se va a usar como guardrail separado.
+- Se eliminó:
+  - default/runtime tipado,
+  - toggle en Sidebar,
+  - bloqueo local en `EventCard`,
+  - chequeo backend dependiente de ese setting en `validate_order_risk_guards`.
+- Siguen vigentes los demás límites: `bot_max_buys_per_event_side`, cooldowns, caps de exposición y `bot_second_entry_opposite_enabled` si se habilita.
+
+## Estado actualizado (2026-03-18, hard cap fuera de ladder)
+
+- Con `bot_trade_ladder` activo, `bot_order_notional_cap_usd` ya no recorta ni bloquea el tamaño de las entradas del ladder.
+- Comportamiento actual:
+  - ladder activo: sizing por Kelly, `stake_multiplier` del entry y caps de exposición,
+  - ladder inactivo: `bot_order_notional_cap_usd` sigue como cap hard legacy.
+- Se alineó backend y frontend:
+  - auto bot,
+  - `POST /api/orders`,
+  - cálculo de `Buy At`,
+  - `OrderDiagnosticModal`.
 
 ## Estado actualizado (2026-02-25, paridad de filtros en Recent Outcomes)
 

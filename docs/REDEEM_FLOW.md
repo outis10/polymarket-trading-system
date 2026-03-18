@@ -36,10 +36,12 @@ POLYMARKET_FUNDER       →  Safe  0x968add541570F3EbDFe2520e25FB884deEcB6649
 
 ## Endpoints
 
+> Las rutas correctas incluyen el prefijo `/api/trading/`.
+
 ### Ver posiciones reclamables
 
 ```bash
-curl http://localhost:8000/api/claimable -H 'X-API-Key: <key>'
+curl http://localhost:8001/api/trading/claimable
 ```
 
 Respuesta de ejemplo:
@@ -64,7 +66,7 @@ Respuesta de ejemplo:
 ### Ejecutar redeem on-chain
 
 ```bash
-curl -X POST http://localhost:8000/api/redeem -H 'X-API-Key: <key>'
+curl -X POST http://localhost:8001/api/trading/redeem
 ```
 
 Respuesta de ejemplo:
@@ -93,6 +95,26 @@ Verifica la tx en: `https://polygonscan.com/tx/<tx_hash>`
 
 ---
 
+## Auto-redeem (background loop)
+
+El sistema puede redimir automáticamente sin intervención manual.
+
+Configuración en `config/runtime_settings.json`:
+
+```json
+{
+  "auto_redeem_enabled": true,
+  "auto_redeem_threshold_usd": 15,
+  "auto_redeem_bankroll_pct": 0.1
+}
+```
+
+- Se activa cuando el total claimable supera `auto_redeem_threshold_usd` **o** el porcentaje `auto_redeem_bankroll_pct` del bankroll
+- Usa `_RECENTLY_REDEEMED` (cache TTL 3 min) para no re-procesar posiciones ya redimidas
+- Corre en background dentro de `event_manager.py`
+
+---
+
 ## Flujo interno (`backend/routers/trading.py`)
 
 1. `GET /api/claimable` → `_fetch_claimable_sync(wallet)`
@@ -100,8 +122,11 @@ Verifica la tx en: `https://polygonscan.com/tx/<tx_hash>`
    - Filtra por `redeemable=true` y `currentValue > 0`
    - Cachea 5 min
 
-2. `POST /api/redeem` → `_redeem_positions_sync(private_key, wallet, chain_id, positions)`
-   - Detecta si `wallet` tiene bytecode → `is_safe=True`
+2. `POST /api/trading/redeem` → `_redeem_positions_sync(private_key, wallet, chain_id, positions)`
+   - **Siempre bypass cache** — fetch fresco antes de ejecutar
+   - Detecta si `wallet` tiene bytecode → `is_safe=True` (Gnosis Safe) o EOA plain
+   - Si es EOA plain: llama `redeemPositions` directamente al CTF desde el EOA
+   - Si es Safe (bytecode presente): construye calldata + EIP-712 + `execTransaction`
    - Para cada posición:
      - Codifica calldata de `redeemPositions(collateral, parentCollectionId, conditionId, indexSets)`
      - Llama `_gnosis_exec_transaction(...)` que:
@@ -140,13 +165,12 @@ La EOA necesita POL en Polygon Mainnet para pagar el gas.
 
 ---
 
-## Automatización futura (Phase 2)
+## Troubleshooting
 
-Para ejecutar el redeem automáticamente cuando hay posiciones listas,
-agregar un job en PM2 o cron que llame al endpoint periódicamente:
-
-```bash
-# Ejemplo cron (cada hora)
-0 * * * * curl -s -X POST http://localhost:8000/api/redeem \
-  -H 'X-API-Key: <key>' >> /var/log/redeem.log 2>&1
-```
+| Síntoma | Causa probable | Solución |
+|---------|---------------|----------|
+| `"No redeemable positions found"` | No hay posiciones con condition_id válido o ya fueron redimidas | Esperar a que Gamma indexe la resolución (~5-15 min) |
+| `"Cannot connect to Polygon RPC"` | RPC caído o variable `POLYGON_RPC_URL` incorrecta | Cambiar RPC en `.env` |
+| tx falla on-chain | Gas insuficiente en EOA | Depositar POL en la EOA |
+| `"POLYMARKET_FUNDER or POLYMARKET_PRIVATE_KEY not configured"` | Variables de entorno faltantes | Revisar `.env` |
+| `claimable_usd` no baja tras redeem | Cache de 5 min activo | Esperar o llamar `POST /redeem` (invalida el cache) |

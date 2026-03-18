@@ -151,6 +151,7 @@ _PAPER_TRADES_FIELDNAMES = [
     "event_outcome_real",
     "pnl_simulated",
     "status",
+    "ladder_entry",
 ]
 
 
@@ -451,7 +452,6 @@ class EventManager:
             "order_book_max_levels": 8,
             "order_book_min_broadcast_ms": 120,
             "bot_enforce_timeframe_filter": True,
-            "bot_block_opposite_side": True,
             "bot_min_seconds_before_end": 30,
             "price_source": "binance",
             "auto_redeem_enabled": False,
@@ -1610,6 +1610,10 @@ class EventManager:
 
         return entry_cfg, entry_num, None
 
+    def _is_bot_trade_ladder_active(self) -> bool:
+        ladder = self.settings.get("bot_trade_ladder", [])
+        return isinstance(ladder, list) and len(ladder) > 0
+
     def _effective_second_entry_min_edge_pct(
         self,
         *,
@@ -2045,9 +2049,7 @@ class EventManager:
         result["quant_prob"] = quant_prob
 
         if ladder and ladder_entry_cfg is not None:
-            min_edge_pct = max(
-                0.0, float(ladder_entry_cfg.get("min_edge_pct", 0.0))
-            )
+            min_edge_pct = max(0.0, float(ladder_entry_cfg.get("min_edge_pct", 0.0)))
         else:
             min_edge_pct = max(0.0, float(self.settings.get("kelly_min_edge_pct", 0.5)))
             if second_entry_enabled and bool(
@@ -2091,9 +2093,12 @@ class EventManager:
             )
             stake_usd = stake_usd * stake_multiplier
 
-        hard_cap = max(0.0, float(self.settings.get("bot_order_notional_cap_usd", 0.0)))
-        if hard_cap > 0:
-            stake_usd = min(stake_usd, hard_cap)
+        if not self._is_bot_trade_ladder_active():
+            hard_cap = max(
+                0.0, float(self.settings.get("bot_order_notional_cap_usd", 0.0))
+            )
+            if hard_cap > 0:
+                stake_usd = min(stake_usd, hard_cap)
 
         if ask_price <= 0:
             result["reason"] = "invalid_side_price"
@@ -2317,6 +2322,7 @@ class EventManager:
         market_prob_at_decision: float,
         quantum_edge: float,
         price_source_at_decision: str = "unknown",
+        ladder_entry_num: int = 1,
         now_utc: datetime,
     ) -> None:
         _ensure_paper_trades_csv()
@@ -2396,6 +2402,7 @@ class EventManager:
             "event_outcome_real": "",
             "pnl_simulated": "",
             "status": "pending",
+            "ladder_entry": ladder_entry_num,
         }
         with open(_PAPER_TRADES_LOG_PATH, "a", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=_PAPER_TRADES_FIELDNAMES)
@@ -2712,23 +2719,19 @@ class EventManager:
                     return False, "second_entry_same_side_blocked"
                 if not allow_second_opposite:
                     return False, f"second_entry_requires_{opposite_side}"
-            # Block buying opposite side if already bought this event today
-            if bool(self.settings.get("bot_block_opposite_side", True)):
-                if opposite_side_records and not allow_second_opposite:
-                    return False, f"already_bought_{opposite_side}_this_event"
-
         if event_records and event_cooldown > 0:
             last_event_at = max(r["at_utc"] for r in event_records)
             if (now_utc - last_event_at).total_seconds() < event_cooldown:
                 return False, "event_cooldown_active"
 
         ticker = self._extract_event_ticker(event_id, event)
-        hard_order_cap = max(
-            0.0, float(self.settings.get("bot_order_notional_cap_usd", 0.0))
-        )
-        if hard_order_cap > 0:
-            if notional_usd > hard_order_cap:
-                return False, f"order_notional_above_cap_{hard_order_cap:g}"
+        if not self._is_bot_trade_ladder_active():
+            hard_order_cap = max(
+                0.0, float(self.settings.get("bot_order_notional_cap_usd", 0.0))
+            )
+            if hard_order_cap > 0:
+                if notional_usd > hard_order_cap:
+                    return False, f"order_notional_above_cap_{hard_order_cap:g}"
 
         base_bankroll = (
             float(bankroll_usd)
@@ -4168,6 +4171,7 @@ class EventManager:
                     market_prob_at_decision=ask_price,
                     quantum_edge=(quant_prob - ask_price),
                     price_source_at_decision=price_source_at_send,
+                    ladder_entry_num=ladder_entry_num,
                     now_utc=now_utc,
                 )
                 logger.info(

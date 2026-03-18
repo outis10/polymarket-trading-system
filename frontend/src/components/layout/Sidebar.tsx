@@ -615,22 +615,6 @@ export default function Sidebar({ send }: SidebarProps) {
 
                     <label
                         className="chart-option"
-                        title="Si está activo, bloquea comprar el lado contrario si ya compraste UP o DOWN en ese evento hoy."
-                    >
-                        <input
-                            type="checkbox"
-                            checked={settings.bot_block_opposite_side ?? true}
-                            onChange={(e) =>
-                                handleKellySettingChange({
-                                    bot_block_opposite_side: e.target.checked,
-                                })
-                            }
-                        />
-                        Block Opposite Side (Bot)
-                    </label>
-
-                    <label
-                        className="chart-option"
                         title="Permite una sola segunda entrada por evento, solo del lado contrario al primero. Usa ask max y edge mínimo propios."
                     >
                         <input
@@ -823,7 +807,7 @@ export default function Sidebar({ send }: SidebarProps) {
                     />
 
                     <label className="field-label">
-                        Max Order Notional USD (cap)
+                        Max Order Notional USD (legacy/no ladder)
                     </label>
                     <input
                         className="sidebar-number-input"

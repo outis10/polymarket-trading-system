@@ -140,6 +140,12 @@ export interface SettingsData {
     bot_second_entry_opposite_enabled?: boolean;
     bot_second_entry_max_ask_price?: number;
     bot_second_entry_min_edge_pct?: number;
+    bot_trade_ladder?: Array<{
+        min_ask?: number | { up?: number; down?: number };
+        min_edge_pct?: number;
+        stake_multiplier?: number;
+        side_filter?: string;
+    }>;
     pm_min_shares?: number;
     pm_min_notional_usd?: number;
     // Order book streaming controls
@@ -148,7 +154,6 @@ export interface SettingsData {
     // Bot order controls
     bot_enforce_timeframe_filter?: boolean;
     bot_min_seconds_before_end?: number;
-    bot_block_opposite_side?: boolean;
     keyboard_shortcuts_enabled?: boolean;
 }
 

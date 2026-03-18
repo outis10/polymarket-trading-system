@@ -155,6 +155,7 @@ class SettingsData(BaseModel):
     bot_second_entry_opposite_enabled: bool = False
     bot_second_entry_max_ask_price: float = 0.0
     bot_second_entry_min_edge_pct: float = 5.0
+    bot_trade_ladder: list[dict] = []
     pm_min_shares: float = 5.0
     pm_min_notional_usd: float = 1.0
     # Order book streaming controls
@@ -163,4 +164,3 @@ class SettingsData(BaseModel):
     # Bot order controls
     bot_enforce_timeframe_filter: bool = True
     bot_min_seconds_before_end: int = 30
-    bot_block_opposite_side: bool = True

@@ -75,6 +75,8 @@ class OpportunityTracker:
         "current_price",
         "quant_prob_side",
         "edge_pct",
+        "best_ask_side",
+        "edge_vs_ask_pct",
         "sample_size",
         "percentile",
     ]
@@ -453,6 +455,22 @@ class OpportunityTracker:
             if isinstance(gate_side, dict)
             else None
         )
+        edge_vs_ask_pct = (
+            self._to_float(gate_side.get("edge_vs_ask_pct"))
+            if isinstance(gate_side, dict)
+            else None
+        )
+        # Best ask from order book for the side (not mid/last price)
+        _ob_asks = (
+            (event_dict.get("order_book_yes") or {}).get("asks", [])
+            if side == "up"
+            else (event_dict.get("order_book_no") or {}).get("asks", [])
+        )
+        best_ask_side = None
+        if isinstance(_ob_asks, list) and _ob_asks and isinstance(_ob_asks[0], dict):
+            _raw_ask = _ob_asks[0].get("price")
+            if _raw_ask is not None:
+                best_ask_side = self._to_float(_raw_ask)
         sample_size = self._to_int(event_dict.get("quant_sample_size"))
         percentile = (
             self._to_float(histogram.get("current_percentile"))
@@ -516,6 +534,8 @@ class OpportunityTracker:
                 "current_price": self._to_float(event_dict.get("current_price")),
                 "quant_prob_side": quant_prob_side,
                 "edge_pct": edge_pct,
+                "best_ask_side": best_ask_side,
+                "edge_vs_ask_pct": edge_vs_ask_pct,
                 "sample_size": sample_size,
                 "percentile": percentile,
             }

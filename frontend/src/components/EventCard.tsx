@@ -289,16 +289,19 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
     const buyPriceDown = bestAskDown ?? noPrice;
     const minShares = Math.max(0, settings.pm_min_shares ?? 5);
     const minNotionalUsd = Math.max(0, settings.pm_min_notional_usd ?? 1);
+    const ladderActive =
+        Array.isArray(settings.bot_trade_ladder) &&
+        settings.bot_trade_ladder.length > 0;
     const orderNotionalCapUsd = Math.max(
         0,
         settings.bot_order_notional_cap_usd ?? 5,
     );
     const effectiveStakeUpUsd =
-        orderNotionalCapUsd > 0
+        !ladderActive && orderNotionalCapUsd > 0
             ? Math.min(kellyUp.usd, orderNotionalCapUsd)
             : kellyUp.usd;
     const effectiveStakeDownUsd =
-        orderNotionalCapUsd > 0
+        !ladderActive && orderNotionalCapUsd > 0
             ? Math.min(kellyDown.usd, orderNotionalCapUsd)
             : kellyDown.usd;
     const kellySharesUp = buyPriceUp > 0 ? effectiveStakeUpUsd / buyPriceUp : 0;
@@ -308,16 +311,9 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
         kellySharesUp >= minShares && effectiveStakeUpUsd >= minNotionalUsd;
     const minConstraintDownOk =
         kellySharesDown >= minShares && effectiveStakeDownUsd >= minNotionalUsd;
-    const blockOppositeSide = settings.bot_block_opposite_side ?? true;
-    const canBuyUp =
-        (gateUp ? gateUp.enabled : false) &&
-        minConstraintUpOk &&
-        (!blockOppositeSide ||
-            (boughtSide !== "down" && boughtSide !== "both"));
+    const canBuyUp = (gateUp ? gateUp.enabled : false) && minConstraintUpOk;
     const canBuyDown =
-        (gateDown ? gateDown.enabled : false) &&
-        minConstraintDownOk &&
-        (!blockOppositeSide || (boughtSide !== "up" && boughtSide !== "both"));
+        (gateDown ? gateDown.enabled : false) && minConstraintDownOk;
     const localBlockReasonUp = !minConstraintUpOk
         ? `blocked by exchange min (${minShares} shares, $${minNotionalUsd})`
         : "";

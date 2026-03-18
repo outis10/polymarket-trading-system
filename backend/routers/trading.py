@@ -38,7 +38,6 @@ _ORDER_BLOCKED_LOG_PATH = os.path.normpath(
 )
 
 
-
 def _safe_float(value: object) -> float | None:
     try:
         if value is None:
@@ -149,8 +148,14 @@ async def place_order(order: OrderRequest):
     )
     requested_shares = max(0.0, float(order.shares))
     requested_notional_usd = order_price_ref * requested_shares
-    hard_cap_usd = max(
-        0.0, float(event_manager.settings.get("bot_order_notional_cap_usd", 5.0))
+    ladder = event_manager.settings.get("bot_trade_ladder", [])
+    ladder_active = isinstance(ladder, list) and len(ladder) > 0
+    hard_cap_usd = (
+        0.0
+        if ladder_active
+        else max(
+            0.0, float(event_manager.settings.get("bot_order_notional_cap_usd", 5.0))
+        )
     )
     cap_applied = False
     # Notional cap only applies to buys — sells should exit the full position.
@@ -219,7 +224,9 @@ async def place_order(order: OrderRequest):
                 ask_proxy_flag = (
                     " (proxy=mid)" if quant_debug.get("ask_is_proxy_at_check") else ""
                 )
-                gate_reasons = reason_code.split(":", 1)[1] if ":" in reason_code else reason_code
+                gate_reasons = (
+                    reason_code.split(":", 1)[1] if ":" in reason_code else reason_code
+                )
                 detail = (
                     f"Quant gate blocked: {gate_reasons}"
                     f" | quant_prob={quant_debug.get('quant_prob_at_check')}"
@@ -231,10 +238,16 @@ async def place_order(order: OrderRequest):
                     f" percentile={quant_debug.get('percentile_at_check')}"
                 )
                 raise _blocked(detail=detail, reason="quant_gate_blocked")
-            elif reason_code in ("timeframe_mismatch", "too_close_to_end",
-                                 "ask_price_outside_range", "kelly_disabled",
-                                 "no_quant_prob", "edge_below_min",
-                                 "stake_non_positive", "invalid_side_price"):
+            elif reason_code in (
+                "timeframe_mismatch",
+                "too_close_to_end",
+                "ask_price_outside_range",
+                "kelly_disabled",
+                "no_quant_prob",
+                "edge_below_min",
+                "stake_non_positive",
+                "invalid_side_price",
+            ):
                 raise _blocked(detail=reason_code, reason=reason_code)
             else:
                 # risk_guard_blocked and any other guard reason
@@ -367,7 +380,9 @@ async def place_order(order: OrderRequest):
             # regardless of fill price. SELL market orders stay share-based (exit full position).
             if not is_sell:
                 ask_price = quant_debug.get("ask_price_at_check")
-                result = client.place_fok_order(token_id, "BUY", notional_usd, ask_price)
+                result = client.place_fok_order(
+                    token_id, "BUY", notional_usd, ask_price
+                )
             else:
                 result = client.place_market_order(token_id, side, effective_shares)
         else:
@@ -573,7 +588,7 @@ _CTF_ABI = [
     }
 ]
 _CTF_ADDRESS = {
-    137: "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045",   # mainnet Polygon
+    137: "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045",  # mainnet Polygon
     80002: "0x69308FB512518e39F9b16112fA8d994F4e2Bf8bB",  # testnet Amoy
 }
 _GNOSIS_SAFE_ABI = [
@@ -604,7 +619,7 @@ _GNOSIS_SAFE_ABI = [
     },
 ]
 _COLLATERAL_ADDRESS = {
-    137: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",   # USDC PoS mainnet
+    137: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",  # USDC PoS mainnet
     80002: "0x9c4e1703476e875070ee25b56a58b008cfb8fa78",  # USDC testnet
 }
 _DEFAULT_RPC_URL = {
@@ -625,7 +640,12 @@ def _fetch_claimable_sync(wallet: str) -> dict:
         while True:
             resp = _requests.get(
                 _POSITIONS_URL,
-                params={"user": wallet, "limit": _PAGE_SIZE, "offset": offset, "redeemable": "true"},
+                params={
+                    "user": wallet,
+                    "limit": _PAGE_SIZE,
+                    "offset": offset,
+                    "redeemable": "true",
+                },
                 timeout=5,
             )
             if resp.status_code == 404:
@@ -646,8 +666,11 @@ def _fetch_claimable_sync(wallet: str) -> dict:
 
     # Purge expired entries from the recently-redeemed cache
     import time as _time_mod
+
     _now = _time_mod.monotonic()
-    expired = [k for k, ts in _RECENTLY_REDEEMED.items() if _now - ts > _RECENTLY_REDEEMED_TTL]
+    expired = [
+        k for k, ts in _RECENTLY_REDEEMED.items() if _now - ts > _RECENTLY_REDEEMED_TTL
+    ]
     for k in expired:
         del _RECENTLY_REDEEMED[k]
 
@@ -797,28 +820,31 @@ async def get_equity():
 
     # Run balance + claimable + positions_value in parallel
     import asyncio as _asyncio
-    balance_task   = _asyncio.to_thread(lambda: client.get_balance())
+
+    balance_task = _asyncio.to_thread(lambda: client.get_balance())
     claimable_task = _asyncio.to_thread(_fetch_claimable_sync, wallet)
-    posval_task    = _asyncio.to_thread(_fetch_positions_value_sync, wallet)
+    posval_task = _asyncio.to_thread(_fetch_positions_value_sync, wallet)
     balance_raw, claimable_data, posval_data = await _asyncio.gather(
         balance_task, claimable_task, posval_task
     )
 
-    bankroll       = float(balance_raw or 0.0)
-    claimable      = float((claimable_data or {}).get("claimable_usd") or 0.0)
-    positions_val  = float((posval_data or {}).get("positions_value_usd") or 0.0)
-    equity         = bankroll + claimable + positions_val
+    bankroll = float(balance_raw or 0.0)
+    claimable = float((claimable_data or {}).get("claimable_usd") or 0.0)
+    positions_val = float((posval_data or {}).get("positions_value_usd") or 0.0)
+    equity = bankroll + claimable + positions_val
 
-    equity_start   = float(event_manager.settings.get("live_equity_start_bankroll_usd") or 0.0)
-    net_pnl        = round(equity - equity_start, 4) if equity_start > 0 else None
+    equity_start = float(
+        event_manager.settings.get("live_equity_start_bankroll_usd") or 0.0
+    )
+    net_pnl = round(equity - equity_start, 4) if equity_start > 0 else None
 
     return {
-        "bankroll_usd":       round(bankroll, 4),
+        "bankroll_usd": round(bankroll, 4),
         "positions_value_usd": round(positions_val, 4),
-        "claimable_usd":      round(claimable, 4),
-        "equity_usd":         round(equity, 4),
-        "equity_start_usd":   round(equity_start, 4) if equity_start > 0 else None,
-        "net_pnl_usd":        net_pnl,
+        "claimable_usd": round(claimable, 4),
+        "equity_usd": round(equity, 4),
+        "equity_start_usd": round(equity_start, 4) if equity_start > 0 else None,
+        "net_pnl_usd": net_pnl,
     }
 
 
@@ -853,6 +879,7 @@ async def save_equity_snapshot() -> None:
         return
 
     import asyncio as _asyncio
+
     try:
         balance_raw, claimable_data, posval_data = await _asyncio.gather(
             _asyncio.to_thread(lambda: client.get_balance()),
@@ -863,20 +890,22 @@ async def save_equity_snapshot() -> None:
         logger.warning("equity_snapshot: fetch failed: %s", exc)
         return
 
-    bankroll      = float(balance_raw or 0.0)
-    claimable     = float((claimable_data or {}).get("claimable_usd") or 0.0)
+    bankroll = float(balance_raw or 0.0)
+    claimable = float((claimable_data or {}).get("claimable_usd") or 0.0)
     positions_val = float((posval_data or {}).get("positions_value_usd") or 0.0)
-    equity        = bankroll + claimable + positions_val
-    equity_start  = float(event_manager.settings.get("live_equity_start_bankroll_usd") or 0.0)
-    net_pnl       = round(equity - equity_start, 4) if equity_start > 0 else None
+    equity = bankroll + claimable + positions_val
+    equity_start = float(
+        event_manager.settings.get("live_equity_start_bankroll_usd") or 0.0
+    )
+    net_pnl = round(equity - equity_start, 4) if equity_start > 0 else None
 
     row = {
-        "timestamp_utc":     datetime.now(timezone.utc).isoformat(),
-        "bankroll_usdc":     round(bankroll, 4),
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "bankroll_usdc": round(bankroll, 4),
         "positions_value_usd": round(positions_val, 4),
-        "claimable_usd":     round(claimable, 4),
-        "equity_usd":        round(equity, 4),
-        "net_pnl_usd":       net_pnl,
+        "claimable_usd": round(claimable, 4),
+        "equity_usd": round(equity, 4),
+        "net_pnl_usd": net_pnl,
     }
     os.makedirs(os.path.dirname(_EQUITY_SNAPSHOT_PATH), exist_ok=True)
     file_exists = os.path.exists(_EQUITY_SNAPSHOT_PATH)
@@ -958,20 +987,29 @@ def _gnosis_exec_transaction(
         w3.keccak(
             eth_abi.encode(
                 [
-                    "bytes32", "address", "uint256", "bytes32", "uint8",
-                    "uint256", "uint256", "uint256", "address", "address", "uint256",
+                    "bytes32",
+                    "address",
+                    "uint256",
+                    "bytes32",
+                    "uint8",
+                    "uint256",
+                    "uint256",
+                    "uint256",
+                    "address",
+                    "address",
+                    "uint256",
                 ],
                 [
                     safe_tx_th,
                     to_cs,
-                    0,                          # ETH value
+                    0,  # ETH value
                     bytes(w3.keccak(calldata)),  # keccak256(data)
-                    0,                          # operation = CALL
-                    0,                          # safeTxGas
-                    0,                          # baseGas
-                    0,                          # gasPrice (Safe-level)
-                    zero_addr,                  # gasToken
-                    zero_addr,                  # refundReceiver
+                    0,  # operation = CALL
+                    0,  # safeTxGas
+                    0,  # baseGas
+                    0,  # gasPrice (Safe-level)
+                    zero_addr,  # gasToken
+                    zero_addr,  # refundReceiver
                     safe_nonce,
                 ],
             )
@@ -988,22 +1026,20 @@ def _gnosis_exec_transaction(
     v_val, r_val, s_val = sig.vrs
     # Gnosis Safe expects packed r || s || v with v = recovery_id + 27
     signature = (
-        r_val.to_bytes(32, "big")
-        + s_val.to_bytes(32, "big")
-        + bytes([v_val + 27])
+        r_val.to_bytes(32, "big") + s_val.to_bytes(32, "big") + bytes([v_val + 27])
     )
 
     # --- Build execTransaction from EOA ---
     fn = safe.functions.execTransaction(
         to_cs,
-        0,           # ETH value
+        0,  # ETH value
         calldata,
-        0,           # operation = CALL
-        0,           # safeTxGas
-        0,           # baseGas
-        0,           # gasPrice (Safe-level)
-        zero_addr,   # gasToken
-        zero_addr,   # refundReceiver
+        0,  # operation = CALL
+        0,  # safeTxGas
+        0,  # baseGas
+        0,  # gasPrice (Safe-level)
+        zero_addr,  # gasToken
+        zero_addr,  # refundReceiver
         signature,
     )
     if eoa_nonce is None:
@@ -1014,12 +1050,14 @@ def _gnosis_exec_transaction(
     except Exception:
         gas_limit = 400_000  # conservative fallback
 
-    tx = fn.build_transaction({
-        "from": eoa_cs,
-        "nonce": eoa_nonce,
-        "gas": gas_limit,
-        "gasPrice": w3.eth.gas_price,
-    })
+    tx = fn.build_transaction(
+        {
+            "from": eoa_cs,
+            "nonce": eoa_nonce,
+            "gas": gas_limit,
+            "gasPrice": w3.eth.gas_price,
+        }
+    )
     signed = w3.eth.account.sign_transaction(tx, private_key=private_key)
     tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
     return "0x" + tx_hash.hex()
@@ -1039,9 +1077,9 @@ def _redeem_positions_sync(
     If it's a plain EOA, we call the CTF contract directly.
     """
     try:
-        from web3 import Web3
-        from eth_account import Account
         import eth_abi
+        from eth_account import Account
+        from web3 import Web3
     except ImportError as exc:
         return [{"error": f"Missing dependency: {exc}", "skipped": True}]
 
@@ -1061,7 +1099,10 @@ def _redeem_positions_sync(
     is_safe = len(bytes(code)) > 2  # b'' or b'0x' → no code → plain EOA
     logger.info(
         "Redeem: wallet=%s eoa=%s is_safe=%s chain=%s",
-        safe_address, eoa_address, is_safe, chain_id,
+        safe_address,
+        eoa_address,
+        is_safe,
+        chain_id,
     )
 
     ctf_address = Web3.to_checksum_address(_CTF_ADDRESS[chain_id])
@@ -1092,10 +1133,14 @@ def _redeem_positions_sync(
             if len(condition_id_bytes) != 32:
                 raise ValueError("condition_id must be 32 bytes")
         except Exception as e:
-            results.append({
-                "title": title, "condition_id": condition_id_hex,
-                "error": str(e), "skipped": True,
-            })
+            results.append(
+                {
+                    "title": title,
+                    "condition_id": condition_id_hex,
+                    "error": str(e),
+                    "skipped": True,
+                }
+            )
             continue
 
         index_sets = _outcome_index_to_index_sets(pos.get("outcome_index", 0))
@@ -1108,9 +1153,15 @@ def _redeem_positions_sync(
                     [collateral, _PARENT_COLLECTION_ID, condition_id_bytes, index_sets],
                 )
                 tx_hash_hex = _gnosis_exec_transaction(
-                    w3, private_key, eoa_address,
-                    safe_address, ctf_address, calldata, chain_id,
-                    eoa_nonce=eoa_nonce, safe_nonce=safe_nonce,
+                    w3,
+                    private_key,
+                    eoa_address,
+                    safe_address,
+                    ctf_address,
+                    calldata,
+                    chain_id,
+                    eoa_nonce=eoa_nonce,
+                    safe_nonce=safe_nonce,
                 )
                 eoa_nonce += 1
                 safe_nonce += 1
@@ -1120,39 +1171,46 @@ def _redeem_positions_sync(
                     collateral, _PARENT_COLLECTION_ID, condition_id_bytes, index_sets
                 )
                 gas_estimate = fn.estimate_gas({"from": eoa_address})
-                tx = fn.build_transaction({
-                    "from": eoa_address,
-                    "nonce": eoa_nonce,
-                    "gas": int(gas_estimate * 1.2),
-                    "gasPrice": w3.eth.gas_price,
-                })
+                tx = fn.build_transaction(
+                    {
+                        "from": eoa_address,
+                        "nonce": eoa_nonce,
+                        "gas": int(gas_estimate * 1.2),
+                        "gasPrice": w3.eth.gas_price,
+                    }
+                )
                 signed = w3.eth.account.sign_transaction(tx, private_key=private_key)
                 raw_tx = w3.eth.send_raw_transaction(signed.raw_transaction)
                 tx_hash_hex = "0x" + raw_tx.hex()
                 eoa_nonce += 1
 
-            results.append({
-                "title": title,
-                "condition_id": condition_id_hex,
-                "outcome": pos.get("outcome", ""),
-                "value_usd": pos.get("value_usd", 0.0),
-                "tx_hash": tx_hash_hex,
-                "status": "sent",
-            })
+            results.append(
+                {
+                    "title": title,
+                    "condition_id": condition_id_hex,
+                    "outcome": pos.get("outcome", ""),
+                    "value_usd": pos.get("value_usd", 0.0),
+                    "tx_hash": tx_hash_hex,
+                    "status": "sent",
+                }
+            )
             logger.info("Redeem sent: %s tx=%s", title, tx_hash_hex)
             if condition_id_hex:
                 import time as _time_mod
+
                 _RECENTLY_REDEEMED[condition_id_hex] = _time_mod.monotonic()
 
         except Exception as e:
             logger.error("Redeem failed for %s: %s", condition_id_hex, e)
-            results.append({
-                "title": title,
-                "condition_id": condition_id_hex,
-                "outcome": pos.get("outcome", ""),
-                "error": str(e),
-                "status": "failed",
-            })
+            results.append(
+                {
+                    "title": title,
+                    "condition_id": condition_id_hex,
+                    "outcome": pos.get("outcome", ""),
+                    "error": str(e),
+                    "status": "failed",
+                }
+            )
 
     return results
 
@@ -1161,7 +1219,11 @@ def _redeem_positions_sync(
 async def execute_redeem():
     """Execute redeemPositions on-chain for all claimable resolved positions."""
     if event_manager.mode == "demo":
-        return {"redeemed": [], "total_usd": 0.0, "message": "Demo mode — no on-chain tx"}
+        return {
+            "redeemed": [],
+            "total_usd": 0.0,
+            "message": "Demo mode — no on-chain tx",
+        }
 
     client = get_client()
     if not client:
@@ -1182,13 +1244,21 @@ async def execute_redeem():
     # Always fetch fresh (bypass cache) before redeeming
     claimable = await asyncio.to_thread(_fetch_claimable_sync, wallet)
     if claimable.get("error"):
-        raise HTTPException(status_code=502, detail=f"Gamma API error: {claimable['error']}")
+        raise HTTPException(
+            status_code=502, detail=f"Gamma API error: {claimable['error']}"
+        )
 
     positions = [p for p in claimable.get("positions", []) if p.get("condition_id")]
     if not positions:
-        return {"redeemed": [], "summary": {"sent": 0, "failed": 0, "skipped": 0, "total_usd_sent": 0.0}, "message": "No redeemable positions found"}
+        return {
+            "redeemed": [],
+            "summary": {"sent": 0, "failed": 0, "skipped": 0, "total_usd_sent": 0.0},
+            "message": "No redeemable positions found",
+        }
 
-    results = await asyncio.to_thread(_redeem_positions_sync, private_key, wallet, chain_id, positions)
+    results = await asyncio.to_thread(
+        _redeem_positions_sync, private_key, wallet, chain_id, positions
+    )
 
     # Invalidate cache so next GET /claimable reflects updated state
     _CLAIMABLE_CACHE["data"] = None

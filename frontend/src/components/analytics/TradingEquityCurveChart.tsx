@@ -74,6 +74,17 @@ export default function TradingEquityCurveChart({
                 background: { color: "transparent" },
                 textColor: "#98a6b8",
             },
+            localization: {
+                timeFormatter: (t: number) =>
+                    new Date(t * 1000).toLocaleString("en-US", {
+                        timeZone: "America/Los_Angeles",
+                        month: "2-digit",
+                        day: "2-digit",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                        hour12: false,
+                    }) + " PST",
+            },
             grid: {
                 vertLines: { color: "rgba(43, 53, 66, 0.35)" },
                 horzLines: { color: "rgba(43, 53, 66, 0.35)" },
