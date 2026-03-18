@@ -2099,6 +2099,12 @@ class EventManager:
             result["reason"] = "invalid_side_price"
             return result
         shares = stake_usd / ask_price
+        # If shares fall just below pm_min_shares, round up stake to meet the minimum
+        # rather than blocking a valid signal (e.g. 4.71 sh at 84¢ → inflate to 5 sh)
+        _min_shares = max(0.0, float(self.settings.get("pm_min_shares", 5.0)))
+        if 0 < shares < _min_shares and shares >= _min_shares - 1:
+            shares = _min_shares
+            stake_usd = shares * ask_price
         notional_usd = ask_price * shares
         result["stake_usd"] = stake_usd
         result["shares"] = shares
