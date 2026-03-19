@@ -7,6 +7,38 @@ Actualízalo cuando cambien decisiones, scripts o flujos importantes.
 
 ## Pendientes para próxima sesión
 
+### Telegram remote control (2026-03-16)
+- V1 implementada sobre el backend FastAPI existente:
+  - router localhost-only: `backend/routers/control.py`
+  - servicio reusable: `backend/services/control_service.py`
+  - bot long-polling: `backend/telegram_bot.py`
+  - entrypoint localhost: `backend/control_main.py`
+- Endpoints nuevos:
+  - `GET /api/control/status`
+  - `GET /api/control/health`
+  - `GET /api/control/pnl-today`
+  - `GET /api/control/positions`
+  - `GET /api/control/orders`
+  - `POST /api/control/pause`
+  - `POST /api/control/resume`
+  - `POST /api/control/mode`
+  - `POST /api/control/restart`
+  - `GET /api/control/logs?lines=50`
+- Seguridad V1:
+  - router rechaza requests no locales (`127.0.0.1` / `::1`)
+  - Telegram valida `TELEGRAM_ALLOWED_CHAT_IDS` y `TELEGRAM_ALLOWED_USER_IDS`
+  - `/mode live` y `/restart` requieren `/confirm <code>`
+  - rate limiting básico por `chat_id + user_id`
+  - auditoría en `backtest_output/control_audit.jsonl`
+- Multi-instancia (V1.1):
+  - cada engine puede declarar `ENGINE_INSTANCE_ID` y `ENGINE_WALLET_LABEL`
+  - Telegram soporta registro de múltiples control-apis via `TELEGRAM_CONTROL_INSTANCES`
+  - comando `/instances` lista instancias registradas y reachability básica
+  - comandos de lectura aceptan `instance` o `all`
+  - comandos de escritura (`pause/resume/mode/restart`) exigen una sola instancia
+- Limitación conocida:
+  - `restart` solo deja hook/traza en `backtest_output/control_restart_requests.jsonl`; todavía no hay supervisor integrado para reinicio automático seguro.
+
 ### HTTPS + Nginx (pendiente para cuando se pase a servidor)
 - Configurar reverse proxy con Certbot (Let's Encrypt) en EC2/VPS.
 - Con HTTPS activo, cambiar WS URL de `ws://` a `wss://` (ya está automático en el código).

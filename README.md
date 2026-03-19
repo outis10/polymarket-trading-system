@@ -269,6 +269,90 @@ Backend disponible en:
 - API docs: `http://localhost:8000/docs`
 - WebSocket: `ws://localhost:8000/ws/events`
 
+#### 1b) Levantar control-api privado para Telegram
+
+Para operación remota sin exponer el engine, usa el mismo backend pero bindeado a localhost:
+
+```bash
+source venv/bin/activate
+pip install -r backend/requirements.txt
+python -m backend.control_main
+```
+
+Variables relevantes en `.env`:
+
+```env
+APP_ENV=dev
+ENGINE_INSTANCE_ID=wallet_a
+ENGINE_WALLET_LABEL=wallet-a-main
+CONTROL_API_HOST=127.0.0.1
+CONTROL_API_PORT=8010
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_ALLOWED_CHAT_IDS=123456789
+TELEGRAM_ALLOWED_USER_IDS=123456789
+TELEGRAM_CONTROL_INSTANCES=wallet_a|http://127.0.0.1:8011/api/control||Wallet-A,wallet_b|http://127.0.0.1:8012/api/control||Wallet-B
+CONTROL_LOG_FILE=/ruta/opcional/a/tu.log
+```
+
+Endpoints internos nuevos:
+
+- `GET /api/control/status`
+- `GET /api/control/health`
+- `GET /api/control/pnl-today`
+- `GET /api/control/positions`
+- `GET /api/control/orders`
+- `POST /api/control/pause`
+- `POST /api/control/resume`
+- `POST /api/control/mode`
+- `POST /api/control/restart`
+- `GET /api/control/logs?lines=50`
+
+Notas:
+
+- El router de control rechaza requests que no vengan desde `127.0.0.1` o `::1`.
+- Cada instancia puede identificarse con `ENGINE_INSTANCE_ID` y `ENGINE_WALLET_LABEL`.
+- `restart` en esta V1 deja trazabilidad y un hook en disco; no reinicia el proceso por sí mismo porque el repo no tiene supervisor/systemd/docker-compose integrado para hacerlo de forma segura.
+- `/api/control/logs` usa `CONTROL_LOG_FILE` si existe; si no, devuelve el `control_audit.jsonl`.
+- `TELEGRAM_CONTROL_INSTANCES` usa formato CSV simple:
+  `instance_id|base_url|api_key_opcional|label_opcional`
+
+#### 1c) Levantar el bot de Telegram
+
+En otra terminal:
+
+```bash
+source venv/bin/activate
+python -m backend.telegram_bot
+```
+
+Comandos soportados:
+
+- `/start`
+- `/help`
+- `/status`
+- `/status wallet_a`
+- `/health all`
+- `/pnl_today wallet_b`
+- `/pnl_today all`
+- `/instances`
+- `/positions wallet_a`
+- `/orders all`
+- `/pause wallet_a`
+- `/resume wallet_a`
+- `/mode paper wallet_a`
+- `/mode live wallet_b`
+- `/restart wallet_a`
+- `/logs 50 wallet_b`
+
+Seguridad/operación:
+
+- Solo responde a `TELEGRAM_ALLOWED_CHAT_IDS` y `TELEGRAM_ALLOWED_USER_IDS`.
+- `/mode live` y `/restart` requieren confirmación explícita con `/confirm <code>`.
+- Hay rate limiting básico por `chat_id + user_id`.
+- Las acciones quedan auditadas en `backtest_output/control_audit.jsonl`.
+- El bot incluye watchdog y alerta por Telegram cuando detecta `control-api` caído, health degradado, pausa/reanudación o cambio de modo.
+- Para múltiples engines, registra varias instancias en `TELEGRAM_CONTROL_INSTANCES` y consulta por nombre o con `all`.
+
 #### 2) Levantar frontend (React + Vite)
 
 En otra terminal:

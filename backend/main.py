@@ -13,17 +13,19 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .middleware.auth import APIKeyMiddleware
-from .routers import events, trading
+from .routers import control, events, trading
 from .routers.trading import save_equity_snapshot
 from .services.event_manager import event_manager
 from .ws.handlers import router as ws_router
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+)
 logger = logging.getLogger(__name__)
 
-_AUTO_REDEEM_CHECK_INTERVAL  = 30 * 60   # check every 30 min
-_AUTO_REDEEM_COOLDOWN        = 2 * 60 * 60  # min 2h between executions
-_EQUITY_SNAPSHOT_INTERVAL    = 30 * 60   # snapshot every 30 min
+_AUTO_REDEEM_CHECK_INTERVAL = 30 * 60  # check every 30 min
+_AUTO_REDEEM_COOLDOWN = 2 * 60 * 60  # min 2h between executions
+_EQUITY_SNAPSHOT_INTERVAL = 30 * 60  # snapshot every 30 min
 
 
 async def _auto_redeem_loop() -> None:
@@ -60,6 +62,7 @@ async def _auto_redeem_loop() -> None:
 
             # Cooldown
             import time as _time
+
             now = _time.monotonic()
             if (now - last_redeem_ts) < _AUTO_REDEEM_COOLDOWN:
                 await asyncio.sleep(_AUTO_REDEEM_CHECK_INTERVAL)
@@ -91,14 +94,15 @@ async def _auto_redeem_loop() -> None:
 
             # Compute effective threshold
             threshold_usd = float(settings.get("auto_redeem_threshold_usd", 20.0))
-            bankroll_pct  = float(settings.get("auto_redeem_bankroll_pct", 0.03))
-            bankroll      = float(settings.get("kelly_live_bankroll_usd", 100.0))
+            bankroll_pct = float(settings.get("auto_redeem_bankroll_pct", 0.03))
+            bankroll = float(settings.get("kelly_live_bankroll_usd", 100.0))
             effective_threshold = max(threshold_usd, bankroll * bankroll_pct)
 
             if claimable_usd < effective_threshold:
                 logger.debug(
                     "Auto-redeem: $%.2f claimable < $%.2f threshold — skipping",
-                    claimable_usd, effective_threshold,
+                    claimable_usd,
+                    effective_threshold,
                 )
                 await asyncio.sleep(_AUTO_REDEEM_CHECK_INTERVAL)
                 continue
@@ -106,19 +110,24 @@ async def _auto_redeem_loop() -> None:
             # Trigger redeem
             logger.info(
                 "Auto-redeem triggered: $%.2f claimable >= $%.2f threshold",
-                claimable_usd, effective_threshold,
+                claimable_usd,
+                effective_threshold,
             )
-            positions = [p for p in claimable.get("positions", []) if p.get("condition_id")]
+            positions = [
+                p for p in claimable.get("positions", []) if p.get("condition_id")
+            ]
             if positions:
                 results = await asyncio.to_thread(
                     _redeem_positions_sync, private_key, wallet, chain_id, positions
                 )
-                sent   = [r for r in results if r.get("status") == "sent"]
+                sent = [r for r in results if r.get("status") == "sent"]
                 failed = [r for r in results if r.get("status") == "failed"]
-                total  = sum(r.get("value_usd", 0.0) for r in sent)
+                total = sum(r.get("value_usd", 0.0) for r in sent)
                 logger.info(
                     "Auto-redeem complete: sent=%d failed=%d total_usd=%.2f",
-                    len(sent), len(failed), total,
+                    len(sent),
+                    len(failed),
+                    total,
                 )
                 last_redeem_ts = now
 
@@ -152,8 +161,8 @@ async def lifespan(app: FastAPI):
     logger.info("Starting EventManager...")
     await event_manager.start()
 
-    redeem_task    = asyncio.create_task(_auto_redeem_loop(), name="auto_redeem")
-    snapshot_task  = asyncio.create_task(_equity_snapshot_loop(), name="equity_snapshot")
+    redeem_task = asyncio.create_task(_auto_redeem_loop(), name="auto_redeem")
+    snapshot_task = asyncio.create_task(_equity_snapshot_loop(), name="equity_snapshot")
 
     yield
 
@@ -192,6 +201,7 @@ app.add_middleware(APIKeyMiddleware)
 # REST routers
 app.include_router(events.router)
 app.include_router(trading.router)
+app.include_router(control.router)
 
 # WebSocket router
 app.include_router(ws_router)
@@ -199,7 +209,11 @@ app.include_router(ws_router)
 # Serve frontend build if dist/ exists (production / ngrok mode)
 _dist_dir = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
 if os.path.isdir(_dist_dir):
-    app.mount("/assets", StaticFiles(directory=os.path.join(_dist_dir, "assets")), name="assets")
+    app.mount(
+        "/assets",
+        StaticFiles(directory=os.path.join(_dist_dir, "assets")),
+        name="assets",
+    )
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa_fallback(full_path: str):
