@@ -1497,12 +1497,11 @@ class EventManager:
         max_spread_pct = float(
             gp.get("max_spread_pct", settings.get("quant_gate_max_spread_pct", 0.0))
         )
-        if (
-            max_spread_pct > 0
-            and spread_pct is not None
-            and spread_pct > max_spread_pct
-        ):
-            reasons.append(f"spread>{max_spread_pct:.2%}")
+        if max_spread_pct > 0:
+            if spread_pct is None:
+                reasons.append("spread>max:no_orderbook")
+            elif spread_pct > max_spread_pct:
+                reasons.append(f"spread>{max_spread_pct:.2%}")
 
         min_ask_price = float(
             gp.get("min_ask_price", settings.get("quant_gate_min_ask_price", 0.0))

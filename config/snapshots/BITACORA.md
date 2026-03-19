@@ -100,6 +100,42 @@ cd frontend && npx vite --mode v2
 
 ---
 
+---
+
+## 2026-03-19 — Filtro de volatilidad por spread + horas US market open
+
+**Cambios en runtime_settings.json (Bot principal):**
+- `quant_gate_max_spread_pct`: 0 → **2** (bloquea órdenes con spread ≥ 2%)
+- `quant_gate_blocked_hours_pst`: agrega **10h y 11h** (ventana post-apertura NYSE)
+
+**Análisis que motivó el cambio (831 órdenes resueltas, Mar 4–19):**
+
+| Spread | n | WR | PnL |
+|--------|---|----|-----|
+| <2%    | 531 | 64.6% | +$58 |
+| 2-4%  | 205 | 47.8% | negativo |
+| ≥10%  | 11  | 27.3% | negativo |
+
+| Hora PST | n | WR |
+|----------|---|----|
+| 10h | 45 | 33.3% ← peor hora del día |
+| 11h | 37 | 43.2% |
+| 12h | 50 | 72.0% (se normaliza) |
+
+**Simulación de impacto histórico:**
+- Solo spread ≥2% bloqueado: delta PnL **+$97.80** (36% menos órdenes)
+- Solo horas 10-11h bloqueadas: delta PnL **+$93.17** (10% menos órdenes)
+- Ambos combinados: **+$156.88** → PnL total de -$39 a **+$117** (WR 66.7%)
+
+**Período perdedor Mar 9-13 (análisis):**
+- Spread 2-4%: WR 34.5%, PnL -$92 ← mayor destructor ese período
+- Spread <2%: WR 57.8%, PnL -$75 → vol sistémica sostenida, no solo spread puntual
+- Pendiente: si persisten pérdidas en días de alta vol sistémica, evaluar CVI como filtro adicional
+
+**Checkpoint bankroll al reinicio:** $89 (kelly_live_bankroll_usd)
+
+---
+
 **Configuración activa Bot A (live):**
 - Ticker: BTC
 - Timeframe: 5m
