@@ -2644,10 +2644,8 @@ class EventManager:
             return False, "invalid_notional"
         min_shares = max(0.0, float(self.settings.get("pm_min_shares", 5.0)))
         min_notional = max(0.0, float(self.settings.get("pm_min_notional_usd", 1.0)))
-        if shares < min_shares:
+        if shares < min_shares and notional_usd < min_notional:
             return False, f"shares_below_min_{min_shares:g}"
-        if notional_usd < min_notional:
-            return False, f"notional_below_min_{min_notional:g}"
         if not bool(self.settings.get("bot_risk_enabled", True)):
             return True, ""
 
@@ -4403,6 +4401,11 @@ class EventManager:
                     if _attempt < _max_attempts - 1 and any(
                         s in str(_attempt_exc).lower() for s in _no_liq_signals
                     ):
+                        _retry_delay = float(
+                            self.settings.get("bot_fak_retry_delay_secs", 1.0)
+                        )
+                        if _retry_delay > 0:
+                            await asyncio.sleep(_retry_delay)
                         continue  # try next attempt with higher tolerance
                     raise  # re-raise on last attempt or non-liquidity error
 

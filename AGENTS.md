@@ -59,6 +59,18 @@ Actualízalo cuando cambien decisiones, scripts o flujos importantes.
   - UI muestra claramente etiqueta `Out-of-Sample (Walk-Forward)`.
   - Incluye KPIs: `final_equity`, `max_drawdown`, `avg_ev_per_trade`.
 
+### TODO bot (hedge de seguro en orden principal) — pendiente
+- Implementar mecanismo de compra de salvaguarda en `_bot_maybe_place_order`:
+  - Después de confirmar el fill principal, colocar una orden FOK mínima en el lado contrario.
+  - Ejemplo: principal UP al 60¢ → hedge DOWN pagando $0.01–$0.02 si DOWN ask ≤ X¢.
+- Parámetros a definir con el usuario antes de implementar:
+  - `bot_hedge_enabled` (bool)
+  - `bot_hedge_max_usd` — monto fijo en USD del hedge (ej: 0.02)
+  - `bot_hedge_max_ask` — precio máximo del lado contrario para hedgear (ej: 0.35)
+  - `bot_hedge_min_quant_prob` — solo hedgear cuando quant_prob ≥ X (ej: 0.85)
+- El hedge solo se ejecuta si el fill principal fue exitoso (`status="placed"`).
+- Registrar el hedge en el CSV como una fila separada con `ladder_entry=hedge`.
+
 ### TODO Analytics (Live Friction Stats) — pendiente
 - Objetivo: medir fricción real de ejecución en live sin modificar la lógica de trading.
 - Fuente propuesta:
