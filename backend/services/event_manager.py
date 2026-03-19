@@ -109,6 +109,7 @@ _BOT_ORDERS_FIELDNAMES = [
     "pnl_simulated",
     "resolution_status",
     "status",
+    "order_type",  # "normal" | "hedge"
 ]
 _PAPER_TRADES_LOG_PATH = os.path.normpath(
     os.path.join(_BOT_ORDERS_LOG_DIR, "paper_trades.csv")
@@ -540,6 +541,7 @@ class EventManager:
         self._order_guard_records: list[dict] = (
             self._load_order_guard_records_from_csv()
         )
+        self._load_hedge_state_from_csv()
         self._last_claimable_usd: float = 0.0  # updated by auto-redeem loop
         self._last_order_at_utc: datetime | None = None
         # Bot auto-order: track previous gate state to detect disabled→enabled transitions
@@ -549,6 +551,12 @@ class EventManager:
         self._no_fill_cooldown_until: dict[tuple[str, str], float] = {}
         # best_side_reentry: track last edge (pp) at which an order was fired per (event_id, side)
         self._bot_last_fired_edge: dict[tuple[str, str], float] = {}
+        # Hedge strategy: events where hedge was placed → permanent lock (no more normal orders)
+        self._hedge_placed_events: set[str] = set()
+        # Hedge strategy: count of normal orders placed per event_id (loaded from CSV at startup)
+        self._event_normal_orders_count: dict[str, int] = {}
+        # Hedge strategy: original order info per event_id {event_id: {side, notional, placed_at_utc}}
+        self._event_hedge_source: dict[str, dict] = {}
         # Position tracker: fuente de verdad para shares compradas por evento
         # {event_id: {"up": {"shares": float, "avg_price": float, "token_id": str, "placed_at_utc": str}, ...}}
         self._position_tracker: dict[str, dict] = {}
@@ -599,6 +607,47 @@ class EventManager:
         except Exception as e:
             logger.warning("Could not load order guard records from CSV: %s", e)
         return records
+
+    def _load_hedge_state_from_csv(self) -> None:
+        """Seed hedge state from today's bot_orders CSV so hedge locks survive restarts."""
+        try:
+            today_str = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+            csv_path = os.path.join(_BOT_ORDERS_LOG_DIR, f"bot_orders_{today_str}.csv")
+            if not os.path.exists(csv_path):
+                return
+            with open(csv_path, newline="") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    event_id = row.get("event_id", "")
+                    if not event_id:
+                        continue
+                    order_type = row.get("order_type", "normal") or "normal"
+                    if order_type == "hedge":
+                        self._hedge_placed_events.add(event_id)
+                    else:
+                        self._event_normal_orders_count[event_id] = (
+                            self._event_normal_orders_count.get(event_id, 0) + 1
+                        )
+                        # Keep the first order as source for hedge sizing
+                        if event_id not in self._event_hedge_source:
+                            try:
+                                notional = float(
+                                    row.get("filled_notional_usd_real") or row.get("notional_usd") or 0
+                                )
+                                self._event_hedge_source[event_id] = {
+                                    "side": row.get("side", ""),
+                                    "notional": notional,
+                                    "placed_at_utc": row.get("placed_at_utc", ""),
+                                }
+                            except Exception:
+                                pass
+            logger.info(
+                "Hedge state loaded: %d events hedged, %d tracked",
+                len(self._hedge_placed_events),
+                len(self._event_normal_orders_count),
+            )
+        except Exception as exc:
+            logger.warning("Could not load hedge state from CSV: %s", exc)
 
     def _load_runtime_settings(self) -> None:
         """Load persisted runtime mode/settings from disk, if available."""
@@ -3883,6 +3932,7 @@ class EventManager:
             self._track_opportunities_for_event(
                 event_id, event_dict, datetime.now(tz=timezone.utc)
             )
+            asyncio.create_task(self._bot_check_hedge(event_id, event_dict))
 
             # Throttle only the broadcast to frontend (max 1/s per event)
             now_ms = int(self._last_price_tick_at.timestamp() * 1000)
@@ -3999,6 +4049,345 @@ class EventManager:
             event_id, event_dict, best_side, override_gate_transition=True
         )
 
+    async def _bot_check_hedge(self, event_id: str, event_dict: dict) -> None:
+        """Check if hedge conditions are met and schedule hedge order placement.
+
+        Activates when:
+          - hedge_enabled = true in settings
+          - Exactly 1 normal order has been placed for this event
+          - Original side's current ask >= hedge_ask_threshold (market has "decided")
+          - Event not already hedged
+
+        Sizing: hedge_notional = orig_notional × hedge_ask
+        → buys exactly enough shares of the other side to cover original loss.
+        """
+        if not bool(self.settings.get("hedge_enabled", False)):
+            return
+        if event_id in self._hedge_placed_events:
+            return
+        if self._event_normal_orders_count.get(event_id, 0) != 1:
+            return
+
+        source = self._event_hedge_source.get(event_id)
+        if not source:
+            return
+
+        orig_side = source.get("side", "")
+        if orig_side not in ("up", "down"):
+            return
+
+        orig_notional = float(source.get("notional", 0) or 0)
+        if orig_notional <= 0:
+            return
+
+        threshold = float(self.settings.get("hedge_ask_threshold", 0.95))
+        orig_ask, _, _ = self._event_best_ask_price(event_dict, orig_side)
+        if orig_ask < threshold:
+            return
+
+        hedge_side = "down" if orig_side == "up" else "up"
+        hedge_ask, _, _ = self._event_best_ask_price(event_dict, hedge_side)
+        if hedge_ask <= 0:
+            return
+
+        hedge_notional = round(orig_notional * hedge_ask, 4)
+        pm_min = float(self.settings.get("pm_min_notional_usd", 1.0))
+        if hedge_notional < pm_min:
+            logger.info(
+                "Hedge: skipping %s — hedge_notional=%.4f < pm_min=%.4f "
+                "(orig_notional=%.4f hedge_ask=%.4f)",
+                event_id,
+                hedge_notional,
+                pm_min,
+                orig_notional,
+                hedge_ask,
+            )
+            return
+
+        # Lock immediately to prevent concurrent hedge attempts on the same event
+        self._hedge_placed_events.add(event_id)
+        logger.info(
+            "Hedge: activating for %s | orig_side=%s orig_ask=%.4f orig_notional=%.4f "
+            "hedge_side=%s hedge_ask=%.4f hedge_notional=%.4f",
+            event_id,
+            orig_side,
+            orig_ask,
+            orig_notional,
+            hedge_side,
+            hedge_ask,
+            hedge_notional,
+        )
+        asyncio.create_task(
+            self._bot_place_hedge_order(
+                event_id, event_dict, hedge_side, hedge_notional, hedge_ask
+            )
+        )
+
+    async def _bot_place_hedge_order(
+        self,
+        event_id: str,
+        event_dict: dict,
+        side: str,
+        notional_usd: float,
+        ask_price: float,
+    ) -> None:
+        """Place a hedge FAK order on the CLOB, bypassing quant gates and Kelly sizing."""
+        _prelog_ts: str = ""
+        _send_at_utc = datetime.now(tz=timezone.utc)
+        try:
+            client = get_client()
+            if not client:
+                logger.warning("Hedge: Polymarket client unavailable for %s", event_id)
+                return
+
+            token_id = (
+                event_dict.get("yes_token_id")
+                if side == "up"
+                else event_dict.get("no_token_id")
+            )
+            if not token_id:
+                logger.warning("Hedge: no token_id for %s %s", event_id, side)
+                return
+
+            shares = round(notional_usd / ask_price, 6) if ask_price > 0 else 0.0
+            now_utc = datetime.now(tz=timezone.utc)
+
+            _pre_log_row: dict = {
+                "placed_at_utc": now_utc.isoformat(),
+                "event_id": event_id,
+                "ticker": self._extract_event_ticker(event_id, event_dict),
+                "timeframe": f"{int(event_dict.get('timeframe_minutes', 5) or 5)}m",
+                "slot": "",
+                "range": "",
+                "side": side,
+                "event_end_utc_at_send": str(event_dict.get("event_end_utc", "") or ""),
+                "token_id": token_id,
+                "shares": round(shares, 6),
+                "price": round(ask_price, 6),
+                "notional_usd": round(notional_usd, 4),
+                "order_id": "",
+                "quant_prob": "",
+                "edge_pct": "",
+                "price_source_at_send": "hedge",
+                "price_to_beat_at_send": "",
+                "current_price_at_send": "",
+                "diff_vs_ptb_at_send": "",
+                "best_bid_at_send": "",
+                "best_ask_at_send": round(ask_price, 6),
+                "mid_at_send": "",
+                "spread_at_send": "",
+                "spread_pct_at_send": "",
+                "fill_price_real": "",
+                "slippage_pct": "",
+                "filled_notional_usd_real": "",
+                "filled_shares_real": "",
+                "fill_count": "",
+                "fills_detail_json": "",
+                "edge_at_fill_pct": "",
+                "realized_slippage_bps": "",
+                "implementation_shortfall_bps": "",
+                "implementation_shortfall_usd": "",
+                "fill_ratio": "",
+                "maker_vs_taker_mode": "fak",
+                "cancel_count": "",
+                "replace_count": "",
+                "post_only_attempted": "",
+                "adverse_selection_1s": "",
+                "adverse_selection_3s": "",
+                "adverse_selection_5s": "",
+                "kelly_pct": "",
+                "bankroll_usd": "",
+                "percentile_at_signal": "",
+                "ladder_entry": "",
+                "close_price_at_resolution": "",
+                "event_outcome_real": "",
+                "won": "",
+                "pnl_simulated": "",
+                "resolution_status": "pending",
+                "status": "sending",
+                "order_type": "hedge",
+            }
+            _prelog_ts = now_utc.isoformat()
+            _clob_confirmed = False
+            _append_bot_order_log(_pre_log_row)
+
+            _fak_tolerance = float(self.settings.get("fak_price_tolerance", 0.03))
+            _no_liq_signals = ("no orders found to match", "no match", "no orderbook")
+            _retry_extra = float(self.settings.get("bot_fak_retry_extra_tolerance", 0.01))
+            _retry_enabled = bool(self.settings.get("bot_fak_retry_on_no_fill", True))
+            _max_attempts = (
+                max(1, int(self.settings.get("bot_fak_max_attempts", 3)))
+                if _retry_enabled
+                else 1
+            )
+
+            result = None
+            _send_at_utc = datetime.now(tz=timezone.utc)
+            for _attempt in range(_max_attempts):
+                _attempt_tolerance = _fak_tolerance + (_attempt * _retry_extra)
+                order_price = min(round(ask_price + _attempt_tolerance, 4), 0.99)
+                if _attempt > 0:
+                    logger.info(
+                        "Hedge: no_fill retry %d for %s %s price=%.4f",
+                        _attempt + 1,
+                        event_id,
+                        side,
+                        order_price,
+                    )
+                    _send_at_utc = datetime.now(tz=timezone.utc)
+                try:
+                    result = await asyncio.to_thread(
+                        client.place_fok_order,
+                        token_id,
+                        "BUY",
+                        notional_usd,
+                        order_price,
+                    )
+                    break
+                except Exception as _attempt_exc:
+                    if _attempt < _max_attempts - 1 and any(
+                        s in str(_attempt_exc).lower() for s in _no_liq_signals
+                    ):
+                        _retry_delay = float(self.settings.get("bot_fak_retry_delay_secs", 1.0))
+                        if _retry_delay > 0:
+                            await asyncio.sleep(_retry_delay)
+                        continue
+                    raise
+
+            _filled_at_utc = datetime.now(tz=timezone.utc)
+            _fill_latency_ms = round(
+                (_filled_at_utc - _send_at_utc).total_seconds() * 1000
+            )
+            _clob_confirmed = bool(result)
+
+            if result:
+                try:
+                    from ..routers.trading import invalidate_positions_cache
+                    invalidate_positions_cache(event_id)
+                except Exception:
+                    pass
+                order_id = (
+                    getattr(result, "id", None)
+                    or getattr(result, "orderID", None)
+                    or (result.get("id") if isinstance(result, dict) else None)
+                    or (result.get("orderID") if isinstance(result, dict) else None)
+                    or str(result)[:16]
+                )
+                try:
+                    fill_price_real = _extract_fill_price_from_result(result)
+                    (
+                        fill_count,
+                        filled_notional_usd_real,
+                        filled_shares_real,
+                        fills_detail_json,
+                    ) = _extract_fills_detail(result)
+                    slippage_pct = (
+                        (fill_price_real - ask_price) / ask_price * 100.0
+                        if isinstance(fill_price_real, float)
+                        and fill_price_real > 0
+                        and ask_price > 0
+                        else None
+                    )
+                    _update_bot_order_log_row(
+                        _prelog_ts,
+                        event_id,
+                        side,
+                        {
+                            "order_id": str(order_id),
+                            "fill_price_real": round(fill_price_real, 6)
+                            if isinstance(fill_price_real, float)
+                            else "",
+                            "filled_at_utc": _filled_at_utc.isoformat(),
+                            "fill_latency_ms": _fill_latency_ms,
+                            "slippage_pct": round(slippage_pct, 4)
+                            if isinstance(slippage_pct, float)
+                            else "",
+                            "filled_notional_usd_real": round(filled_notional_usd_real, 4)
+                            if filled_notional_usd_real > 0
+                            else "",
+                            "filled_shares_real": round(filled_shares_real, 6)
+                            if filled_shares_real > 0
+                            else "",
+                            "fill_count": fill_count if fill_count > 0 else "",
+                            "fills_detail_json": fills_detail_json,
+                            "status": "placed",
+                        },
+                    )
+                except Exception as fill_exc:
+                    logger.warning(
+                        "Hedge: could not extract fill data for %s: %s", event_id, fill_exc
+                    )
+                    _update_bot_order_log_row(
+                        _prelog_ts,
+                        event_id,
+                        side,
+                        {
+                            "order_id": str(order_id),
+                            "filled_at_utc": _filled_at_utc.isoformat(),
+                            "fill_latency_ms": _fill_latency_ms,
+                            "status": "placed",
+                        },
+                    )
+                logger.info("Hedge: order placed for %s %s order_id=%s", event_id, side, order_id)
+                try:
+                    refreshed_balance = await asyncio.to_thread(client.get_balance)
+                except Exception:
+                    refreshed_balance = None
+                await manager.broadcast(
+                    {
+                        "type": "bot_order_placed",
+                        "event_id": event_id,
+                        "data": {
+                            "side": side,
+                            "shares": round(shares, 4),
+                            "price": round(ask_price, 4),
+                            "notional_usd": round(notional_usd, 2),
+                            "order_id": str(order_id),
+                            "order_type": "hedge",
+                            "balance": float(refreshed_balance)
+                            if isinstance(refreshed_balance, (int, float))
+                            else None,
+                        },
+                    }
+                )
+            else:
+                logger.error(
+                    "Hedge: place_order returned no result for %s %s", event_id, side
+                )
+                _update_bot_order_log_row(
+                    _prelog_ts,
+                    event_id,
+                    side,
+                    {
+                        "filled_at_utc": _filled_at_utc.isoformat(),
+                        "fill_latency_ms": _fill_latency_ms,
+                        "status": "failed",
+                        "fills_detail_json": "error:no_result_from_clob",
+                    },
+                )
+
+        except Exception as e:
+            _filled_at_utc = datetime.now(tz=timezone.utc)
+            _fill_latency_ms = round(
+                (_filled_at_utc - _send_at_utc).total_seconds() * 1000
+            )
+            logger.error("Hedge: error placing order for %s %s: %s", event_id, side, e)
+            try:
+                if _prelog_ts:
+                    _update_bot_order_log_row(
+                        _prelog_ts,
+                        event_id,
+                        side,
+                        {
+                            "filled_at_utc": _filled_at_utc.isoformat(),
+                            "fill_latency_ms": _fill_latency_ms,
+                            "status": "failed",
+                            "fills_detail_json": f"error:{str(e)[:120]}",
+                        },
+                    )
+            except Exception:
+                pass
+
     async def _bot_maybe_place_order(
         self,
         event_id: str,
@@ -4013,6 +4402,9 @@ class EventManager:
         all other eligibility guards pass.
         """
         key = (event_id, side)
+        # Hedge lock: if a hedge was placed for this event, block all further normal orders
+        if event_id in self._hedge_placed_events:
+            return
         quant_gate = event_dict.get("quant_buy_gate")
         if not isinstance(quant_gate, dict):
             self._bot_prev_gate_enabled[key] = False
@@ -4343,6 +4735,7 @@ class EventManager:
                 "pnl_simulated": "",
                 "resolution_status": "pending",
                 "status": "sending",
+                "order_type": "normal",
             }
             _prelog_ts = now_utc.isoformat()
             _clob_confirmed = False  # True once place_fok_order returns a result
@@ -4540,6 +4933,18 @@ class EventManager:
                     price=ask_price,
                     placed_at_utc=now_utc.isoformat(),
                 )
+                # Update hedge tracking state for this normal order
+                self._event_normal_orders_count[event_id] = (
+                    self._event_normal_orders_count.get(event_id, 0) + 1
+                )
+                if event_id not in self._event_hedge_source:
+                    _filled_real = locals().get("filled_notional_usd_real", 0) or 0
+                    _actual_notional = _filled_real if _filled_real > 0 else notional_usd
+                    self._event_hedge_source[event_id] = {
+                        "side": side,
+                        "notional": _actual_notional,
+                        "placed_at_utc": now_utc.isoformat(),
+                    }
                 # Broadcast bot_order event to frontend
                 try:
                     refreshed_balance = await asyncio.to_thread(client.get_balance)
