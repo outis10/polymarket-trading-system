@@ -2208,7 +2208,8 @@ class EventManager:
                         return result
 
         # Respect remaining event exposure budget by clipping size to remnant.
-        if bool(self.settings.get("bot_risk_enabled", True)):
+        # Skip for ladder entries > 1: the cap already applied on the first entry.
+        if bool(self.settings.get("bot_risk_enabled", True)) and ladder_entry_num <= 1:
             base_bankroll_guard = max(1.0, float(guard_bankroll or 0.0))
             event_cap_usd = (
                 base_bankroll_guard
@@ -2273,6 +2274,7 @@ class EventManager:
             notional_usd=notional_usd,
             now_utc=now_utc,
             bankroll_usd=guard_bankroll,
+            skip_event_exposure_cap=ladder_entry_num > 1,
         )
         if not allowed:
             result["reason"] = guard_reason or "risk_guard_blocked"
@@ -2692,6 +2694,7 @@ class EventManager:
         notional_usd: float,
         now_utc: datetime,
         bankroll_usd: float | None,
+        skip_event_exposure_cap: bool = False,
     ) -> tuple[bool, str]:
         """Check configurable bot risk guards for a candidate order."""
         if not self.is_event_trading_enabled(event_id, event):
@@ -2806,7 +2809,7 @@ class EventManager:
             for r in self._order_guard_records
             if r.get("event_id") == event_id and r.get("at_utc") >= start_day
         )
-        if event_spend + notional_usd > event_cap_usd:
+        if not skip_event_exposure_cap and event_spend + notional_usd > event_cap_usd:
             return False, "event_exposure_cap_reached"
 
         # Ticker-level exposure cap (0 = disabled)
