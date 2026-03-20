@@ -28,6 +28,7 @@ from .event_discovery import discover_live_events
 from .execution_engine import estimate_fill_from_event, fill_estimate_to_log
 from .kraken import fetch_kraken_candle_open, fetch_kraken_klines
 from .opportunity_tracker import OpportunityTracker
+from .volatility_monitor import volatility_monitor
 from .polymarket import PolymarketStreamer, fetch_real_prices, get_client
 from .price_provider import (
     get_price_fetcher,
@@ -474,6 +475,15 @@ class EventManager:
             # side_filter: "any" | "opposite"
             # Empty list = legacy single-entry + bot_second_entry_opposite_enabled behavior
             "bot_trade_ladder": [],
+            # --- Bot operating mode ---
+            # NRM: normal (quant model only)
+            # FRZ: freeze (no orders placed)
+            "bot_mode": "NRM",
+            # --- Volatility monitor config ---
+            "volatility_flip_trigger": 3,
+            "volatility_window_seconds": 3600,
+            "volatility_alert_cooldown": 1800,
+            "volatility_thresholds": {"BTC": 30.0, "ETH": 2.0},
         }
         self._config: dict = {}
         self._task: Optional[asyncio.Task] = None
@@ -4401,6 +4411,9 @@ class EventManager:
         all other eligibility guards pass.
         """
         key = (event_id, side)
+        # Bot mode: FRZ blocks all order placement
+        if self.settings.get("bot_mode", "NRM") == "FRZ":
+            return
         # Hedge lock: if a hedge was placed for this event, block all further normal orders
         if event_id in self._hedge_placed_events:
             return
@@ -4521,6 +4534,18 @@ class EventManager:
                 spread_at_send = max(0.0, best_ask_at_send - best_bid_at_send)
                 if mid_at_send > 0:
                     spread_pct_at_send = spread_at_send / mid_at_send
+
+            # Volatility monitor: record large signals to detect choppy markets
+            if isinstance(diff_vs_ptb_at_send, float):
+                _vol_ticker = self._extract_event_ticker(event_id, event_dict).upper()
+                volatility_monitor.update_config(self.settings)
+                if volatility_monitor.record_signal(_vol_ticker, diff_vs_ptb_at_send):
+                    logger.warning(
+                        "VOLATILITY ALERT: %s — %d direction flips in %ds window",
+                        _vol_ticker,
+                        volatility_monitor.flip_trigger,
+                        int(volatility_monitor.window_seconds),
+                    )
 
             # bot_min_diff_abs: per-asset absolute diff filter
             # e.g. {"BTC": 20} blocks orders where |diff_vs_ptb| < 20 pts for BTC

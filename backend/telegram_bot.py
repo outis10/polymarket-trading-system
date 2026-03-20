@@ -184,6 +184,26 @@ class TelegramControlBot:
                         )
                     ),
                 )
+            elif command == "/freeze":
+                instance = self._resolve_single_instance(args)
+                self._send_message(
+                    chat_id,
+                    self._format_action(
+                        self._control_post(
+                            "/freeze", {}, chat_id, user_id, user, instance=instance
+                        )
+                    ),
+                )
+            elif command == "/unfreeze":
+                instance = self._resolve_single_instance(args)
+                self._send_message(
+                    chat_id,
+                    self._format_action(
+                        self._control_post(
+                            "/unfreeze", {}, chat_id, user_id, user, instance=instance
+                        )
+                    ),
+                )
             elif command == "/mode":
                 self._handle_mode_command(chat_id, user_id, user, args)
             elif command == "/restart":
@@ -411,6 +431,28 @@ class TelegramControlBot:
                 f"ALERT: trading mode changed {previous['trading_mode']} -> {current['trading_mode']}"
             )
 
+        # Volatility alert check
+        try:
+            vol = self._control_get(
+                "/volatility-state", instance=self.instances["default"]
+            )
+            alert = vol.get("alert")
+            if alert:
+                ticker = alert.get("ticker", "?")
+                flips = alert.get("flips", 0)
+                signals = alert.get("signals_in_window", 0)
+                history = " -> ".join(alert.get("direction_history", []))
+                bot_mode = vol.get("bot_mode", "NRM")
+                self._broadcast(
+                    f"VOLATILITY ALERT: {ticker}\n"
+                    f"{flips} direction flips in the last hour ({signals} large signals)\n"
+                    f"Signals: {history}\n"
+                    f"Bot mode: {bot_mode}\n"
+                    f"Use /freeze to pause or continue if it's noise."
+                )
+        except Exception as exc:
+            logger.debug("Volatility state check failed: %s", exc)
+
     def _broadcast(self, text: str) -> None:
         targets = self.allowed_chat_ids or set()
         for chat_id in targets:
@@ -466,6 +508,8 @@ class TelegramControlBot:
             "/orders [instance|all]\n"
             "/pause [instance]\n"
             "/resume [instance]\n"
+            "/freeze [instance]  — volatility mode (FRZ)\n"
+            "/unfreeze [instance]  — exit volatility mode\n"
             "/mode paper [instance]\n"
             "/mode live [instance]\n"
             "/restart [instance]\n"

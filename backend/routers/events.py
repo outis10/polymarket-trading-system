@@ -13,6 +13,7 @@ from fastapi import APIRouter, HTTPException, Response
 
 from ..config import get_trading_config, get_ui_config, load_events_config
 from ..services.event_manager import event_manager
+from ..services.volatility_monitor import volatility_monitor
 from ..ws.manager import manager
 
 router = APIRouter(prefix="/api", tags=["events"])
@@ -528,4 +529,19 @@ async def get_pipeline_ev_curve(
         "final_cumulative_ev": cumulative_ev,
         "max_drawdown_pct": max_drawdown_pct,
         "points": points,
+    }
+
+
+@router.get("/stats/volatility-state")
+async def get_volatility_state():
+    """Current volatility monitor state for the analytics dashboard.
+
+    Uses peek_alert() so the alert is NOT consumed here — the Telegram
+    watchdog consumes it via the control API (/api/control/volatility-state).
+    """
+    return {
+        "bot_mode": event_manager.settings.get("bot_mode", "NRM"),
+        "execution_enabled": bool(event_manager.settings.get("execution_enabled", False)),
+        **volatility_monitor.get_state(),
+        "pending_alert": volatility_monitor.peek_alert(),
     }

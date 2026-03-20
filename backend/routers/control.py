@@ -114,3 +114,21 @@ async def control_restart(request: Request, payload: dict[str, Any] | None = Non
 async def control_logs(request: Request, lines: int = 50):
     _assert_local_request(request)
     return await control_service.get_logs(lines=lines)
+
+
+@router.post("/freeze")
+async def control_freeze(request: Request):
+    _assert_local_request(request)
+    return await control_service.freeze(actor=_actor_from_request(request))
+
+
+@router.post("/unfreeze")
+async def control_unfreeze(request: Request):
+    _assert_local_request(request)
+    return await control_service.unfreeze(actor=_actor_from_request(request))
+
+
+@router.get("/volatility-state")
+async def control_volatility_state(request: Request):
+    _assert_local_request(request)
+    return await control_service.get_volatility_state()

@@ -269,6 +269,34 @@ export default function OpportunitiesDashboard() {
     const [diagnosticTarget, setDiagnosticTarget] =
         useState<DiagnosticTarget | null>(null);
 
+    interface VolatilityTickerStat {
+        signals_in_window: number;
+        flips: number;
+        alert_active: boolean;
+        last_alerted_at: string | null;
+    }
+    interface VolatilityAlert {
+        ticker: string;
+        flips: number;
+        signals_in_window: number;
+        direction_history: string[];
+        triggered_at: string;
+    }
+    interface VolatilityState {
+        bot_mode: string;
+        execution_enabled: boolean;
+        has_pending_alert: boolean;
+        pending_alert: VolatilityAlert | null;
+        ticker_stats: Record<string, VolatilityTickerStat>;
+        config: {
+            flip_trigger: number;
+            window_seconds: number;
+            thresholds: Record<string, number>;
+        };
+    }
+    const [volatilityState, setVolatilityState] =
+        useState<VolatilityState | null>(null);
+
     const loadData = async () => {
         setLoading(true);
         setError("");
@@ -364,6 +392,18 @@ export default function OpportunitiesDashboard() {
         return () => clearInterval(interval);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [days]);
+
+    useEffect(() => {
+        const loadVolatility = () => {
+            apiFetch("/api/stats/volatility-state")
+                .then((r) => r.json())
+                .then((data: VolatilityState) => setVolatilityState(data))
+                .catch(() => {/* silently ignore — not critical */});
+        };
+        loadVolatility();
+        const interval = setInterval(loadVolatility, 20000); // 20s polling
+        return () => clearInterval(interval);
+    }, []);
 
     const rowsInWindow = useMemo(() => {
         return rawRows.filter((row) => {
@@ -1050,6 +1090,91 @@ export default function OpportunitiesDashboard() {
                 </article>
             </section>
 
+            {volatilityState && (
+                <section className="analytics-volatility-card">
+                    <div className="volatility-header">
+                        <span className="volatility-title">Volatility Monitor</span>
+                        <span className={`volatility-mode-badge volatility-mode-${volatilityState.bot_mode.toLowerCase()}`}>
+                            {volatilityState.bot_mode}
+                        </span>
+                        {!volatilityState.execution_enabled && (
+                            <span className="volatility-mode-badge volatility-mode-frz">PAUSED</span>
+                        )}
+                        {volatilityState.pending_alert && (
+                            <span className="volatility-alert-badge">
+                                ⚠ ALERT: {volatilityState.pending_alert.ticker}
+                            </span>
+                        )}
+                        <span className="volatility-window-label">
+                            window {Math.round((volatilityState.config?.window_seconds ?? 3600) / 60)}min
+                            · trigger {volatilityState.config?.flip_trigger ?? 3} flips
+                        </span>
+                    </div>
+
+                    {volatilityState.pending_alert && (
+                        <div className="volatility-alert-banner">
+                            <strong>{volatilityState.pending_alert.ticker}</strong>
+                            {" — "}
+                            {volatilityState.pending_alert.flips} direction flips
+                            ({volatilityState.pending_alert.signals_in_window} large signals):
+                            {" "}
+                            <span className="volatility-direction-history">
+                                {volatilityState.pending_alert.direction_history.join(" → ")}
+                            </span>
+                        </div>
+                    )}
+
+                    <div className="volatility-tickers">
+                        {Object.keys(volatilityState.config?.thresholds ?? { BTC: 30, ETH: 2 }).map((tk) => {
+                            const stat = volatilityState.ticker_stats?.[tk];
+                            const isAlert = stat?.alert_active ?? false;
+                            return (
+                                <div key={tk} className={`volatility-ticker-card ${isAlert ? "volatility-ticker-alert" : ""}`}>
+                                    <div className="volatility-ticker-name">{tk}</div>
+                                    <div className="volatility-ticker-row">
+                                        <span className="volatility-ticker-label">Signals</span>
+                                        <span className="volatility-ticker-value">{stat?.signals_in_window ?? 0}</span>
+                                    </div>
+                                    <div className="volatility-ticker-row">
+                                        <span className="volatility-ticker-label">Flips</span>
+                                        <span className={`volatility-ticker-value ${isAlert ? "volatility-value-alert" : ""}`}>
+                                            {stat?.flips ?? 0}
+                                        </span>
+                                    </div>
+                                    <div className={`volatility-ticker-status ${isAlert ? "volatility-status-high" : "volatility-status-normal"}`}>
+                                        {isAlert ? "HIGH CHOP" : "Normal"}
+                                    </div>
+                                </div>
+                            );
+                        })}
+                        {Object.keys(volatilityState.ticker_stats ?? {})
+                            .filter((tk) => !(tk in (volatilityState.config?.thresholds ?? {})))
+                            .map((tk) => {
+                                const stat = volatilityState.ticker_stats[tk];
+                                const isAlert = stat.alert_active;
+                                return (
+                                    <div key={tk} className={`volatility-ticker-card ${isAlert ? "volatility-ticker-alert" : ""}`}>
+                                        <div className="volatility-ticker-name">{tk}</div>
+                                        <div className="volatility-ticker-row">
+                                            <span className="volatility-ticker-label">Signals</span>
+                                            <span className="volatility-ticker-value">{stat.signals_in_window}</span>
+                                        </div>
+                                        <div className="volatility-ticker-row">
+                                            <span className="volatility-ticker-label">Flips</span>
+                                            <span className={`volatility-ticker-value ${isAlert ? "volatility-value-alert" : ""}`}>
+                                                {stat.flips}
+                                            </span>
+                                        </div>
+                                        <div className={`volatility-ticker-status ${isAlert ? "volatility-status-high" : "volatility-status-normal"}`}>
+                                            {isAlert ? "HIGH CHOP" : "Normal"}
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                    </div>
+                </section>
+            )}
+
             <section className="analytics-charts-grid">
                 <article className="analytics-panel">
                     <h3>Calibration (Predicted vs Real)</h3>
@@ -1113,55 +1238,6 @@ export default function OpportunitiesDashboard() {
                     </div>
                 </article>
 
-                <article className="analytics-panel">
-                    <h3>Edge Buckets vs Outcome</h3>
-                    <div className="analytics-chart-help">
-                        <div>How to read</div>
-                        <ul>
-                            <li>
-                                Higher edge buckets should improve hit rate and
-                                avg pnl.
-                            </li>
-                            <li>
-                                If monotonicity breaks, edge filter is not
-                                monetizing.
-                            </li>
-                            <li>
-                                Use n to avoid overfitting on sparse buckets.
-                            </li>
-                        </ul>
-                    </div>
-                    <table className="analytics-table">
-                        <thead>
-                            <tr>
-                                <th>Edge Bucket</th>
-                                <th>Signals</th>
-                                <th>Hit Rate</th>
-                                <th>Total PnL</th>
-                                <th>Avg PnL</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {edgeBuckets.map((bucket) => {
-                                const hitRate =
-                                    bucket.n > 0
-                                        ? (bucket.wins / bucket.n) * 100
-                                        : 0;
-                                const avgPnl =
-                                    bucket.n > 0 ? bucket.pnl / bucket.n : 0;
-                                return (
-                                    <tr key={bucket.key}>
-                                        <td>{bucket.label}</td>
-                                        <td>{bucket.n}</td>
-                                        <td>{hitRate.toFixed(2)}%</td>
-                                        <td>${bucket.pnl.toFixed(2)}</td>
-                                        <td>${avgPnl.toFixed(2)}</td>
-                                    </tr>
-                                );
-                            })}
-                        </tbody>
-                    </table>
-                </article>
 
                 {runtimeSettings.bot_paper_mode && <article className="analytics-panel">
                     <h3>Paper Trading Equity Curve</h3>

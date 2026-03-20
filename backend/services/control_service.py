@@ -238,6 +238,57 @@ class ControlService:
     async def resume(self, actor: dict[str, Any] | None = None) -> dict[str, Any]:
         return await self._set_execution_enabled(True, actor=actor)
 
+    async def freeze(self, actor: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Freeze bot in volatility mode (FRZ): disable execution and set bot_mode=FRZ."""
+        event_manager.settings["execution_enabled"] = False
+        event_manager.settings["bot_mode"] = "FRZ"
+        event_manager.persist_runtime_settings()
+        await manager.broadcast(
+            {"type": "settings_update", "event_id": "", "data": event_manager.settings}
+        )
+        payload = {
+            **_instance_metadata(),
+            "ok": True,
+            "action": "freeze",
+            "execution_enabled": False,
+            "bot_mode": "FRZ",
+            "updated_at_utc": _now_utc().isoformat(),
+        }
+        self.audit("freeze", actor=actor, ok=True, result=payload)
+        return payload
+
+    async def unfreeze(self, actor: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Unfreeze bot: re-enable execution and set bot_mode=NRM."""
+        event_manager.settings["execution_enabled"] = True
+        event_manager.settings["bot_mode"] = "NRM"
+        event_manager.persist_runtime_settings()
+        await manager.broadcast(
+            {"type": "settings_update", "event_id": "", "data": event_manager.settings}
+        )
+        payload = {
+            **_instance_metadata(),
+            "ok": True,
+            "action": "unfreeze",
+            "execution_enabled": True,
+            "bot_mode": "NRM",
+            "updated_at_utc": _now_utc().isoformat(),
+        }
+        self.audit("unfreeze", actor=actor, ok=True, result=payload)
+        return payload
+
+    async def get_volatility_state(self) -> dict[str, Any]:
+        """Return current volatility monitor state and consume any pending alert."""
+        from ..services.volatility_monitor import volatility_monitor
+        alert = volatility_monitor.consume_alert()
+        state = volatility_monitor.get_state()
+        return {
+            **_instance_metadata(),
+            "volatility_state": state,
+            "alert": alert,
+            "bot_mode": event_manager.settings.get("bot_mode", "NRM"),
+            "updated_at_utc": _now_utc().isoformat(),
+        }
+
     async def set_trading_mode(
         self, target_mode: str, actor: dict[str, Any] | None = None
     ) -> dict[str, Any]:
