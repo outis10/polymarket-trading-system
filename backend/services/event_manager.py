@@ -472,6 +472,7 @@ class EventManager:
             # --- Trade Ladder ---
             # List of per-entry dicts: {min_ask, min_edge_pct, stake_multiplier, side_filter}
             # min_ask: float | {"up": float, "down": float}
+            # stake_multiplier: float | {"up": float, "down": float}
             # side_filter: "any" | "opposite"
             # Empty list = legacy single-entry + bot_second_entry_opposite_enabled behavior
             "bot_trade_ladder": [],
@@ -2146,12 +2147,23 @@ class EventManager:
         base_bankroll = max(1.0, float(base_bankroll))
         stake_usd = kelly_pct * base_bankroll
         if ladder and ladder_entry_cfg is not None:
-            stake_multiplier = max(
-                0.0, float(ladder_entry_cfg.get("stake_multiplier", 1.0))
-            )
+            raw_multiplier = ladder_entry_cfg.get("stake_multiplier", 1.0)
+            if isinstance(raw_multiplier, dict):
+                stake_multiplier = max(0.0, float(raw_multiplier.get(side_norm, 1.0)))
+            else:
+                stake_multiplier = max(0.0, float(raw_multiplier))
+            # Cap pre-multiplier stake to bot_max_event_exposure_pct of bankroll.
+            # Final notional = capped_pre_mult × stake_multiplier.
+            if bool(self.settings.get("bot_risk_enabled", True)):
+                event_pct_cap = (
+                    max(0.0, float(self.settings.get("bot_max_event_exposure_pct", 15.0)))
+                    / 100.0
+                )
+                max_pre_mult = base_bankroll * event_pct_cap
+                if max_pre_mult > 0:
+                    stake_usd = min(stake_usd, max_pre_mult)
             stake_usd = stake_usd * stake_multiplier
-
-        if not self._is_bot_trade_ladder_active():
+        else:
             hard_cap = max(
                 0.0, float(self.settings.get("bot_order_notional_cap_usd", 0.0))
             )

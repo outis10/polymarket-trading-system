@@ -5,6 +5,7 @@ import { useEventsStore } from "../stores/useEventsStore";
 import { useAccountStore } from "../stores/useAccountStore";
 import Countdown from "./Countdown";
 import PriceChart from "./PriceChart";
+import ProbabilitySparkline, { type OrderMarker } from "./ProbabilitySparkline";
 import OrderBook from "./OrderBook";
 import PositionDisplay from "./PositionDisplay";
 import TradingPanel from "./TradingPanel";
@@ -49,6 +50,7 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
     const [boughtSide, setBoughtSide] = useState<"up" | "down" | "both" | null>(
         null,
     );
+    const [orderMarkers, setOrderMarkers] = useState<OrderMarker[]>([]);
     useEffect(() => {
         apiFetch(`/api/positions/${eventId}`)
             .then((r) => (r.ok ? r.json() : null))
@@ -93,6 +95,14 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
             setBoughtSide((prev) =>
                 prev === null ? side : prev === side ? side : "both",
             );
+            setOrderMarkers((prev) => [
+                ...prev,
+                {
+                    timestamp: Date.now(),
+                    side,
+                    notional: Number(botLastOrder.notional_usd ?? 0) || undefined,
+                },
+            ]);
         }
         const t = setTimeout(() => setBotTradeResult(null), 6000);
         return () => clearTimeout(t);
@@ -517,6 +527,11 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
                     <Countdown eventEndUtc={event.event_end_utc} />
                 </div>
             </section>
+
+            <ProbabilitySparkline
+                priceHistory={event.price_history || []}
+                orders={orderMarkers}
+            />
 
             {showProbabilitiesCard && (
                 <section className="probability-strip">
