@@ -435,6 +435,13 @@ class EventManager:
             "quant_gate_strong_signal_threshold": 0.72,
             "quant_gate_blocked_hours_pst": [],  # e.g. [10, 11, 21, 22]
             "quant_gate_enabled_slots": [],  # e.g. [3,4,5,6] — only these slots trade; empty = no filter
+            # --- Probability smoothing ---
+            # Method applied to prob_up/prob_down across slots at load time.
+            # "none"     → raw values (default, current behavior)
+            # "rolling"  → rolling average across neighboring slots
+            # "isotonic" → isotonic regression (forces monotonicity: prob_up↑, prob_down↓)
+            "prob_smoothing": "none",
+            "prob_smoothing_rolling_window": 3,  # only used when prob_smoothing="rolling"
             "monitored_tickers": ["BTC", "ETH", "SOL", "XRP"],
             "bot_risk_enabled": True,
             "bot_max_buys_per_event_side": 1,
@@ -1054,11 +1061,93 @@ class EventManager:
         )
         return table, max_slot_map
 
+    def _apply_prob_smoothing(
+        self,
+        table: dict,
+        method: str,
+        window: int,
+    ) -> dict:
+        """Apply smoothing to prob_up/prob_down across slots for every
+        (event_type, ticker, day_type, time_frame, inf_range, sup_range) group.
+
+        Args:
+            table:  Raw slot ranges table from _load_pm_slot_ranges.
+            method: "rolling" | "isotonic"
+            window: Rolling window size (only used when method="rolling").
+
+        Returns:
+            The same table with prob_up/prob_down values replaced in-place.
+        """
+        import numpy as np
+
+        modified = 0
+        for _et, ticker_data in table.items():
+            for _tk, window_data in ticker_data.items():
+                for _wk, slot_data in window_data.items():
+                    # Collect all (inf_range, sup_range) pairs across slots
+                    range_pairs: set[tuple[float, float]] = set()
+                    for entries in slot_data.values():
+                        for inf, sup, _pu, _pd, _cnt in entries:
+                            range_pairs.add((inf, sup))
+
+                    for (inf_r, sup_r) in range_pairs:
+                        # Find (slot, list_index) for this range pair, sorted by slot
+                        hits: list[tuple[int, int, float, float]] = []
+                        for slot in sorted(slot_data.keys()):
+                            for i, (inf, sup, pu, pd, _cnt) in enumerate(slot_data[slot]):
+                                if inf == inf_r and sup == sup_r:
+                                    hits.append((slot, i, pu, pd))
+                                    break
+
+                        if len(hits) < 2:
+                            continue
+
+                        slot_nums = np.array([h[0] for h in hits], dtype=float)
+                        prob_ups  = np.array([h[2] for h in hits], dtype=float)
+                        prob_downs = np.array([h[3] for h in hits], dtype=float)
+
+                        if method == "rolling":
+                            import pandas as _pd_lib
+                            s_up = (
+                                _pd_lib.Series(prob_ups)
+                                .rolling(window=window, center=True, min_periods=1)
+                                .mean()
+                                .to_numpy()
+                            )
+                            s_down = (
+                                _pd_lib.Series(prob_downs)
+                                .rolling(window=window, center=True, min_periods=1)
+                                .mean()
+                                .to_numpy()
+                            )
+                        elif method == "isotonic":
+                            from sklearn.isotonic import IsotonicRegression
+                            s_up   = IsotonicRegression(increasing=True,  out_of_bounds="clip").fit_transform(slot_nums, prob_ups)
+                            s_down = IsotonicRegression(increasing=False, out_of_bounds="clip").fit_transform(slot_nums, prob_downs)
+                        else:
+                            continue
+
+                        # Write back smoothed values (tuples are immutable; replace list entry)
+                        for (slot, idx, _pu, _pd), new_up, new_down in zip(hits, s_up, s_down):
+                            old = slot_data[slot][idx]
+                            slot_data[slot][idx] = (old[0], old[1], float(new_up), float(new_down), old[4])
+                            modified += 1
+
+        logger.info(
+            "prob_smoothing=%s window=%d — %d entries updated",
+            method, window, modified,
+        )
+        return table
+
     def reload_quant_ranges(self) -> dict:
         """Hot-reload both PM range tables from disk. Safe to call while running."""
         try:
             new_ranges = self._load_pm_ranges()
             new_slots, new_max_slot = self._load_pm_slot_ranges()
+            _smoothing = str(self.settings.get("prob_smoothing", "none")).lower()
+            if _smoothing in ("rolling", "isotonic"):
+                _window = int(self.settings.get("prob_smoothing_rolling_window", 3))
+                new_slots = self._apply_prob_smoothing(new_slots, _smoothing, _window)
             new_windows, new_tz = self._load_time_windows()
             self._pm_ranges = new_ranges
             self._pm_slot_ranges = new_slots
@@ -3115,6 +3204,12 @@ class EventManager:
         self._load_runtime_settings()
         self._pm_ranges = self._load_pm_ranges()
         self._pm_slot_ranges, self._pm_slot_max_slot = self._load_pm_slot_ranges()
+        _smoothing = str(self.settings.get("prob_smoothing", "none")).lower()
+        if _smoothing in ("rolling", "isotonic"):
+            _window = int(self.settings.get("prob_smoothing_rolling_window", 3))
+            self._pm_slot_ranges = self._apply_prob_smoothing(
+                self._pm_slot_ranges, _smoothing, _window
+            )
         self._time_windows, self._time_windows_tz = self._load_time_windows()
         self._running = True
 
