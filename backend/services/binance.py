@@ -19,6 +19,7 @@ BINANCE_WS = "wss://stream.binance.com:9443/ws"
 _price_cache: TTLCache = TTLCache(maxsize=64, ttl=0.5)
 _candle_open_cache: TTLCache = TTLCache(maxsize=64, ttl=60)
 _klines_cache: TTLCache = TTLCache(maxsize=64, ttl=30)
+_volume_cache: TTLCache = TTLCache(maxsize=64, ttl=30)
 
 
 # --- REST helpers (sync, called during init) ---
@@ -183,6 +184,35 @@ def fetch_binance_klines(symbol: str, start_time_ms: int) -> list[dict]:
         return history
     except Exception:
         return []
+
+
+def fetch_binance_volume_1m(symbol: str) -> Optional[float]:
+    """Fetch USDT volume of the last completed 1-minute candle for a symbol.
+
+    Returns quoteAssetVolume (k[7]) of the most recently closed 1m candle.
+    Returns None on error or when data is unavailable.
+    """
+    import requests
+
+    cache_key = symbol
+    if cache_key in _volume_cache:
+        return _volume_cache[cache_key]
+    try:
+        resp = requests.get(
+            f"{BINANCE_API}/klines",
+            params={"symbol": symbol, "interval": "1m", "limit": 2},
+            timeout=5,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        # data[0] = last completed candle, data[1] = current (incomplete) candle
+        if isinstance(data, list) and len(data) >= 1:
+            vol = float(data[0][7])  # quoteAssetVolume in USDT
+            _volume_cache[cache_key] = vol
+            return vol
+        return None
+    except Exception:
+        return None
 
 
 # --- WebSocket stream ---
