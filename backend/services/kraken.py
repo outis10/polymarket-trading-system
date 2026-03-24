@@ -30,6 +30,7 @@ KRAKEN_WS_V2 = "wss://ws.kraken.com/v2"
 _price_cache: TTLCache = TTLCache(maxsize=64, ttl=0.5)
 _candle_open_cache: TTLCache = TTLCache(maxsize=64, ttl=60)
 _klines_cache: TTLCache = TTLCache(maxsize=64, ttl=30)
+_volume_cache: TTLCache = TTLCache(maxsize=64, ttl=30)
 
 # ---------------------------------------------------------------------------
 # Symbol conversion helpers
@@ -303,6 +304,44 @@ def fetch_kraken_klines(symbol: str, start_time_ms: int) -> list[dict]:
         return history
     except Exception:
         return []
+
+
+def fetch_kraken_volume_1m(symbol: str) -> Optional[float]:
+    """Fetch volume of the last completed 1-minute candle for a symbol.
+
+    Kraken OHLC rows: [time, open, high, low, close, vwap, volume, count]
+    Returns volume (index 6) of the most recently closed 1m candle.
+    Returns None on error or when data is unavailable.
+    """
+    import requests
+
+    cache_key = symbol
+    if cache_key in _volume_cache:
+        return _volume_cache[cache_key]
+    kraken_pair = _BINANCE_TO_KRAKEN.get(symbol.upper())
+    if not kraken_pair:
+        return None
+    try:
+        resp = requests.get(
+            f"{KRAKEN_REST_API}/OHLC",
+            params={"pair": kraken_pair, "interval": 1},
+            timeout=5,
+        )
+        resp.raise_for_status()
+        result = resp.json().get("result", {})
+        rows = None
+        for key, val in result.items():
+            if key != "last" and isinstance(val, list):
+                rows = val
+                break
+        if not rows or len(rows) < 2:
+            return None
+        # rows[-2] = last completed candle (rows[-1] is current/incomplete)
+        vol = float(rows[-2][6])
+        _volume_cache[cache_key] = vol
+        return vol
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------

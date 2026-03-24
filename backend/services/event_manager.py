@@ -34,6 +34,7 @@ from .price_provider import (
     get_price_fetcher,
     get_price_streamer,
     get_single_price_fetcher,
+    get_volume_fetcher,
 )
 
 logger = logging.getLogger(__name__)
@@ -53,12 +54,17 @@ _BOT_ORDERS_FIELDNAMES = [
     "range",
     "side",
     "event_end_utc_at_send",
+    "hour_utc",
+    "day_of_week",
+    "minutes_to_event_end",
     "token_id",
     "shares",
     "price",
     "notional_usd",
     "order_id",
     "quant_prob",
+    "sample_size_at_send",
+    "polymarket_volume_24h",
     "edge_pct",
     "price_source_at_send",
     "price_to_beat_at_send",
@@ -69,6 +75,9 @@ _BOT_ORDERS_FIELDNAMES = [
     "mid_at_send",
     "spread_at_send",
     "spread_pct_at_send",
+    "spread_pct_at_decision",
+    "bid_ask_imbalance",
+    "vol_1m_usdt_at_send",
     "fill_price_real",
     "filled_at_utc",
     "fill_latency_ms",
@@ -1949,6 +1958,16 @@ class EventManager:
         ask_price, ask_is_proxy, price_source_at_send = self._event_best_ask_price(
             event_dict, side_norm
         )
+        _bid_at_decision = self._event_best_bid_price(event_dict, side_norm)
+        _spread_pct_at_decision: float | None = None
+        if (
+            isinstance(_bid_at_decision, float)
+            and _bid_at_decision > 0
+            and ask_price > 0
+        ):
+            _mid = (_bid_at_decision + ask_price) / 2.0
+            if _mid > 0:
+                _spread_pct_at_decision = (ask_price - _bid_at_decision) / _mid
         result = {
             "eligible": False,
             "reason": "unknown",
@@ -1962,6 +1981,7 @@ class EventManager:
             "shares": 0.0,
             "notional_usd": 0.0,
             "kelly_pct": None,
+            "spread_pct_at_decision": _spread_pct_at_decision,
         }
 
         # Time-window filter: block trades outside configured trading windows
@@ -4186,12 +4206,17 @@ class EventManager:
                 "range": "",
                 "side": side,
                 "event_end_utc_at_send": str(event_dict.get("event_end_utc", "") or ""),
+                "hour_utc": now_utc.hour,
+                "day_of_week": now_utc.weekday(),
+                "minutes_to_event_end": "",
                 "token_id": token_id,
                 "shares": round(shares, 6),
                 "price": round(ask_price, 6),
                 "notional_usd": round(notional_usd, 4),
                 "order_id": "",
                 "quant_prob": "",
+                "sample_size_at_send": "",
+                "polymarket_volume_24h": "",
                 "edge_pct": "",
                 "price_source_at_send": "hedge",
                 "price_to_beat_at_send": "",
@@ -4202,6 +4227,9 @@ class EventManager:
                 "mid_at_send": "",
                 "spread_at_send": "",
                 "spread_pct_at_send": "",
+                "spread_pct_at_decision": "",
+                "bid_ask_imbalance": "",
+                "vol_1m_usdt_at_send": "",
                 "fill_price_real": "",
                 "slippage_pct": "",
                 "filled_notional_usd_real": "",
@@ -4524,6 +4552,7 @@ class EventManager:
                 else None
             )
             ladder_entry_num = int(evaluation.get("ladder_entry_num", 1) or 1)
+            spread_pct_at_decision = _as_float(evaluation.get("spread_pct_at_decision"))
             price_source_at_send = str(
                 evaluation.get("price_source_at_send") or "proxy_mid"
             )
@@ -4550,6 +4579,48 @@ class EventManager:
                 spread_at_send = max(0.0, best_ask_at_send - best_bid_at_send)
                 if mid_at_send > 0:
                     spread_pct_at_send = spread_at_send / mid_at_send
+
+            vol_1m_usdt_at_send: float | None = None  # populated post-fill (off critical path)
+
+            # --- Context fields (zero cost, derived from available data) ---
+            hour_utc: int = now_utc.hour
+            day_of_week: int = now_utc.weekday()  # 0=Mon, 6=Sun
+
+            minutes_to_event_end: float | None = None
+            _event_end_raw = event_dict.get("event_end_utc")
+            if _event_end_raw:
+                try:
+                    _event_end_dt = datetime.fromisoformat(
+                        str(_event_end_raw).replace("Z", "+00:00")
+                    )
+                    minutes_to_event_end = round(
+                        (_event_end_dt - now_utc).total_seconds() / 60.0, 2
+                    )
+                except Exception:
+                    pass
+
+            bid_ask_imbalance: float | None = None
+            _ob_key_side = "order_book_yes" if side == "up" else "order_book_no"
+            _ob = event_dict.get(_ob_key_side) or {}
+            _ob_bids = _ob.get("bids") or []
+            _ob_asks = _ob.get("asks") or []
+            if _ob_bids and _ob_asks:
+                try:
+                    _bid_depth = float(_ob_bids[-1]["total"])
+                    _ask_depth = float(_ob_asks[-1]["total"])
+                    _total_depth = _bid_depth + _ask_depth
+                    if _total_depth > 0:
+                        bid_ask_imbalance = round(
+                            (_bid_depth - _ask_depth) / _total_depth, 6
+                        )
+                except Exception:
+                    pass
+
+            sample_size_at_send: int | None = event_dict.get("quant_sample_size")
+            if not isinstance(sample_size_at_send, int):
+                sample_size_at_send = None
+
+            polymarket_volume_24h: float | None = _as_float(event_dict.get("volume_24h"))
 
             # Volatility monitor: record large signals to detect choppy markets
             if isinstance(diff_vs_ptb_at_send, float):
@@ -4708,12 +4779,23 @@ class EventManager:
                 "range": range_at_send or "",
                 "side": side,
                 "event_end_utc_at_send": str(event_dict.get("event_end_utc", "") or ""),
+                "hour_utc": hour_utc,
+                "day_of_week": day_of_week,
+                "minutes_to_event_end": minutes_to_event_end
+                if minutes_to_event_end is not None
+                else "",
                 "token_id": token_id,
                 "shares": round(shares, 6),
                 "price": round(ask_price, 6),
                 "notional_usd": round(notional_usd, 4),
                 "order_id": "",
                 "quant_prob": round(quant_prob, 6),
+                "sample_size_at_send": sample_size_at_send
+                if sample_size_at_send is not None
+                else "",
+                "polymarket_volume_24h": round(polymarket_volume_24h, 2)
+                if isinstance(polymarket_volume_24h, float)
+                else "",
                 "edge_pct": round((quant_prob - ask_price) * 100, 4),
                 "price_source_at_send": price_source_at_send,
                 "price_to_beat_at_send": round(price_to_beat_at_send, 6)
@@ -4739,6 +4821,15 @@ class EventManager:
                 else "",
                 "spread_pct_at_send": round(spread_pct_at_send, 6)
                 if isinstance(spread_pct_at_send, float)
+                else "",
+                "spread_pct_at_decision": round(spread_pct_at_decision, 6)
+                if isinstance(spread_pct_at_decision, float)
+                else "",
+                "bid_ask_imbalance": bid_ask_imbalance
+                if bid_ask_imbalance is not None
+                else "",
+                "vol_1m_usdt_at_send": round(vol_1m_usdt_at_send, 2)
+                if isinstance(vol_1m_usdt_at_send, float)
                 else "",
                 "fill_price_real": "",
                 "slippage_pct": "",
@@ -4915,6 +5006,14 @@ class EventManager:
                         and shares > 0
                         else ""
                     )
+                    # Volume fetch is off the critical path — runs after fill confirmation
+                    try:
+                        _price_source = self.settings.get("price_source", "binance")
+                        _vol_symbol = self._extract_event_ticker(event_id, event_dict).upper() + "USDT"
+                        _fetch_vol = get_volume_fetcher(_price_source)
+                        vol_1m_usdt_at_send = await asyncio.to_thread(_fetch_vol, _vol_symbol)
+                    except Exception:
+                        pass
                     _update_bot_order_log_row(
                         _prelog_ts,
                         event_id,
@@ -4947,6 +5046,9 @@ class EventManager:
                             "implementation_shortfall_bps": _is_bps,
                             "implementation_shortfall_usd": _is_usd,
                             "fill_ratio": _fill_ratio,
+                            "vol_1m_usdt_at_send": round(vol_1m_usdt_at_send, 2)
+                            if isinstance(vol_1m_usdt_at_send, float)
+                            else "",
                             "status": "placed",
                         },
                     )

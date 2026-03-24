@@ -96,6 +96,26 @@ def get_single_price_fetcher(source: str = DEFAULT_SOURCE) -> Callable[[str], Op
 # Factory: WebSocket streamer
 # ---------------------------------------------------------------------------
 
+def get_volume_fetcher(source: str = DEFAULT_SOURCE) -> Callable[[str], Optional[float]]:
+    """Return a callable fetch_volume_1m(symbol: str) -> Optional[float].
+
+    Returns USDT volume of the last completed 1-minute candle for a symbol.
+    """
+    source = (source or DEFAULT_SOURCE).lower().strip()
+
+    if source == "binance":
+        from .binance import fetch_binance_volume_1m
+        return fetch_binance_volume_1m
+
+    if source == "kraken":
+        from .kraken import fetch_kraken_volume_1m  # type: ignore[import]
+        return fetch_kraken_volume_1m
+
+    logger.warning("Unknown price_source %r for volume — falling back to binance", source)
+    from .binance import fetch_binance_volume_1m
+    return fetch_binance_volume_1m
+
+
 def get_price_streamer(
     source: str,
     symbol: str,
