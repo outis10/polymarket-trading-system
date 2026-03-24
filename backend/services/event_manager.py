@@ -100,6 +100,7 @@ _BOT_ORDERS_FIELDNAMES = [
     "adverse_selection_1s",  # Fase 7
     "adverse_selection_3s",  # Fase 7
     "adverse_selection_5s",  # Fase 7
+    "fak_attempts",
     "kelly_pct",
     "bankroll_usd",
     "percentile_at_signal",
@@ -4807,6 +4808,7 @@ class EventManager:
             )
 
             result = None
+            _fak_attempts_used = 0
             _send_at_utc = datetime.now(tz=timezone.utc)
             for _attempt in range(_max_attempts):
                 _attempt_tolerance = _fak_tolerance + (_attempt * _retry_extra)
@@ -4828,8 +4830,10 @@ class EventManager:
                         notional_usd,
                         order_price,
                     )
+                    _fak_attempts_used = _attempt + 1
                     break  # success — exit retry loop
                 except Exception as _attempt_exc:
+                    _fak_attempts_used = _attempt + 1
                     if _attempt < _max_attempts - 1 and any(
                         s in str(_attempt_exc).lower() for s in _no_liq_signals
                     ):
@@ -4938,6 +4942,7 @@ class EventManager:
                             "edge_at_fill_pct": round(edge_at_fill_pct, 4)
                             if isinstance(edge_at_fill_pct, float)
                             else "",
+                            "fak_attempts": _fak_attempts_used,
                             "realized_slippage_bps": _realized_slippage_bps,
                             "implementation_shortfall_bps": _is_bps,
                             "implementation_shortfall_usd": _is_usd,
@@ -5104,6 +5109,7 @@ class EventManager:
                     event_id,
                     side,
                     {
+                        "fak_attempts": _fak_attempts_used,
                         "filled_at_utc": _filled_at_utc.isoformat(),
                         "fill_latency_ms": _fill_latency_ms,
                         "status": status,
