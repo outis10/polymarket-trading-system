@@ -108,6 +108,24 @@ body {
     letter-spacing: 0.2px;
 }
 
+.matic-chip {
+    background: rgba(130, 71, 229, 0.12);
+    border: 1px solid rgba(130, 71, 229, 0.4);
+    color: #a78bfa;
+    border-radius: 999px;
+    padding: 5px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    margin-left: 6px;
+    letter-spacing: 0.2px;
+}
+
+.matic-chip--low {
+    background: rgba(239, 68, 68, 0.12);
+    border: 1px solid rgba(239, 68, 68, 0.4);
+    color: #f87171;
+}
+
 .net-pnl-chip {
     border-radius: 999px;
     padding: 5px 10px;

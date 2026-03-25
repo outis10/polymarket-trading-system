@@ -121,6 +121,11 @@ _BOT_ORDERS_FIELDNAMES = [
     "resolution_status",
     "status",
     "order_type",  # "normal" | "hedge"
+    # --- take-profit exit ---
+    "take_profit_exit_at_utc",
+    "take_profit_exit_price",
+    "take_profit_bid_at_trigger",
+    "take_profit_pnl_usd",
 ]
 _PAPER_TRADES_LOG_PATH = os.path.normpath(
     os.path.join(_BOT_ORDERS_LOG_DIR, "paper_trades.csv")
@@ -512,6 +517,10 @@ class EventManager:
             "auto_redeem_enabled": False,
             "auto_redeem_threshold_usd": 20.0,
             "auto_redeem_bankroll_pct": 0.03,
+            # --- Take-profit ---
+            "take_profit_enabled": False,
+            "take_profit_trigger_price": 0.95,   # sell when best_bid >= this
+            "take_profit_min_price": 0.90,        # floor: never sell below this
             "fak_price_tolerance": 0.02,  # extra cents added to ask to survive book movement during latency
             "bot_fak_gap_tolerance": 0.05,  # added to ask_price on single placement attempt
             "bot_min_diff_abs": {},  # per-asset absolute diff filter e.g. {"BTC": 20}
@@ -627,6 +636,8 @@ class EventManager:
         self._event_last_slot: dict[str, int] = {}
         self._vol_finalized_events: set = set()
         self._vol_history: dict[tuple, Any] = {}
+        # Take-profit: positions already triggered to avoid double-firing
+        self._take_profit_triggered_positions: set[tuple[str, str]] = set()
         _project_root = os.path.normpath(
             os.path.join(os.path.dirname(__file__), "..", "..")
         )
@@ -1476,18 +1487,9 @@ class EventManager:
                 current_slot = max(
                     1, min(max_slot, int(elapsed_seconds // slot_seconds) + 1)
                 )
-                # Capture price at each slot transition for volatility tracking
-                _v_last = event_dict.get("_vol_last_slot", 0)
-                if current_slot > _v_last and cp > 0:
-                    if "_vol_price_points" not in event_dict:
-                        event_dict["_vol_price_points"] = []
-                    event_dict["_vol_price_points"].append(float(cp))
-                    event_dict["_vol_last_slot"] = current_slot
-                    event_dict["_vol_ticker"] = ticker
-                    event_dict["_vol_event_minutes"] = timeframe_minutes
                 # Compute current partial vol metrics for dashboard display
                 _vpts = event_dict.get("_vol_price_points", [])
-                if len(_vpts) >= 3:
+                if len(_vpts) >= 10:
                     _vm = self._compute_vol_metrics(_vpts)
                     if _vm is not None:
                         event_dict["vol_rv_current"] = round(_vm["rv"], 8)
@@ -2920,7 +2922,7 @@ class EventManager:
             range_pct = (price_high - price_low) / event_open
             event_return = math.log(event_close / event_open)
             abs_move_sum = sum(abs(r) for r in log_returns)
-            noise_ratio = abs_move_sum / (abs(event_return) + 1e-8)
+            noise_ratio = min(abs_move_sum / (abs(event_return) + 1e-8), 20.0)
             return {
                 "rv": rv,
                 "std": std,
@@ -2988,29 +2990,131 @@ class EventManager:
             })
 
     def _check_vol_gate(self, event_id: str, event_dict: dict) -> bool:
-        """Return True (blocked) if current event RV is below the rolling average threshold."""
+        """Return True (blocked) if the previous completed event's RV is below the rolling average threshold.
+        Decision is based on the last completed event — no intra-event partial RV checks."""
         ticker = event_dict.get("_vol_ticker") or self._extract_event_ticker(event_id, event_dict)
         event_minutes = int(event_dict.get("_vol_event_minutes") or event_dict.get("timeframe_minutes") or 5)
-        prices = event_dict.get("_vol_price_points", [])
-        if len(prices) < 3:
-            return False  # not enough data — don't block
-        metrics = self._compute_vol_metrics(prices)
-        if metrics is None:
-            return False
-        rv_now = metrics["rv"]
         history = list(self._vol_history.get((ticker, event_minutes), []))
         if len(history) < 5:
-            return False  # need at least 5 completed events to compare
+            return False  # not enough history — don't block
         avg_rv = sum(history) / len(history)
+        prev_rv = history[-1]  # last completed event's RV
         threshold = avg_rv * float(self.settings.get("vol_gate_min_pct_of_avg", 0.8))
-        if rv_now < threshold:
+        if prev_rv < threshold:
             logger.debug(
-                "Vol gate blocked %s [%s %dm]: rv=%.6f < threshold=%.6f (avg_rv=%.6f, noise=%.2f, n=%d)",
-                event_id, ticker, event_minutes, rv_now, threshold, avg_rv,
-                metrics["noise_ratio"], len(history),
+                "Vol gate blocked %s [%s %dm]: prev_rv=%.6f < threshold=%.6f (avg_rv=%.6f, n=%d)",
+                event_id, ticker, event_minutes, prev_rv, threshold, avg_rv, len(history),
             )
             return True
         return False
+
+    async def _check_take_profit(self, event_id: str, event_dict: dict) -> None:
+        """Fire a take-profit SELL if best_bid >= take_profit_trigger_price for any open position."""
+        if not self.settings.get("take_profit_enabled", False):
+            return
+        positions = self._position_tracker.get(event_id)
+        if not positions:
+            return
+        take_profit_trigger = float(self.settings.get("take_profit_trigger_price", 0.95))
+        take_profit_min = float(self.settings.get("take_profit_min_price", 0.90))
+        gap = float(self.settings.get("bot_fak_gap_tolerance", 0.05))
+
+        for side, pos in list(positions.items()):
+            if not pos or float(pos.get("shares", 0)) <= 0:
+                continue
+            key = (event_id, side)
+            if key in self._take_profit_triggered_positions:
+                continue
+            ob_key = "order_book_yes" if side == "up" else "order_book_no"
+            ob = event_dict.get(ob_key) or {}
+            bids = ob.get("bids") or []
+            if not bids:
+                continue
+            best_bid = float(bids[0]["price"]) if isinstance(bids[0], dict) else float(bids[0])
+            if best_bid < take_profit_trigger:
+                continue
+            sell_price = max(round(best_bid - gap, 4), take_profit_min)
+            self._take_profit_triggered_positions.add(key)
+            logger.info(
+                "TP trigger: %s %s bid=%.4f sell_price=%.4f shares=%.4f",
+                event_id, side, best_bid, sell_price, pos["shares"],
+            )
+            asyncio.create_task(
+                self._execute_take_profit(
+                    event_id=event_id,
+                    side=side,
+                    token_id=pos["token_id"],
+                    shares=float(pos["shares"]),
+                    avg_entry_price=float(pos.get("avg_price", 0)),
+                    placed_at_utc=pos.get("placed_at_utc", ""),
+                    sell_price=sell_price,
+                    best_bid=best_bid,
+                )
+            )
+
+    async def _execute_take_profit(
+        self,
+        event_id: str,
+        side: str,
+        token_id: str,
+        shares: float,
+        avg_entry_price: float,
+        placed_at_utc: str,
+        sell_price: float,
+        best_bid: float,
+    ) -> None:
+        """Place a SELL limit order for take-profit and record the exit in bot_orders CSV."""
+        import math
+        shares = math.floor(shares * 100) / 100
+        if shares <= 0:
+            logger.warning("TP execute: shares rounded to zero for %s %s — skipping", event_id, side)
+            self._take_profit_triggered_positions.discard((event_id, side))
+            return
+        from ..routers.trading import get_client
+        client = get_client()
+        if not client:
+            logger.warning("TP execute: client unavailable for %s %s", event_id, side)
+            self._take_profit_triggered_positions.discard((event_id, side))
+            return
+        try:
+            from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
+            cond_params = BalanceAllowanceParams(
+                asset_type=AssetType.CONDITIONAL,
+                token_id=token_id,
+                signature_type=client.config.signature_type,
+            )
+            client.client.update_balance_allowance(cond_params)
+        except Exception as exc:
+            logger.warning("TP execute: could not update conditional allowance: %s", exc)
+        try:
+            result = await asyncio.to_thread(
+                client.place_order, token_id, "SELL", sell_price, shares
+            )
+            if result:
+                self.record_position_sell(event_id=event_id, outcome=side, shares_sold=shares)
+                exit_at = datetime.now(tz=timezone.utc).isoformat()
+                pnl = round(shares * (sell_price - avg_entry_price), 4)
+                if placed_at_utc:
+                    _update_bot_order_log_row(
+                        placed_at_utc=placed_at_utc,
+                        event_id=event_id,
+                        side=side,
+                        updates={
+                            "take_profit_exit_at_utc": exit_at,
+                            "take_profit_exit_price": f"{sell_price:.4f}",
+                            "take_profit_bid_at_trigger": f"{best_bid:.4f}",
+                            "take_profit_pnl_usd": f"{pnl:.4f}",
+                        },
+                    )
+                logger.info(
+                    "TP executed: %s %s %.4f shares @ %.4f (bid=%.4f pnl=%.4f)",
+                    event_id, side, shares, sell_price, best_bid, pnl,
+                )
+            else:
+                logger.warning("TP execute: no result for %s %s — will not retry", event_id, side)
+        except Exception as exc:
+            logger.error("TP execute error %s %s: %s", event_id, side, exc)
+            self._take_profit_triggered_positions.discard((event_id, side))
 
     def validate_order_risk_guards(
         self,
@@ -4265,6 +4369,18 @@ class EventManager:
             event_dict["current_price"] = price
             event_dict["price_change"] = ((price - old) / old * 100) if old > 0 else 0
 
+            # Capture every tick for volatility — only when price actually changes
+            if price > 0 and price != old:
+                if "_vol_price_points" not in event_dict:
+                    event_dict["_vol_price_points"] = []
+                    event_dict["_vol_ticker"] = normalize_symbol(
+                        str(ecfg.get("chainlink_symbol") or ecfg.get("binance_symbol", ""))
+                    )
+                    event_dict["_vol_event_minutes"] = int(
+                        event_dict.get("timeframe_minutes") or 5
+                    )
+                event_dict["_vol_price_points"].append(float(price))
+
             ptb = event_dict.get("price_to_beat", 0)
             if ptb > 0:
                 swing = (price - ptb) / ptb * 20
@@ -4281,6 +4397,7 @@ class EventManager:
                 event_id, event_dict, datetime.now(tz=timezone.utc)
             )
             asyncio.create_task(self._bot_check_hedge(event_id, event_dict))
+            asyncio.create_task(self._check_take_profit(event_id, event_dict))
 
             # Throttle only the broadcast to frontend (max 1/s per event)
             now_ms = int(self._last_price_tick_at.timestamp() * 1000)

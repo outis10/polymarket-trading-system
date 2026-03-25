@@ -30,6 +30,7 @@ export default function Header({ route, onNavigate }: HeaderProps) {
     const [claimableUsd, setClaimableUsd] = useState<number | null>(null);
     const [positionsValueUsd, setPositionsValueUsd] = useState<number | null>(null);
     const [netPnlUsd, setNetPnlUsd] = useState<number | null>(null);
+    const [maticBalance, setMaticBalance] = useState<number | null>(null);
 
     const loadEquity = useCallback(async () => {
         try {
@@ -46,6 +47,14 @@ export default function Header({ route, onNavigate }: HeaderProps) {
             setNetPnlUsd(netPnl);
         } catch {
             setBankrollReal(null);
+        }
+        try {
+            const maticRes = await apiFetch("/api/balance/matic");
+            const maticData = await maticRes.json();
+            const m = toFiniteNumber(maticData?.matic);
+            setMaticBalance(m);
+        } catch {
+            setMaticBalance(null);
         }
     }, [setBankrollReal]);
 
@@ -131,6 +140,14 @@ export default function Header({ route, onNavigate }: HeaderProps) {
                     </span>
                 )}
                 <span className="bankroll-chip">{balanceText}</span>
+                {maticBalance !== null && (
+                    <span
+                        className={`matic-chip${maticBalance < 0.1 ? " matic-chip--low" : ""}`}
+                        title="POL balance on Polygon — needed for gas on SELL orders"
+                    >
+                        {maticBalance.toFixed(3)} POL
+                    </span>
+                )}
                 {positionsValueUsd !== null && (
                     <span
                         className="positions-value-chip"

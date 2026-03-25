@@ -536,6 +536,29 @@ async def get_trades():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/balance/matic")
+async def get_matic_balance():
+    """Get native MATIC balance of the wallet on Polygon."""
+    if event_manager.mode == "demo":
+        return {"matic": None, "message": "Demo mode"}
+    client = get_client()
+    if not client:
+        return {"matic": None, "message": "Client unavailable"}
+    try:
+        from web3 import Web3
+        wallet = getattr(client.config, "funder", None)
+        if not wallet:
+            return {"matic": None, "message": "Wallet address not configured"}
+        rpc_url = _DEFAULT_RPC_URL.get(137, "https://rpc-mainnet.matic.quiknode.pro")
+        w3 = Web3(Web3.HTTPProvider(rpc_url))
+        balance_wei = await asyncio.to_thread(w3.eth.get_balance, Web3.to_checksum_address(wallet))
+        matic = round(balance_wei / 1e18, 4)
+        return {"matic": matic}
+    except Exception as exc:
+        logger.warning("MATIC balance error: %s", exc)
+        return {"matic": None, "error": str(exc)}
+
+
 @router.get("/balance")
 async def get_balance():
     """Get account balance."""
