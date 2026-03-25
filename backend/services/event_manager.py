@@ -513,9 +513,7 @@ class EventManager:
             "auto_redeem_threshold_usd": 20.0,
             "auto_redeem_bankroll_pct": 0.03,
             "fak_price_tolerance": 0.02,  # extra cents added to ask to survive book movement during latency
-            "bot_fak_retry_on_no_fill": True,
-            "bot_fak_retry_extra_tolerance": 0.01,  # price increment per retry attempt
-            "bot_fak_max_attempts": 3,  # total attempts on no_fill (1=no retry)
+            "bot_fak_gap_tolerance": 0.05,  # added to ask_price on single placement attempt
             "bot_min_diff_abs": {},  # per-asset absolute diff filter e.g. {"BTC": 20}
             "bot_strategy": "gate_transition",  # "gate_transition" | "best_side_reentry"
             "bot_reentry_min_edge_improvement_pct": 2.0,  # min edge gain (pp) required for re-entry
@@ -4569,48 +4567,21 @@ class EventManager:
             _clob_confirmed = False
             _append_bot_order_log(_pre_log_row)
 
-            _fak_tolerance = float(self.settings.get("fak_price_tolerance", 0.03))
-            _no_liq_signals = ("no orders found to match", "no match", "no orderbook")
-            _retry_extra = float(self.settings.get("bot_fak_retry_extra_tolerance", 0.01))
-            _retry_enabled = bool(self.settings.get("bot_fak_retry_on_no_fill", True))
-            _max_attempts = (
-                max(1, int(self.settings.get("bot_fak_max_attempts", 3)))
-                if _retry_enabled
-                else 1
-            )
+            _gap_tolerance = float(self.settings.get("bot_fak_gap_tolerance", 0.05))
+            order_price = min(round(ask_price + _gap_tolerance, 4), 0.99)
 
             result = None
             _send_at_utc = datetime.now(tz=timezone.utc)
-            for _attempt in range(_max_attempts):
-                _attempt_tolerance = _fak_tolerance + (_attempt * _retry_extra)
-                order_price = min(round(ask_price + _attempt_tolerance, 4), 0.99)
-                if _attempt > 0:
-                    logger.info(
-                        "Hedge: no_fill retry %d for %s %s price=%.4f",
-                        _attempt + 1,
-                        event_id,
-                        side,
-                        order_price,
-                    )
-                    _send_at_utc = datetime.now(tz=timezone.utc)
-                try:
-                    result = await asyncio.to_thread(
-                        client.place_fok_order,
-                        token_id,
-                        "BUY",
-                        notional_usd,
-                        order_price,
-                    )
-                    break
-                except Exception as _attempt_exc:
-                    if _attempt < _max_attempts - 1 and any(
-                        s in str(_attempt_exc).lower() for s in _no_liq_signals
-                    ):
-                        _retry_delay = float(self.settings.get("bot_fak_retry_delay_secs", 1.0))
-                        if _retry_delay > 0:
-                            await asyncio.sleep(_retry_delay)
-                        continue
-                    raise
+            try:
+                result = await asyncio.to_thread(
+                    client.place_fok_order,
+                    token_id,
+                    "BUY",
+                    notional_usd,
+                    order_price,
+                )
+            except Exception:
+                raise
 
             _filled_at_utc = datetime.now(tz=timezone.utc)
             _fill_latency_ms = round(
@@ -5195,57 +5166,24 @@ class EventManager:
             # Record fired edge for best_side_reentry re-entry throttle
             self._bot_last_fired_edge[key] = (quant_prob - ask_price) * 100.0
 
-            # Apply price tolerance to survive order book movement during network latency.
+            # Apply gap tolerance to survive order book movement during network latency.
             # ask_price is used for edge/slippage calculations; order_price is what hits the CLOB.
-            _fak_tolerance = float(self.settings.get("fak_price_tolerance", 0.03))
-            _no_liq_signals = ("no orders found to match", "no match", "no orderbook")
-            _retry_extra = float(
-                self.settings.get("bot_fak_retry_extra_tolerance", 0.01)
-            )
-            _retry_enabled = bool(self.settings.get("bot_fak_retry_on_no_fill", True))
-            _max_attempts = (
-                max(1, int(self.settings.get("bot_fak_max_attempts", 3)))
-                if _retry_enabled
-                else 1
-            )
+            _gap_tolerance = float(self.settings.get("bot_fak_gap_tolerance", 0.05))
+            order_price = min(round(ask_price + _gap_tolerance, 4), 0.99)
 
             result = None
-            _fak_attempts_used = 0
+            _fak_attempts_used = 1
             _send_at_utc = datetime.now(tz=timezone.utc)
-            for _attempt in range(_max_attempts):
-                _attempt_tolerance = _fak_tolerance + (_attempt * _retry_extra)
-                order_price = min(round(ask_price + _attempt_tolerance, 4), 0.99)
-                if _attempt > 0:
-                    logger.info(
-                        "Bot auto-order: no_fill retry %d for %s %s price=%.4f",
-                        _attempt + 1,
-                        event_id,
-                        side,
-                        order_price,
-                    )
-                    _send_at_utc = datetime.now(tz=timezone.utc)
-                try:
-                    result = await asyncio.to_thread(
-                        client.place_fok_order,
-                        token_id,
-                        "BUY",
-                        notional_usd,
-                        order_price,
-                    )
-                    _fak_attempts_used = _attempt + 1
-                    break  # success — exit retry loop
-                except Exception as _attempt_exc:
-                    _fak_attempts_used = _attempt + 1
-                    if _attempt < _max_attempts - 1 and any(
-                        s in str(_attempt_exc).lower() for s in _no_liq_signals
-                    ):
-                        _retry_delay = float(
-                            self.settings.get("bot_fak_retry_delay_secs", 1.0)
-                        )
-                        if _retry_delay > 0:
-                            await asyncio.sleep(_retry_delay)
-                        continue  # try next attempt with higher tolerance
-                    raise  # re-raise on last attempt or non-liquidity error
+            try:
+                result = await asyncio.to_thread(
+                    client.place_fok_order,
+                    token_id,
+                    "BUY",
+                    notional_usd,
+                    order_price,
+                )
+            except Exception:
+                raise
 
             _filled_at_utc = datetime.now(tz=timezone.utc)
             _fill_latency_ms = round(
