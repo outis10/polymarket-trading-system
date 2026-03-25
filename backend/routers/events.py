@@ -253,7 +253,8 @@ async def refresh_live_events(force: bool = True):
 
 @router.post("/quant/reload")
 async def reload_quant_ranges():
-    """Hot-reload the merged PM 5m slot ranges CSV without restarting the backend."""
+    """Hot-reload the merged PM 5m slot ranges CSV and runtime settings without restarting the backend."""
+    event_manager._load_runtime_settings()
     result = event_manager.reload_quant_ranges()
     await manager.broadcast(
         {
