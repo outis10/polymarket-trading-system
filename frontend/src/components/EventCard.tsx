@@ -684,6 +684,51 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
                 </section>
             )}
 
+            {event.vol_rv_pct_of_avg != null && (
+                <section className="quant-edge-strip">
+                    <div className="probability-title-row">
+                        <span>Volatility</span>
+                        <span className="quant-edge-sample">
+                            {event.vol_noise_ratio != null
+                                ? `noise ${event.vol_noise_ratio.toFixed(2)}`
+                                : ""}
+                        </span>
+                    </div>
+                    <div className="probability-bar">
+                        <div
+                            className={
+                                event.vol_rv_pct_of_avg >= 100
+                                    ? "probability-fill-up"
+                                    : event.vol_rv_pct_of_avg >= 80
+                                    ? "probability-fill-neutral"
+                                    : "probability-fill-down"
+                            }
+                            style={{
+                                width: `${Math.min(100, event.vol_rv_pct_of_avg)}%`,
+                            }}
+                        />
+                    </div>
+                    <div className="probability-values">
+                        <span
+                            className={
+                                event.vol_rv_pct_of_avg >= 100
+                                    ? "prob-up"
+                                    : event.vol_rv_pct_of_avg >= 80
+                                    ? ""
+                                    : "prob-down"
+                            }
+                        >
+                            RV {event.vol_rv_pct_of_avg.toFixed(1)}% of avg
+                        </span>
+                        {event.vol_range_pct != null && (
+                            <span className="quant-edge-sample">
+                                range {event.vol_range_pct.toFixed(3)}%
+                            </span>
+                        )}
+                    </div>
+                </section>
+            )}
+
             <div className="compact-panels-grid">
                 <div className="compact-panel">
                     <div className="compact-panel-title">

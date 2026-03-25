@@ -52,6 +52,11 @@ export interface EventData {
     quant_range_histogram?: QuantRangeHistogram | null;
     quant_buy_gate?: QuantBuyGate | null;
     _bot_last_order?: Record<string, unknown> | null;
+    vol_rv_current?: number | null;
+    vol_rv_avg?: number | null;
+    vol_rv_pct_of_avg?: number | null;
+    vol_noise_ratio?: number | null;
+    vol_range_pct?: number | null;
 }
 
 export interface QuantRangeHistogramBin {

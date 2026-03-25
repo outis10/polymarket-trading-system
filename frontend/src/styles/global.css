@@ -1609,6 +1609,10 @@ body {
     background: linear-gradient(90deg, #a0372c, #f26a5c);
 }
 
+.probability-fill-neutral {
+    background: linear-gradient(90deg, #7a6b2c, #e0b84a);
+}
+
 .probability-values {
     display: flex;
     justify-content: space-between;
