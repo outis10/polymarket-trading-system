@@ -1,9 +1,3 @@
 day_type,time_frame,start_hour,end_hour,zone
-workday,tf1,0,5,America/Los_Angeles
-workday,tf2,5,13,America/Los_Angeles
-workday,tf3,13,16,America/Los_Angeles
-workday,tf4,16,24,America/Los_Angeles
-weekend,tf1,0,5,America/Los_Angeles
-weekend,tf2,5,13,America/Los_Angeles
-weekend,tf3,13,16,America/Los_Angeles
-weekend,tf4,16,24,America/Los_Angeles
+workday,tf1,0,24,America/Los_Angeles
+weekend,tf1,0,24,America/Los_Angeles
