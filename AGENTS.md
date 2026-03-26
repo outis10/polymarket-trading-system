@@ -7,6 +7,20 @@ Actualízalo cuando cambien decisiones, scripts o flujos importantes.
 
 ## Pendientes para próxima sesión
 
+### Estado actualizado (2026-03-25, posiciones live + sell manual)
+
+- `GET /api/positions/{event_id}` en live ya no usa solo `_position_tracker`:
+  - primero consulta posiciones reales de la wallet via `data-api` de Polymarket,
+  - usa el tracker solo como fallback si la consulta live falla/no está disponible.
+- Objetivo del cambio:
+  - evitar shares fantasma en UI (`Positions`) cuando el tracker local se desalineaba de la wallet real.
+- `Sell` manual en `POST /api/orders` fue endurecido:
+  - `order_type="market"` + `side="SELL"` ahora usa `place_market_order(...)`,
+  - el tracker local solo se reduce con `filled_shares_real` confirmado,
+  - si no hay fill confirmado, no se toca `_position_tracker`.
+- Riesgo residual:
+  - `data-api` puede tener algo de lag; si falla, el endpoint cae a `tracker_fallback`.
+
 ### Estado actualizado (2026-03-25, volatility gate alineado)
 - `vol_gate` quedó integrado a la evaluación unificada `evaluate_bot_order_candidate()`:
   - tracking/analytics/bot ahora comparten el mismo bloqueo `vol_gate_blocked`,

@@ -11,7 +11,7 @@ import requests as _requests
 from fastapi import APIRouter, HTTPException
 
 from ..models.schemas import OrderRequest, OrderResponse
-from ..services.event_manager import event_manager
+from ..services.event_manager import _extract_fills_detail_for_side, event_manager
 from ..services.polymarket import get_client, reset_client
 from ..ws.manager import manager
 
@@ -25,6 +25,21 @@ _positions_cache: dict[str, dict] = {}
 def invalidate_positions_cache(event_id: str) -> None:
     """Remove cached positions for an event so the next request fetches fresh data."""
     _positions_cache.pop(event_id, None)
+
+
+def _positions_cache_get(event_id: str) -> dict | None:
+    cached = _positions_cache.get(event_id)
+    if not cached:
+        return None
+    ts = float(cached.get("ts", 0.0) or 0.0)
+    if (time.monotonic() - ts) >= _POSITIONS_CACHE_TTL_SECONDS:
+        _positions_cache.pop(event_id, None)
+        return None
+    return cached.get("data") if isinstance(cached.get("data"), dict) else None
+
+
+def _positions_cache_set(event_id: str, data: dict) -> None:
+    _positions_cache[event_id] = {"ts": time.monotonic(), "data": data}
 
 
 _ORDER_BLOCKED_LOG_PATH = os.path.normpath(
@@ -45,6 +60,15 @@ def _safe_float(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _normalize_token_id(value: object) -> str:
+    if value is None:
+        return ""
+    try:
+        return str(value).strip()
+    except Exception:
+        return ""
 
 
 def _append_order_blocked_log(row: dict[str, object]) -> None:
@@ -346,26 +370,19 @@ async def place_order(order: OrderRequest):
                 logger.warning("[SELL] could not update conditional allowance: %s", e)
 
         if order.order_type == "market" and is_sell:
-            # For sell market orders, derive the best bid from the in-memory order book
-            # (already fetched by the price poller). Falls back to mid-price then the
-            # caller-supplied price so we never send a None price to the CLOB.
+            # Market sells should execute immediately; keep bid snapshot only for logs.
             ob_key = "order_book_yes" if outcome_side == "up" else "order_book_no"
             ob = event.get(ob_key) or {}
             bids = ob.get("bids") or []
             asks = ob.get("asks") or []
             if bids and isinstance(bids[0], dict):
-                sell_price = float(bids[0]["price"])
                 price_source = "best_bid"
             else:
-                # Fallback: mid-price from event, then caller-supplied price
-                mid_key = "yes_price" if outcome_side == "up" else "no_price"
-                sell_price = float(event.get(mid_key) or order.price or 0.50)
                 price_source = "mid_price_fallback"
             logger.info(
-                "[SELL] token=%s price=%.4f shares=%.4f price_source=%s "
+                "[SELL] token=%s shares=%.4f price_source=%s "
                 "bids_top3=%s asks_top3=%s yes_price=%.4f no_price=%.4f",
                 token_id,
-                sell_price,
                 effective_shares,
                 price_source,
                 [b.get("price") for b in bids[:3]] if bids else "none",
@@ -373,7 +390,7 @@ async def place_order(order: OrderRequest):
                 float(event.get("yes_price") or 0),
                 float(event.get("no_price") or 0),
             )
-            result = client.place_order(token_id, side, sell_price, effective_shares)
+            result = client.place_market_order(token_id, side, effective_shares)
         elif order.order_type == "market":
             # BUY market orders use place_fok_order (notional USD) — same as the bot
             # auto-order path — so the cap is enforced at the exact USD amount
@@ -442,12 +459,33 @@ async def place_order(order: OrderRequest):
                     price=order_price_ref,
                     placed_at_utc=now_fill.isoformat(),
                 )
+                invalidate_positions_cache(order.event_id)
             else:
-                event_manager.record_position_sell(
-                    event_id=order.event_id,
-                    outcome=outcome_side,
-                    shares_sold=effective_shares,
+                (
+                    _fill_count,
+                    _filled_notional_usd_real,
+                    filled_shares_real,
+                    _fills_detail_json,
+                ) = _extract_fills_detail_for_side(result, "SELL")
+                confirmed_shares = (
+                    min(effective_shares, filled_shares_real)
+                    if filled_shares_real > 0
+                    else 0.0
                 )
+                if confirmed_shares > 0:
+                    event_manager.record_position_sell(
+                        event_id=order.event_id,
+                        outcome=outcome_side,
+                        shares_sold=confirmed_shares,
+                    )
+                else:
+                    logger.warning(
+                        "[SELL] no confirmed fill; tracker unchanged event_id=%s outcome=%s requested_shares=%.4f",
+                        order.event_id,
+                        outcome_side,
+                        effective_shares,
+                    )
+                invalidate_positions_cache(order.event_id)
             try:
                 refreshed_balance = client.get_balance()
             except Exception:
@@ -546,12 +584,15 @@ async def get_matic_balance():
         return {"matic": None, "message": "Client unavailable"}
     try:
         from web3 import Web3
+
         wallet = getattr(client.config, "funder", None)
         if not wallet:
             return {"matic": None, "message": "Wallet address not configured"}
         rpc_url = _DEFAULT_RPC_URL.get(137, "https://rpc-mainnet.matic.quiknode.pro")
         w3 = Web3(Web3.HTTPProvider(rpc_url))
-        balance_wei = await asyncio.to_thread(w3.eth.get_balance, Web3.to_checksum_address(wallet))
+        balance_wei = await asyncio.to_thread(
+            w3.eth.get_balance, Web3.to_checksum_address(wallet)
+        )
         matic = round(balance_wei / 1e18, 4)
         return {"matic": matic}
     except Exception as exc:
@@ -791,6 +832,93 @@ def _fetch_positions_value_sync(wallet: str) -> dict:
         if not p.get("redeemable")
     )
     return {"positions_value_usd": round(positions_value, 4)}
+
+
+def _fetch_live_event_positions_sync(wallet: str, event: dict) -> dict:
+    """Fetch real wallet positions for one event from Polymarket data-api."""
+    _PAGE_SIZE = 100
+    yes_token_id = _normalize_token_id(event.get("yes_token_id"))
+    no_token_id = _normalize_token_id(event.get("no_token_id"))
+    token_to_side = {}
+    if yes_token_id:
+        token_to_side[yes_token_id] = "up"
+    if no_token_id:
+        token_to_side[no_token_id] = "down"
+    if not token_to_side:
+        return {"positions": [], "source": "polymarket", "warning": "missing_token_ids"}
+
+    all_positions: list = []
+    offset = 0
+    try:
+        while True:
+            resp = _requests.get(
+                _POSITIONS_URL,
+                params={"user": wallet, "limit": _PAGE_SIZE, "offset": offset},
+                timeout=5,
+            )
+            if resp.status_code == 404:
+                break
+            resp.raise_for_status()
+            page = resp.json()
+            if not isinstance(page, list):
+                page = page.get("data", []) if isinstance(page, dict) else []
+            all_positions.extend(page)
+            if not page or len(page) < _PAGE_SIZE:
+                break
+            offset += _PAGE_SIZE
+    except Exception as exc:
+        return {"positions": None, "source": "polymarket", "error": str(exc)}
+
+    positions: list[dict] = []
+    for pos in all_positions:
+        asset_token_id = _normalize_token_id(
+            pos.get("asset")
+            or pos.get("assetId")
+            or pos.get("token_id")
+            or pos.get("tokenId")
+        )
+        side = token_to_side.get(asset_token_id)
+        if not side:
+            continue
+        size = _safe_float(pos.get("size")) or 0.0
+        if size <= 0:
+            continue
+        current_value = _safe_float(pos.get("currentValue")) or 0.0
+        initial_value = _safe_float(pos.get("initialValue")) or 0.0
+        avg_price = _safe_float(pos.get("avgPrice"))
+        if avg_price is None and size > 0 and initial_value > 0:
+            avg_price = initial_value / size
+        current_price = _safe_float(pos.get("curPrice"))
+        if current_price is None and size > 0 and current_value > 0:
+            current_price = current_value / size
+        if current_price is None:
+            current_price = float(
+                event.get("yes_price", avg_price or 0.5)
+                if side == "up"
+                else event.get("no_price", avg_price or 0.5)
+            )
+        if avg_price is None:
+            avg_price = current_price
+        cost = initial_value if initial_value > 0 else size * avg_price
+        value = current_value if current_value > 0 else size * current_price
+        return_value = value - cost
+        return_pct = (return_value / cost * 100.0) if cost > 0 else 0.0
+        positions.append(
+            {
+                "outcome": "Up" if side == "up" else "Down",
+                "qty": round(size, 4),
+                "avg_price": round(avg_price, 4),
+                "current_price": round(current_price, 4),
+                "cost": round(cost, 2),
+                "value": round(value, 2),
+                "return_value": round(return_value, 2),
+                "return_pct": round(return_pct, 2),
+                "token_id": asset_token_id,
+                "placed_at_utc": "",
+            }
+        )
+
+    return {"positions": positions, "source": "polymarket"}
 
 
 @router.get("/positions_value")
@@ -1411,7 +1539,7 @@ async def reset_polymarket_client():
 
 @router.get("/positions/{event_id}")
 async def get_positions(event_id: str):
-    """Get positions for a specific event. Uses in-memory tracker as source of truth."""
+    """Get positions for a specific event."""
     event = event_manager.events.get(event_id)
     if not event:
         return {"positions": [], "message": "Event not found or not yet active"}
@@ -1436,7 +1564,36 @@ async def get_positions(event_id: str):
             "message": "Demo mode - simulated positions",
         }
 
-    # --- Tracker path (fuente de verdad) ---
+    if event_manager.mode != "demo":
+        cached = _positions_cache_get(event_id)
+        if cached is not None:
+            return cached
+
+        client = get_client()
+        wallet = getattr(client.config, "funder", None) if client else None
+        if wallet:
+            live_positions = await asyncio.to_thread(
+                _fetch_live_event_positions_sync, wallet, event
+            )
+            if isinstance(live_positions.get("positions"), list):
+                tracked = event_manager.get_tracked_positions(event_id)
+                tracked_keys = (
+                    set(tracked.keys()) if isinstance(tracked, dict) else set()
+                )
+                live_keys = {
+                    "up" if str(p.get("outcome", "")).lower() == "up" else "down"
+                    for p in live_positions["positions"]
+                }
+                if tracked_keys != live_keys:
+                    logger.warning(
+                        "[POSITIONS] tracker/live mismatch event_id=%s tracker=%s live=%s",
+                        event_id,
+                        sorted(tracked_keys),
+                        sorted(live_keys),
+                    )
+                _positions_cache_set(event_id, live_positions)
+                return live_positions
+
     tracked = event_manager.get_tracked_positions(event_id)
     if tracked:
         positions = []
@@ -1467,10 +1624,13 @@ async def get_positions(event_id: str):
                     "placed_at_utc": pos.get("placed_at_utc", ""),
                 }
             )
-        return {"positions": positions, "source": "tracker"}
+        result = {"positions": positions, "source": "tracker_fallback"}
+        _positions_cache_set(event_id, result)
+        return result
 
-    # Sin posiciones trackeadas para este evento
-    return {"positions": [], "source": "tracker"}
+    result = {"positions": [], "source": "tracker_fallback"}
+    _positions_cache_set(event_id, result)
+    return result
 
 
 # ---------------------------------------------------------------------------

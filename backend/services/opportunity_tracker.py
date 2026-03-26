@@ -188,8 +188,12 @@ class OpportunityTracker:
     def _load_csv_rows(path: str) -> list[dict[str, Any]]:
         if not os.path.exists(path):
             return []
-        with open(path, newline="") as f:
-            return list(csv.DictReader(f))
+        try:
+            with open(path, newline="", encoding="utf-8", errors="replace") as f:
+                sanitized = (line.replace("\x00", "") for line in f)
+                return list(csv.DictReader(sanitized))
+        except csv.Error:
+            return []
 
     def _hydrate_runtime_state_from_csv(self) -> None:
         self._resolved_signal_ids = {

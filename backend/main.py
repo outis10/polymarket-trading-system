@@ -7,10 +7,13 @@ import pathlib
 from contextlib import asynccontextmanager
 
 import uvicorn
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+
+load_dotenv(os.environ.get("ENV_FILE", ".env"))
 
 from .middleware.auth import APIKeyMiddleware
 from .routers import control, events, trading
@@ -156,8 +159,51 @@ async def _equity_snapshot_loop() -> None:
 
 
 @asynccontextmanager
+def _reconcile_stale_sending_rows() -> None:
+    """At startup, rewrite any CSV rows stuck in status='sending' to 'timeout'.
+
+    These rows are left behind when the process is killed (hot-reload, crash)
+    while asyncio.wait_for was blocking on place_fok_order.  We can't know
+    whether the CLOB actually received the order, so we mark them 'timeout'
+    (ambiguous) rather than 'failed', which keeps them out of the equity curve
+    but visible in the UI for manual review.
+    """
+    import csv
+    import glob as _glob
+
+    log_dir = pathlib.Path("backtest_output")
+    for csv_path in _glob.glob(str(log_dir / "bot_orders_*.csv")):
+        try:
+            with open(csv_path, newline="") as f:
+                reader = csv.DictReader(f)
+                rows = list(reader)
+                fieldnames = reader.fieldnames or []
+            stale = [r for r in rows if r.get("status") == "sending"]
+            if not stale:
+                continue
+            for row in stale:
+                row["status"] = "timeout"
+                if not row.get("fills_detail_json"):
+                    row["fills_detail_json"] = "error:stale_sending_at_startup"
+            tmp_path = f"{csv_path}.tmp"
+            with open(tmp_path, "w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                for row in rows:
+                    writer.writerow({k: row.get(k, "") for k in fieldnames})
+            os.replace(tmp_path, csv_path)
+            logger.info(
+                "Reconciled %d stale 'sending' rows in %s → 'timeout'",
+                len(stale),
+                csv_path,
+            )
+        except Exception as exc:
+            logger.warning("Could not reconcile stale rows in %s: %s", csv_path, exc)
+
+
 async def lifespan(app: FastAPI):
     """Startup / shutdown lifecycle."""
+    _reconcile_stale_sending_rows()
     logger.info("Starting EventManager...")
     await event_manager.start()
 

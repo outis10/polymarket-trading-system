@@ -39,11 +39,8 @@ from .volatility_monitor import volatility_monitor
 
 logger = logging.getLogger(__name__)
 
-_BOT_ORDERS_LOG_DIR = os.path.normpath(
-    os.environ.get(
-        "OUTPUT_DIR",
-        os.path.join(os.path.dirname(__file__), "..", "..", "backtest_output"),
-    )
+_DEFAULT_OUTPUT_DIR = os.path.normpath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "backtest_output")
 )
 _BOT_ORDERS_FIELDNAMES = [
     "placed_at_utc",
@@ -127,9 +124,6 @@ _BOT_ORDERS_FIELDNAMES = [
     "take_profit_bid_at_trigger",
     "take_profit_pnl_usd",
 ]
-_PAPER_TRADES_LOG_PATH = os.path.normpath(
-    os.path.join(_BOT_ORDERS_LOG_DIR, "paper_trades.csv")
-)
 _PAPER_FEE_PCT_DEFAULT = 2.0
 _PAPER_SLIPPAGE_BUFFER_PCT_DEFAULT = (
     0.1  # real slippage measured at 0.014% on 702 live orders
@@ -189,8 +183,16 @@ _VOL_LOG_FIELDNAMES = [
 ]
 
 
+def _output_dir_path() -> str:
+    return os.path.normpath(os.environ.get("OUTPUT_DIR", _DEFAULT_OUTPUT_DIR))
+
+
+def _paper_trades_log_path() -> str:
+    return os.path.join(_output_dir_path(), "paper_trades.csv")
+
+
 def _vol_log_path() -> str:
-    return os.path.join(_BOT_ORDERS_LOG_DIR, "event_volatility_log.csv")
+    return os.path.join(_output_dir_path(), "event_volatility_log.csv")
 
 
 def _append_vol_log(row: dict) -> None:
@@ -206,7 +208,7 @@ def _append_vol_log(row: dict) -> None:
 
 def _bot_orders_log_path() -> str:
     date_str = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
-    return os.path.join(_BOT_ORDERS_LOG_DIR, f"bot_orders_{date_str}.csv")
+    return os.path.join(_output_dir_path(), f"bot_orders_{date_str}.csv")
 
 
 def _append_bot_order_log(row: dict) -> None:
@@ -445,15 +447,16 @@ def _extract_fills_detail_for_side(
 
 
 def _ensure_paper_trades_csv() -> None:
-    os.makedirs(os.path.dirname(_PAPER_TRADES_LOG_PATH), exist_ok=True)
-    if os.path.exists(_PAPER_TRADES_LOG_PATH):
+    paper_path = _paper_trades_log_path()
+    os.makedirs(os.path.dirname(paper_path), exist_ok=True)
+    if os.path.exists(paper_path):
         try:
-            with open(_PAPER_TRADES_LOG_PATH, newline="") as f:
+            with open(paper_path, newline="") as f:
                 reader = csv.DictReader(f)
                 existing_fields = reader.fieldnames or []
                 if existing_fields != _PAPER_TRADES_FIELDNAMES:
                     existing_rows = list(reader)
-                    tmp_path = f"{_PAPER_TRADES_LOG_PATH}.tmp"
+                    tmp_path = f"{paper_path}.tmp"
                     with open(tmp_path, "w", newline="") as wf:
                         writer = csv.DictWriter(wf, fieldnames=_PAPER_TRADES_FIELDNAMES)
                         writer.writeheader()
@@ -464,15 +467,15 @@ def _ensure_paper_trades_csv() -> None:
                                     for key in _PAPER_TRADES_FIELDNAMES
                                 }
                             )
-                    os.replace(tmp_path, _PAPER_TRADES_LOG_PATH)
+                    os.replace(tmp_path, paper_path)
         except Exception as exc:
             logger.warning(
                 "Could not migrate paper trades log schema for %s: %s",
-                _PAPER_TRADES_LOG_PATH,
+                paper_path,
                 exc,
             )
         return
-    with open(_PAPER_TRADES_LOG_PATH, "w", newline="") as f:
+    with open(paper_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=_PAPER_TRADES_FIELDNAMES)
         writer.writeheader()
 
@@ -532,6 +535,7 @@ class EventManager:
             "bot_global_min_seconds_between_orders": 2,
             "bot_max_event_exposure_pct": 15.0,
             "bot_max_ticker_exposure_pct": 0,
+            "bot_order_send_timeout_seconds": 8.0,
             "bot_drawdown_enabled": True,
             "bot_drawdown_stop_pct": 50.0,
             "bot_order_notional_cap_usd": 5.0,
@@ -641,6 +645,12 @@ class EventManager:
         self._price_broadcast_last_ms: dict[
             str, int
         ] = {}  # throttle price broadcasts per event
+        # Hedge strategy: events where hedge was placed → permanent lock (no more normal orders)
+        self._hedge_placed_events: set[str] = set()
+        # Hedge strategy: count of normal orders placed per event_id (loaded from CSV at startup)
+        self._event_normal_orders_count: dict[str, int] = {}
+        # Hedge strategy: original order info per event_id {event_id: {side, notional, placed_at_utc}}
+        self._event_hedge_source: dict[str, dict] = {}
         self._order_guard_records: list[dict] = (
             self._load_order_guard_records_from_csv()
         )
@@ -654,12 +664,6 @@ class EventManager:
         self._no_fill_cooldown_until: dict[tuple[str, str], float] = {}
         # best_side_reentry: track last edge (pp) at which an order was fired per (event_id, side)
         self._bot_last_fired_edge: dict[tuple[str, str], float] = {}
-        # Hedge strategy: events where hedge was placed → permanent lock (no more normal orders)
-        self._hedge_placed_events: set[str] = set()
-        # Hedge strategy: count of normal orders placed per event_id (loaded from CSV at startup)
-        self._event_normal_orders_count: dict[str, int] = {}
-        # Hedge strategy: original order info per event_id {event_id: {side, notional, placed_at_utc}}
-        self._event_hedge_source: dict[str, dict] = {}
         # Position tracker: fuente de verdad para shares compradas por evento
         # {event_id: {"up": {"shares": float, "avg_price": float, "token_id": str, "placed_at_utc": str}, ...}}
         self._position_tracker: dict[str, dict] = {}
@@ -692,7 +696,7 @@ class EventManager:
         records = []
         try:
             today_str = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
-            csv_path = os.path.join(_BOT_ORDERS_LOG_DIR, f"bot_orders_{today_str}.csv")
+            csv_path = os.path.join(_output_dir_path(), f"bot_orders_{today_str}.csv")
             if not os.path.exists(csv_path):
                 return records
             with open(csv_path, newline="") as f:
@@ -722,7 +726,7 @@ class EventManager:
         """Seed hedge state from today's bot_orders CSV so hedge locks survive restarts."""
         try:
             today_str = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
-            csv_path = os.path.join(_BOT_ORDERS_LOG_DIR, f"bot_orders_{today_str}.csv")
+            csv_path = os.path.join(_output_dir_path(), f"bot_orders_{today_str}.csv")
             if not os.path.exists(csv_path):
                 return
             with open(csv_path, newline="") as f:
@@ -1915,6 +1919,8 @@ class EventManager:
         base_edge_pct: float,
     ) -> float:
         """Return contextual edge threshold without mutating persisted settings."""
+        if self._is_bot_trade_ladder_active():
+            return base_edge_pct
         if not bool(self.settings.get("bot_second_entry_opposite_enabled", False)):
             return base_edge_pct
         entry_context = self._get_event_entry_context(
@@ -2371,7 +2377,10 @@ class EventManager:
                 )
         edge_pct = (quant_prob - ask_price) * 100.0
         if edge_pct < min_edge_pct:
-            result["reason"] = "edge_below_min"
+            if ladder and ladder_entry_cfg is not None:
+                result["reason"] = f"ladder_entry{ladder_entry_num}_edge_below_min"
+            else:
+                result["reason"] = "edge_below_min"
             return result
 
         denom = max(0.0001, 1.0 - ask_price)
@@ -2731,7 +2740,7 @@ class EventManager:
             "status": "pending",
             "ladder_entry": ladder_entry_num,
         }
-        with open(_PAPER_TRADES_LOG_PATH, "a", newline="") as f:
+        with open(_paper_trades_log_path(), "a", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=_PAPER_TRADES_FIELDNAMES)
             writer.writerow(row)
 
@@ -2746,7 +2755,7 @@ class EventManager:
         self._last_paper_reconcile_at = now_utc
 
         try:
-            with open(_PAPER_TRADES_LOG_PATH, newline="") as f:
+            with open(_paper_trades_log_path(), newline="") as f:
                 rows = list(csv.DictReader(f))
         except FileNotFoundError:
             return
@@ -2825,7 +2834,7 @@ class EventManager:
             ]
 
         if changed:
-            with open(_PAPER_TRADES_LOG_PATH, "w", newline="") as f:
+            with open(_paper_trades_log_path(), "w", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=_PAPER_TRADES_FIELDNAMES)
                 writer.writeheader()
                 for row in rows:
@@ -2849,7 +2858,7 @@ class EventManager:
             return
         self._last_bot_orders_reconcile_at = now_utc
 
-        root = _BOT_ORDERS_LOG_DIR
+        root = _output_dir_path()
         if not os.path.isdir(root):
             return
 
@@ -4983,13 +4992,19 @@ class EventManager:
 
             result = None
             _send_at_utc = datetime.now(tz=timezone.utc)
+            _send_timeout = float(
+                self.settings.get("bot_order_send_timeout_seconds", 8.0)
+            )
             try:
-                result = await asyncio.to_thread(
-                    client.place_fok_order,
-                    token_id,
-                    "BUY",
-                    notional_usd,
-                    order_price,
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        client.place_fok_order,
+                        token_id,
+                        "BUY",
+                        notional_usd,
+                        order_price,
+                    ),
+                    timeout=_send_timeout,
                 )
             except Exception:
                 raise
@@ -5121,6 +5136,7 @@ class EventManager:
             _fill_latency_ms = round(
                 (_filled_at_utc - _send_at_utc).total_seconds() * 1000
             )
+            _is_timeout = isinstance(e, asyncio.TimeoutError)
             logger.error("Hedge: error placing order for %s %s: %s", event_id, side, e)
             try:
                 if _prelog_ts:
@@ -5131,8 +5147,10 @@ class EventManager:
                         {
                             "filled_at_utc": _filled_at_utc.isoformat(),
                             "fill_latency_ms": _fill_latency_ms,
-                            "status": "failed",
-                            "fills_detail_json": f"error:{str(e)[:120]}",
+                            "status": "timeout" if _is_timeout else "failed",
+                            "fills_detail_json": "error:send_timeout"
+                            if _is_timeout
+                            else f"error:{str(e)[:120]}",
                         },
                     )
             except Exception:
@@ -5593,13 +5611,19 @@ class EventManager:
             result = None
             _fak_attempts_used = 1
             _send_at_utc = datetime.now(tz=timezone.utc)
+            _send_timeout = float(
+                self.settings.get("bot_order_send_timeout_seconds", 8.0)
+            )
             try:
-                result = await asyncio.to_thread(
-                    client.place_fok_order,
-                    token_id,
-                    "BUY",
-                    notional_usd,
-                    order_price,
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        client.place_fok_order,
+                        token_id,
+                        "BUY",
+                        notional_usd,
+                        order_price,
+                    ),
+                    timeout=_send_timeout,
                 )
             except Exception:
                 raise
@@ -5840,6 +5864,13 @@ class EventManager:
                 if _clob_confirmed:
                     status = "placed"
                     fail_info: dict = {}
+                elif isinstance(e, asyncio.TimeoutError):
+                    # CLOB call exceeded bot_order_send_timeout_seconds — treat as
+                    # ambiguous: order may or may not have reached the exchange.
+                    # Keep guard record (conservative) and unlock gate for retry.
+                    status = "timeout"
+                    self._bot_prev_gate_enabled[key] = False
+                    fail_info = {"fills_detail_json": "error:send_timeout"}
                 else:
                     err_str = str(e)
                     # Distinguish thin-liquidity no-fill from real errors
