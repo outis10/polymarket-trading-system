@@ -34,11 +34,17 @@ def _normalize_paper_trade_row(r: dict) -> dict:
     status = r.get("status", "")
     resolution_status = "resolved" if status == "resolved" else "pending"
     try:
-        edge_pct = str(round(float(r["QuantumEdge"]) * 100, 4)) if r.get("QuantumEdge") else ""
+        edge_pct = (
+            str(round(float(r["QuantumEdge"]) * 100, 4)) if r.get("QuantumEdge") else ""
+        )
     except (ValueError, TypeError):
         edge_pct = ""
     try:
-        edge_at_fill = str(round(float(r["edge_at_fill_pct"]), 4)) if r.get("edge_at_fill_pct") else ""
+        edge_at_fill = (
+            str(round(float(r["edge_at_fill_pct"]), 4))
+            if r.get("edge_at_fill_pct")
+            else ""
+        )
     except (ValueError, TypeError):
         edge_at_fill = ""
     return {
@@ -159,13 +165,16 @@ async def save_settings(payload: dict[str, Any]):
         raise HTTPException(status_code=400, detail="Invalid settings payload")
 
     updated = 0
+    changed_keys: set[str] = set()
     for key, value in incoming.items():
         if key == "mode":
             continue
         if key in event_manager._persisted_setting_keys:
             event_manager.settings[key] = value
             updated += 1
+            changed_keys.add(key)
 
+    event_manager.handle_runtime_settings_side_effects(changed_keys)
     event_manager.persist_runtime_settings()
     await manager.broadcast(
         {
@@ -291,7 +300,7 @@ def _read_csv_rows(path, ticker: str | None, limit: int) -> list[dict]:
                 rows.append(row)
     except FileNotFoundError:
         pass
-    return rows[-max(1, limit):]
+    return rows[-max(1, limit) :]
 
 
 @router.get("/stats/opportunities/raw")
@@ -350,8 +359,10 @@ async def get_bot_orders_raw(
         )
         rows = [_normalize_paper_trade_row(r) for r in raw]
     else:
-        rows = await asyncio.to_thread(lambda: _load_bot_orders_rows(ticker=ticker, days=days))
-        rows = rows[-max(1, int(limit)):]
+        rows = await asyncio.to_thread(
+            lambda: _load_bot_orders_rows(ticker=ticker, days=days)
+        )
+        rows = rows[-max(1, int(limit)) :]
     return {
         "count": len(rows),
         "ticker_filter": ticker_filter,
@@ -542,7 +553,9 @@ async def get_volatility_state():
     """
     return {
         "bot_mode": event_manager.settings.get("bot_mode", "NRM"),
-        "execution_enabled": bool(event_manager.settings.get("execution_enabled", False)),
+        "execution_enabled": bool(
+            event_manager.settings.get("execution_enabled", False)
+        ),
         **volatility_monitor.get_state(),
         "pending_alert": volatility_monitor.peek_alert(),
     }

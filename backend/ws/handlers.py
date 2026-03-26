@@ -50,7 +50,14 @@ async def websocket_events(websocket: WebSocket):
 
                 elif msg_type == "update_settings":
                     settings = msg.get("settings", {})
+                    changed_keys: set[str] = set()
                     if isinstance(settings, dict):
+                        changed_keys = {
+                            key
+                            for key in settings.keys()
+                            if key in event_manager._persisted_setting_keys
+                            and key != "mode"
+                        }
                         # Generic merge first so newly added persisted keys do not get
                         # dropped when frontend/backend evolve at different times.
                         for key, value in settings.items():
@@ -233,6 +240,19 @@ async def websocket_events(websocket: WebSocket):
                         event_manager.settings["pm_min_notional_usd"] = float(
                             settings["pm_min_notional_usd"]
                         )
+                    if "vol_gate_enabled" in settings:
+                        event_manager.settings["vol_gate_enabled"] = bool(
+                            settings["vol_gate_enabled"]
+                        )
+                    if "vol_gate_lookback_n" in settings:
+                        event_manager.settings["vol_gate_lookback_n"] = int(
+                            settings["vol_gate_lookback_n"]
+                        )
+                    if "vol_gate_min_pct_of_avg" in settings:
+                        event_manager.settings["vol_gate_min_pct_of_avg"] = float(
+                            settings["vol_gate_min_pct_of_avg"]
+                        )
+                    event_manager.handle_runtime_settings_side_effects(changed_keys)
                     event_manager.persist_runtime_settings()
                     await manager.broadcast(
                         {

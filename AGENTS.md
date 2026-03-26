@@ -7,6 +7,22 @@ Actualízalo cuando cambien decisiones, scripts o flujos importantes.
 
 ## Pendientes para próxima sesión
 
+### Estado actualizado (2026-03-25, volatility gate alineado)
+- `vol_gate` quedó integrado a la evaluación unificada `evaluate_bot_order_candidate()`:
+  - tracking/analytics/bot ahora comparten el mismo bloqueo `vol_gate_blocked`,
+  - `_bot_maybe_place_order` ya no aplica un filtro extra separado de volatilidad.
+- `vol_gate_lookback_n` ahora aplica en caliente al cambiar settings:
+  - `EventManager.handle_runtime_settings_side_effects()` recompone `_vol_history`,
+  - se dispara desde `POST /api/settings`, WS `update_settings` y `_load_runtime_settings()` cuando el manager ya está corriendo.
+- La card de volatilidad en frontend ya no muestra solo RV parcial como si fuera el gate real:
+  - ahora prioriza estado efectivo del gate (`open/blocked/warming up`),
+  - muestra `Prev RV % of avg`, umbral mínimo configurado y `history n`,
+  - mantiene `noise` y `range` como contexto secundario del evento actual.
+- Nuevos campos runtime por evento para observabilidad:
+  - `vol_gate_enabled`, `vol_gate_blocked`, `vol_gate_reason`,
+  - `vol_gate_history_size`, `vol_gate_avg_rv`, `vol_gate_prev_rv`,
+  - `vol_gate_threshold_rv`, `vol_gate_prev_pct_of_avg`, `vol_gate_min_pct_of_avg`.
+
 ### Telegram remote control (2026-03-16)
 - V1 implementada sobre el backend FastAPI existente:
   - router localhost-only: `backend/routers/control.py`

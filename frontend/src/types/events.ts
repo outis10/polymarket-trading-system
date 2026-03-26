@@ -57,6 +57,15 @@ export interface EventData {
     vol_rv_pct_of_avg?: number | null;
     vol_noise_ratio?: number | null;
     vol_range_pct?: number | null;
+    vol_gate_enabled?: boolean | null;
+    vol_gate_blocked?: boolean | null;
+    vol_gate_reason?: string | null;
+    vol_gate_history_size?: number | null;
+    vol_gate_avg_rv?: number | null;
+    vol_gate_prev_rv?: number | null;
+    vol_gate_threshold_rv?: number | null;
+    vol_gate_prev_pct_of_avg?: number | null;
+    vol_gate_min_pct_of_avg?: number | null;
 }
 
 export interface QuantRangeHistogramBin {
@@ -132,6 +141,9 @@ export interface SettingsData {
     quant_gate_min_prob?: number;
     quant_gate_blocked_hours_pst?: number[];
     quant_gate_enabled_slots?: number[];
+    vol_gate_enabled?: boolean;
+    vol_gate_lookback_n?: number;
+    vol_gate_min_pct_of_avg?: number;
     monitored_tickers?: string[];
     bot_risk_enabled?: boolean;
     bot_max_buys_per_event_side?: number;

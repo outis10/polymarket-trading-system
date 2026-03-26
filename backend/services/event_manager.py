@@ -28,7 +28,6 @@ from .event_discovery import discover_live_events
 from .execution_engine import estimate_fill_from_event, fill_estimate_to_log
 from .kraken import fetch_kraken_candle_open, fetch_kraken_klines
 from .opportunity_tracker import OpportunityTracker
-from .volatility_monitor import volatility_monitor
 from .polymarket import PolymarketStreamer, fetch_real_prices, get_client
 from .price_provider import (
     get_price_fetcher,
@@ -36,6 +35,7 @@ from .price_provider import (
     get_single_price_fetcher,
     get_volume_fetcher,
 )
+from .volatility_monitor import volatility_monitor
 
 logger = logging.getLogger(__name__)
 
@@ -519,8 +519,8 @@ class EventManager:
             "auto_redeem_bankroll_pct": 0.03,
             # --- Take-profit ---
             "take_profit_enabled": False,
-            "take_profit_trigger_price": 0.95,   # sell when best_bid >= this
-            "take_profit_min_price": 0.90,        # floor: never sell below this
+            "take_profit_trigger_price": 0.95,  # sell when best_bid >= this
+            "take_profit_min_price": 0.90,  # floor: never sell below this
             "fak_price_tolerance": 0.02,  # extra cents added to ask to survive book movement during latency
             "bot_fak_gap_tolerance": 0.05,  # added to ask_price on single placement attempt
             "bot_min_diff_abs": {},  # per-asset absolute diff filter e.g. {"BTC": 20}
@@ -710,7 +710,9 @@ class EventManager:
                         if event_id not in self._event_hedge_source:
                             try:
                                 notional = float(
-                                    row.get("filled_notional_usd_real") or row.get("notional_usd") or 0
+                                    row.get("filled_notional_usd_real")
+                                    or row.get("notional_usd")
+                                    or 0
                                 )
                                 self._event_hedge_source[event_id] = {
                                     "side": row.get("side", ""),
@@ -775,6 +777,10 @@ class EventManager:
                     persisted_settings.get("kelly_paper_bankroll_usd", 100.0) or 100.0
                 )
             self.settings["mode"] = self.mode
+            if self._running:
+                self.handle_runtime_settings_side_effects(
+                    set(persisted_settings.keys())
+                )
 
     def _get_live_manual_bankroll_usd(self) -> float:
         live = self.settings.get("kelly_live_bankroll_usd")
@@ -828,6 +834,14 @@ class EventManager:
                 path,
                 exc,
             )
+
+    def handle_runtime_settings_side_effects(
+        self, changed_keys: set[str] | list[str] | tuple[str, ...]
+    ) -> None:
+        """Apply side effects required by runtime setting changes."""
+        changed = set(changed_keys)
+        if "vol_gate_lookback_n" in changed:
+            self._rebuild_vol_history()
 
     def load_config(self):
         self._config = load_events_config()
@@ -1151,11 +1165,13 @@ class EventManager:
                         for inf, sup, _pu, _pd, _cnt in entries:
                             range_pairs.add((inf, sup))
 
-                    for (inf_r, sup_r) in range_pairs:
+                    for inf_r, sup_r in range_pairs:
                         # Find (slot, list_index) for this range pair, sorted by slot
                         hits: list[tuple[int, int, float, float]] = []
                         for slot in sorted(slot_data.keys()):
-                            for i, (inf, sup, pu, pd, _cnt) in enumerate(slot_data[slot]):
+                            for i, (inf, sup, pu, pd, _cnt) in enumerate(
+                                slot_data[slot]
+                            ):
                                 if inf == inf_r and sup == sup_r:
                                     hits.append((slot, i, pu, pd))
                                     break
@@ -1164,11 +1180,12 @@ class EventManager:
                             continue
 
                         slot_nums = np.array([h[0] for h in hits], dtype=float)
-                        prob_ups  = np.array([h[2] for h in hits], dtype=float)
+                        prob_ups = np.array([h[2] for h in hits], dtype=float)
                         prob_downs = np.array([h[3] for h in hits], dtype=float)
 
                         if method == "rolling":
                             import pandas as _pd_lib
+
                             s_up = (
                                 _pd_lib.Series(prob_ups)
                                 .rolling(window=window, center=True, min_periods=1)
@@ -1183,20 +1200,35 @@ class EventManager:
                             )
                         elif method == "isotonic":
                             from sklearn.isotonic import IsotonicRegression
-                            s_up   = IsotonicRegression(increasing=True,  out_of_bounds="clip").fit_transform(slot_nums, prob_ups)
-                            s_down = IsotonicRegression(increasing=False, out_of_bounds="clip").fit_transform(slot_nums, prob_downs)
+
+                            s_up = IsotonicRegression(
+                                increasing=True, out_of_bounds="clip"
+                            ).fit_transform(slot_nums, prob_ups)
+                            s_down = IsotonicRegression(
+                                increasing=False, out_of_bounds="clip"
+                            ).fit_transform(slot_nums, prob_downs)
                         else:
                             continue
 
                         # Write back smoothed values (tuples are immutable; replace list entry)
-                        for (slot, idx, _pu, _pd), new_up, new_down in zip(hits, s_up, s_down):
+                        for (slot, idx, _pu, _pd), new_up, new_down in zip(
+                            hits, s_up, s_down
+                        ):
                             old = slot_data[slot][idx]
-                            slot_data[slot][idx] = (old[0], old[1], float(new_up), float(new_down), old[4])
+                            slot_data[slot][idx] = (
+                                old[0],
+                                old[1],
+                                float(new_up),
+                                float(new_down),
+                                old[4],
+                            )
                             modified += 1
 
         logger.info(
             "prob_smoothing=%s window=%d — %d entries updated",
-            method, window, modified,
+            method,
+            window,
+            modified,
         )
         return table
 
@@ -1495,11 +1527,15 @@ class EventManager:
                         event_dict["vol_rv_current"] = round(_vm["rv"], 8)
                         event_dict["vol_noise_ratio"] = round(_vm["noise_ratio"], 3)
                         event_dict["vol_range_pct"] = round(_vm["range_pct"] * 100, 4)
-                        _vhist = list(self._vol_history.get((ticker, timeframe_minutes), []))
+                        _vhist = list(
+                            self._vol_history.get((ticker, timeframe_minutes), [])
+                        )
                         if _vhist:
                             _avg = sum(_vhist) / len(_vhist)
                             event_dict["vol_rv_avg"] = round(_avg, 8)
-                            event_dict["vol_rv_pct_of_avg"] = round(_vm["rv"] / _avg * 100, 1)
+                            event_dict["vol_rv_pct_of_avg"] = round(
+                                _vm["rv"] / _avg * 100, 1
+                            )
                         else:
                             event_dict["vol_rv_avg"] = None
                             event_dict["vol_rv_pct_of_avg"] = None
@@ -2137,6 +2173,7 @@ class EventManager:
             "notional_usd": 0.0,
             "kelly_pct": None,
             "spread_pct_at_decision": _spread_pct_at_decision,
+            "vol_gate_blocked": False,
         }
 
         # Time-window filter: block trades outside configured trading windows
@@ -2190,6 +2227,13 @@ class EventManager:
                     return result
             except Exception:
                 pass
+
+        if bool(self.settings.get("vol_gate_enabled", False)):
+            vol_gate_state = self._get_vol_gate_state(event_id, event_dict)
+            result["vol_gate_blocked"] = bool(vol_gate_state.get("blocked"))
+            if bool(vol_gate_state.get("blocked")):
+                result["reason"] = "vol_gate_blocked"
+                return result
 
         quant_gate = event_dict.get("quant_buy_gate")
         if isinstance(quant_gate, dict):
@@ -2332,7 +2376,10 @@ class EventManager:
             # Final notional = capped_pre_mult × stake_multiplier.
             if bool(self.settings.get("bot_risk_enabled", True)):
                 event_pct_cap = (
-                    max(0.0, float(self.settings.get("bot_max_event_exposure_pct", 15.0)))
+                    max(
+                        0.0,
+                        float(self.settings.get("bot_max_event_exposure_pct", 15.0)),
+                    )
                     / 100.0
                 )
                 max_pre_mult = base_bankroll * event_pct_cap
@@ -2879,6 +2926,7 @@ class EventManager:
     def _load_vol_history(self) -> None:
         """Seed vol_history deques from the volatility log CSV on startup."""
         import collections
+
         path = _vol_log_path()
         lookback_n = int(self.settings.get("vol_gate_lookback_n", 20))
         if not os.path.exists(path):
@@ -2894,27 +2942,72 @@ class EventManager:
                     if ticker and event_minutes and rv > 0:
                         key = (ticker, event_minutes)
                         if key not in self._vol_history:
-                            self._vol_history[key] = collections.deque(maxlen=lookback_n)
+                            self._vol_history[key] = collections.deque(
+                                maxlen=lookback_n
+                            )
                         self._vol_history[key].append(rv)
                 except Exception:
                     continue
             total = sum(len(d) for d in self._vol_history.values())
-            logger.info("Vol history loaded: %d entries across %d ticker/duration keys", total, len(self._vol_history))
+            logger.info(
+                "Vol history loaded: %d entries across %d ticker/duration keys",
+                total,
+                len(self._vol_history),
+            )
         except Exception as exc:
             logger.warning("Could not load vol history: %s", exc)
+
+    def _rebuild_vol_history(self) -> None:
+        """Rebuild vol history deques so lookback changes apply immediately."""
+        import collections
+
+        lookback_n = max(1, int(self.settings.get("vol_gate_lookback_n", 20) or 20))
+        path = _vol_log_path()
+        rebuilt: dict[tuple, Any] = {}
+        if os.path.exists(path):
+            try:
+                with open(path, newline="") as f:
+                    for row in csv.DictReader(f):
+                        try:
+                            ticker = row.get("ticker", "")
+                            event_minutes = int(row.get("event_minutes", 0))
+                            rv = float(row.get("rv", 0))
+                            if ticker and event_minutes and rv > 0:
+                                key = (ticker, event_minutes)
+                                if key not in rebuilt:
+                                    rebuilt[key] = collections.deque(maxlen=lookback_n)
+                                rebuilt[key].append(rv)
+                        except Exception:
+                            continue
+            except Exception as exc:
+                logger.warning("Could not rebuild vol history: %s", exc)
+                return
+        self._vol_history = rebuilt
+        logger.info(
+            "Vol history rebuilt: lookback_n=%d, keys=%d",
+            lookback_n,
+            len(self._vol_history),
+        )
 
     @staticmethod
     def _compute_vol_metrics(prices: list) -> dict | None:
         """Compute full volatility metrics from a list of slot prices."""
         import math
+
         if len(prices) < 3:
             return None
         try:
-            log_returns = [math.log(prices[i] / prices[i - 1]) for i in range(1, len(prices))]
+            log_returns = [
+                math.log(prices[i] / prices[i - 1]) for i in range(1, len(prices))
+            ]
             rv = math.sqrt(sum(r * r for r in log_returns))
             n = len(log_returns)
             mean_r = sum(log_returns) / n
-            std = math.sqrt(sum((r - mean_r) ** 2 for r in log_returns) / (n - 1)) if n > 1 else 0.0
+            std = (
+                math.sqrt(sum((r - mean_r) ** 2 for r in log_returns) / (n - 1))
+                if n > 1
+                else 0.0
+            )
             event_open = prices[0]
             event_close = prices[-1]
             price_high = max(prices)
@@ -2941,6 +3034,7 @@ class EventManager:
     def _finalize_completed_events_volatility(self) -> None:
         """Calculate and log vol metrics for any events that have ended but not yet been finalized."""
         import collections
+
         now_utc = datetime.now(tz=timezone.utc)
         lookback_n = int(self.settings.get("vol_gate_lookback_n", 20))
         for event_id, event_dict in list(self.events.items()):
@@ -2972,38 +3066,121 @@ class EventManager:
                 self._vol_history[key] = collections.deque(maxlen=lookback_n)
             self._vol_history[key].append(metrics["rv"])
             self._vol_finalized_events.add(event_id)
-            _append_vol_log({
-                "event_end_utc": end_dt.isoformat(),
-                "ticker": ticker,
-                "event_minutes": event_minutes,
-                "rv": f"{metrics['rv']:.8f}",
-                "std": f"{metrics['std']:.8f}",
-                "range_pct": f"{metrics['range_pct']:.6f}",
-                "event_return": f"{metrics['event_return']:.8f}",
-                "abs_move_sum": f"{metrics['abs_move_sum']:.8f}",
-                "noise_ratio": f"{metrics['noise_ratio']:.4f}",
-                "slot_count": len(prices),
-                "price_open": f"{metrics['price_open']:.4f}",
-                "price_close": f"{metrics['price_close']:.4f}",
-                "price_high": f"{metrics['price_high']:.4f}",
-                "price_low": f"{metrics['price_low']:.4f}",
-            })
+            _append_vol_log(
+                {
+                    "event_end_utc": end_dt.isoformat(),
+                    "ticker": ticker,
+                    "event_minutes": event_minutes,
+                    "rv": f"{metrics['rv']:.8f}",
+                    "std": f"{metrics['std']:.8f}",
+                    "range_pct": f"{metrics['range_pct']:.6f}",
+                    "event_return": f"{metrics['event_return']:.8f}",
+                    "abs_move_sum": f"{metrics['abs_move_sum']:.8f}",
+                    "noise_ratio": f"{metrics['noise_ratio']:.4f}",
+                    "slot_count": len(prices),
+                    "price_open": f"{metrics['price_open']:.4f}",
+                    "price_close": f"{metrics['price_close']:.4f}",
+                    "price_high": f"{metrics['price_high']:.4f}",
+                    "price_low": f"{metrics['price_low']:.4f}",
+                }
+            )
+
+    def _get_vol_gate_state(self, event_id: str, event_dict: dict) -> dict:
+        """Return current volatility gate state for this event."""
+        ticker = event_dict.get("_vol_ticker") or self._extract_event_ticker(
+            event_id, event_dict
+        )
+        event_minutes = int(
+            event_dict.get("_vol_event_minutes")
+            or event_dict.get("timeframe_minutes")
+            or 5
+        )
+        history = list(self._vol_history.get((ticker, event_minutes), []))
+        enabled = bool(self.settings.get("vol_gate_enabled", False))
+        min_pct = max(
+            0.0, float(self.settings.get("vol_gate_min_pct_of_avg", 0.8) or 0.0)
+        )
+        avg_rv = sum(history) / len(history) if history else None
+        prev_rv = history[-1] if history else None
+        threshold = avg_rv * min_pct if avg_rv is not None else None
+        prev_pct_of_avg = (
+            (prev_rv / avg_rv) * 100.0
+            if isinstance(prev_rv, (int, float))
+            and isinstance(avg_rv, (int, float))
+            and avg_rv > 0
+            else None
+        )
+        min_pct_of_avg = min_pct * 100.0
+        enough_history = len(history) >= 5
+        would_block = bool(
+            enough_history
+            and isinstance(prev_rv, (int, float))
+            and isinstance(threshold, (int, float))
+            and prev_rv < threshold
+        )
+        if not enough_history:
+            reason = "insufficient_history"
+        elif would_block:
+            reason = "prev_rv_below_threshold"
+        else:
+            reason = "ok"
+        return {
+            "enabled": enabled,
+            "ticker": ticker,
+            "event_minutes": event_minutes,
+            "history_size": len(history),
+            "avg_rv": avg_rv,
+            "prev_rv": prev_rv,
+            "threshold_rv": threshold,
+            "prev_pct_of_avg": prev_pct_of_avg,
+            "min_pct_of_avg": min_pct_of_avg,
+            "blocked": enabled and would_block,
+            "would_block": would_block,
+            "reason": reason,
+        }
+
+    def _apply_vol_gate_state(self, event_id: str, event_dict: dict) -> None:
+        """Expose current volatility gate state on the runtime event payload."""
+        state = self._get_vol_gate_state(event_id, event_dict)
+        event_dict["vol_gate_enabled"] = state["enabled"]
+        event_dict["vol_gate_blocked"] = state["blocked"]
+        event_dict["vol_gate_reason"] = state["reason"]
+        event_dict["vol_gate_history_size"] = state["history_size"]
+        event_dict["vol_gate_avg_rv"] = (
+            round(state["avg_rv"], 8)
+            if isinstance(state["avg_rv"], (int, float))
+            else None
+        )
+        event_dict["vol_gate_prev_rv"] = (
+            round(state["prev_rv"], 8)
+            if isinstance(state["prev_rv"], (int, float))
+            else None
+        )
+        event_dict["vol_gate_threshold_rv"] = (
+            round(state["threshold_rv"], 8)
+            if isinstance(state["threshold_rv"], (int, float))
+            else None
+        )
+        event_dict["vol_gate_prev_pct_of_avg"] = (
+            round(state["prev_pct_of_avg"], 1)
+            if isinstance(state["prev_pct_of_avg"], (int, float))
+            else None
+        )
+        event_dict["vol_gate_min_pct_of_avg"] = round(float(state["min_pct_of_avg"]), 1)
 
     def _check_vol_gate(self, event_id: str, event_dict: dict) -> bool:
-        """Return True (blocked) if the previous completed event's RV is below the rolling average threshold.
-        Decision is based on the last completed event — no intra-event partial RV checks."""
-        ticker = event_dict.get("_vol_ticker") or self._extract_event_ticker(event_id, event_dict)
-        event_minutes = int(event_dict.get("_vol_event_minutes") or event_dict.get("timeframe_minutes") or 5)
-        history = list(self._vol_history.get((ticker, event_minutes), []))
-        if len(history) < 5:
-            return False  # not enough history — don't block
-        avg_rv = sum(history) / len(history)
-        prev_rv = history[-1]  # last completed event's RV
-        threshold = avg_rv * float(self.settings.get("vol_gate_min_pct_of_avg", 0.8))
-        if prev_rv < threshold:
+        """Return True if the previous completed event's RV blocks trading."""
+        state = self._get_vol_gate_state(event_id, event_dict)
+        if state["blocked"]:
             logger.debug(
                 "Vol gate blocked %s [%s %dm]: prev_rv=%.6f < threshold=%.6f (avg_rv=%.6f, n=%d)",
-                event_id, ticker, event_minutes, prev_rv, threshold, avg_rv, len(history),
+                event_id,
+                state["ticker"],
+                state["event_minutes"],
+                float(state["prev_rv"] or 0.0),
+                float(state["threshold_rv"] or 0.0),
+                float(state["avg_rv"] or 0.0),
+                int(state["history_size"] or 0),
             )
             return True
         return False
@@ -3015,7 +3192,9 @@ class EventManager:
         positions = self._position_tracker.get(event_id)
         if not positions:
             return
-        take_profit_trigger = float(self.settings.get("take_profit_trigger_price", 0.95))
+        take_profit_trigger = float(
+            self.settings.get("take_profit_trigger_price", 0.95)
+        )
         take_profit_min = float(self.settings.get("take_profit_min_price", 0.90))
         gap = float(self.settings.get("bot_fak_gap_tolerance", 0.05))
 
@@ -3030,14 +3209,20 @@ class EventManager:
             bids = ob.get("bids") or []
             if not bids:
                 continue
-            best_bid = float(bids[0]["price"]) if isinstance(bids[0], dict) else float(bids[0])
+            best_bid = (
+                float(bids[0]["price"]) if isinstance(bids[0], dict) else float(bids[0])
+            )
             if best_bid < take_profit_trigger:
                 continue
             sell_price = max(round(best_bid - gap, 4), take_profit_min)
             self._take_profit_triggered_positions.add(key)
             logger.info(
                 "TP trigger: %s %s bid=%.4f sell_price=%.4f shares=%.4f",
-                event_id, side, best_bid, sell_price, pos["shares"],
+                event_id,
+                side,
+                best_bid,
+                sell_price,
+                pos["shares"],
             )
             asyncio.create_task(
                 self._execute_take_profit(
@@ -3065,12 +3250,18 @@ class EventManager:
     ) -> None:
         """Place a SELL limit order for take-profit and record the exit in bot_orders CSV."""
         import math
+
         shares = math.floor(shares * 100) / 100
         if shares <= 0:
-            logger.warning("TP execute: shares rounded to zero for %s %s — skipping", event_id, side)
+            logger.warning(
+                "TP execute: shares rounded to zero for %s %s — skipping",
+                event_id,
+                side,
+            )
             self._take_profit_triggered_positions.discard((event_id, side))
             return
         from ..routers.trading import get_client
+
         client = get_client()
         if not client:
             logger.warning("TP execute: client unavailable for %s %s", event_id, side)
@@ -3078,6 +3269,7 @@ class EventManager:
             return
         try:
             from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
+
             cond_params = BalanceAllowanceParams(
                 asset_type=AssetType.CONDITIONAL,
                 token_id=token_id,
@@ -3085,13 +3277,17 @@ class EventManager:
             )
             client.client.update_balance_allowance(cond_params)
         except Exception as exc:
-            logger.warning("TP execute: could not update conditional allowance: %s", exc)
+            logger.warning(
+                "TP execute: could not update conditional allowance: %s", exc
+            )
         try:
             result = await asyncio.to_thread(
                 client.place_order, token_id, "SELL", sell_price, shares
             )
             if result:
-                self.record_position_sell(event_id=event_id, outcome=side, shares_sold=shares)
+                self.record_position_sell(
+                    event_id=event_id, outcome=side, shares_sold=shares
+                )
                 exit_at = datetime.now(tz=timezone.utc).isoformat()
                 pnl = round(shares * (sell_price - avg_entry_price), 4)
                 if placed_at_utc:
@@ -3108,10 +3304,17 @@ class EventManager:
                     )
                 logger.info(
                     "TP executed: %s %s %.4f shares @ %.4f (bid=%.4f pnl=%.4f)",
-                    event_id, side, shares, sell_price, best_bid, pnl,
+                    event_id,
+                    side,
+                    shares,
+                    sell_price,
+                    best_bid,
+                    pnl,
                 )
             else:
-                logger.warning("TP execute: no result for %s %s — will not retry", event_id, side)
+                logger.warning(
+                    "TP execute: no result for %s %s — will not retry", event_id, side
+                )
         except Exception as exc:
             logger.error("TP execute error %s %s: %s", event_id, side, exc)
             self._take_profit_triggered_positions.discard((event_id, side))
@@ -4374,7 +4577,10 @@ class EventManager:
                 if "_vol_price_points" not in event_dict:
                     event_dict["_vol_price_points"] = []
                     event_dict["_vol_ticker"] = normalize_symbol(
-                        str(ecfg.get("chainlink_symbol") or ecfg.get("binance_symbol", ""))
+                        str(
+                            ecfg.get("chainlink_symbol")
+                            or ecfg.get("binance_symbol", "")
+                        )
                     )
                     event_dict["_vol_event_minutes"] = int(
                         event_dict.get("timeframe_minutes") or 5
@@ -4393,6 +4599,7 @@ class EventManager:
             # Always run state + bot logic on every tick
             self._apply_quant_metrics(event_dict, ecfg, datetime.now(tz=timezone.utc))
             self._apply_quant_buy_gates(event_dict)
+            self._apply_vol_gate_state(event_id, event_dict)
             self._track_opportunities_for_event(
                 event_id, event_dict, datetime.now(tz=timezone.utc)
             )
@@ -4424,6 +4631,28 @@ class EventManager:
                             "quant_range_histogram"
                         ),
                         "quant_buy_gate": event_dict.get("quant_buy_gate"),
+                        "vol_rv_current": event_dict.get("vol_rv_current"),
+                        "vol_rv_avg": event_dict.get("vol_rv_avg"),
+                        "vol_rv_pct_of_avg": event_dict.get("vol_rv_pct_of_avg"),
+                        "vol_noise_ratio": event_dict.get("vol_noise_ratio"),
+                        "vol_range_pct": event_dict.get("vol_range_pct"),
+                        "vol_gate_enabled": event_dict.get("vol_gate_enabled"),
+                        "vol_gate_blocked": event_dict.get("vol_gate_blocked"),
+                        "vol_gate_reason": event_dict.get("vol_gate_reason"),
+                        "vol_gate_history_size": event_dict.get(
+                            "vol_gate_history_size"
+                        ),
+                        "vol_gate_avg_rv": event_dict.get("vol_gate_avg_rv"),
+                        "vol_gate_prev_rv": event_dict.get("vol_gate_prev_rv"),
+                        "vol_gate_threshold_rv": event_dict.get(
+                            "vol_gate_threshold_rv"
+                        ),
+                        "vol_gate_prev_pct_of_avg": event_dict.get(
+                            "vol_gate_prev_pct_of_avg"
+                        ),
+                        "vol_gate_min_pct_of_avg": event_dict.get(
+                            "vol_gate_min_pct_of_avg"
+                        ),
                     },
                 }
             )
@@ -4709,6 +4938,7 @@ class EventManager:
             if result:
                 try:
                     from ..routers.trading import invalidate_positions_cache
+
                     invalidate_positions_cache(event_id)
                 except Exception:
                     pass
@@ -4748,7 +4978,9 @@ class EventManager:
                             "slippage_pct": round(slippage_pct, 4)
                             if isinstance(slippage_pct, float)
                             else "",
-                            "filled_notional_usd_real": round(filled_notional_usd_real, 4)
+                            "filled_notional_usd_real": round(
+                                filled_notional_usd_real, 4
+                            )
                             if filled_notional_usd_real > 0
                             else "",
                             "filled_shares_real": round(filled_shares_real, 6)
@@ -4761,7 +4993,9 @@ class EventManager:
                     )
                 except Exception as fill_exc:
                     logger.warning(
-                        "Hedge: could not extract fill data for %s: %s", event_id, fill_exc
+                        "Hedge: could not extract fill data for %s: %s",
+                        event_id,
+                        fill_exc,
                     )
                     _update_bot_order_log_row(
                         _prelog_ts,
@@ -4774,7 +5008,12 @@ class EventManager:
                             "status": "placed",
                         },
                     )
-                logger.info("Hedge: order placed for %s %s order_id=%s", event_id, side, order_id)
+                logger.info(
+                    "Hedge: order placed for %s %s order_id=%s",
+                    event_id,
+                    side,
+                    order_id,
+                )
                 try:
                     refreshed_balance = await asyncio.to_thread(client.get_balance)
                 except Exception:
@@ -4879,12 +5118,6 @@ class EventManager:
             # Cooldown expired — clear it and allow retry
             del self._no_fill_cooldown_until[key]
 
-        # --- Volatility gate ---
-        if self.settings.get("vol_gate_enabled", False):
-            _vol_blocked = self._check_vol_gate(event_id, event_dict)
-            if _vol_blocked:
-                return
-
         self._bot_pending_orders.add(key)
         _prelog_ts: str = ""
         _clob_confirmed: bool = False
@@ -4979,7 +5212,9 @@ class EventManager:
                 if mid_at_send > 0:
                     spread_pct_at_send = spread_at_send / mid_at_send
 
-            vol_1m_usdt_at_send: float | None = None  # populated post-fill (off critical path)
+            vol_1m_usdt_at_send: float | None = (
+                None  # populated post-fill (off critical path)
+            )
 
             # --- Context fields (zero cost, derived from available data) ---
             hour_utc: int = now_utc.hour
@@ -5019,7 +5254,9 @@ class EventManager:
             if not isinstance(sample_size_at_send, int):
                 sample_size_at_send = None
 
-            polymarket_volume_24h: float | None = _as_float(event_dict.get("volume_24h"))
+            polymarket_volume_24h: float | None = _as_float(
+                event_dict.get("volume_24h")
+            )
 
             # Volatility monitor: record large signals to detect choppy markets
             if isinstance(diff_vs_ptb_at_send, float):
@@ -5375,9 +5612,14 @@ class EventManager:
                     # Volume fetch is off the critical path — runs after fill confirmation
                     try:
                         _price_source = self.settings.get("price_source", "binance")
-                        _vol_symbol = self._extract_event_ticker(event_id, event_dict).upper() + "USDT"
+                        _vol_symbol = (
+                            self._extract_event_ticker(event_id, event_dict).upper()
+                            + "USDT"
+                        )
                         _fetch_vol = get_volume_fetcher(_price_source)
-                        vol_1m_usdt_at_send = await asyncio.to_thread(_fetch_vol, _vol_symbol)
+                        vol_1m_usdt_at_send = await asyncio.to_thread(
+                            _fetch_vol, _vol_symbol
+                        )
                     except Exception:
                         pass
                     _update_bot_order_log_row(
@@ -5451,7 +5693,9 @@ class EventManager:
                 )
                 if event_id not in self._event_hedge_source:
                     _filled_real = locals().get("filled_notional_usd_real", 0) or 0
-                    _actual_notional = _filled_real if _filled_real > 0 else notional_usd
+                    _actual_notional = (
+                        _filled_real if _filled_real > 0 else notional_usd
+                    )
                     self._event_hedge_source[event_id] = {
                         "side": side,
                         "notional": _actual_notional,
@@ -5679,6 +5923,7 @@ class EventManager:
             }
             self._apply_quant_metrics(event_dict, ecfg, datetime.now(tz=timezone.utc))
             self._apply_quant_buy_gates(event_dict)
+            self._apply_vol_gate_state(event_id, event_dict)
             self._track_opportunities_for_event(
                 event_id, event_dict, datetime.now(tz=timezone.utc)
             )
@@ -5707,6 +5952,28 @@ class EventManager:
                             "quant_range_histogram"
                         ),
                         "quant_buy_gate": event_dict.get("quant_buy_gate"),
+                        "vol_rv_current": event_dict.get("vol_rv_current"),
+                        "vol_rv_avg": event_dict.get("vol_rv_avg"),
+                        "vol_rv_pct_of_avg": event_dict.get("vol_rv_pct_of_avg"),
+                        "vol_noise_ratio": event_dict.get("vol_noise_ratio"),
+                        "vol_range_pct": event_dict.get("vol_range_pct"),
+                        "vol_gate_enabled": event_dict.get("vol_gate_enabled"),
+                        "vol_gate_blocked": event_dict.get("vol_gate_blocked"),
+                        "vol_gate_reason": event_dict.get("vol_gate_reason"),
+                        "vol_gate_history_size": event_dict.get(
+                            "vol_gate_history_size"
+                        ),
+                        "vol_gate_avg_rv": event_dict.get("vol_gate_avg_rv"),
+                        "vol_gate_prev_rv": event_dict.get("vol_gate_prev_rv"),
+                        "vol_gate_threshold_rv": event_dict.get(
+                            "vol_gate_threshold_rv"
+                        ),
+                        "vol_gate_prev_pct_of_avg": event_dict.get(
+                            "vol_gate_prev_pct_of_avg"
+                        ),
+                        "vol_gate_min_pct_of_avg": event_dict.get(
+                            "vol_gate_min_pct_of_avg"
+                        ),
                     },
                 }
             )

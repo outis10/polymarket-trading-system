@@ -100,7 +100,8 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
                 {
                     timestamp: Date.now(),
                     side,
-                    notional: Number(botLastOrder.notional_usd ?? 0) || undefined,
+                    notional:
+                        Number(botLastOrder.notional_usd ?? 0) || undefined,
                 },
             ]);
         }
@@ -217,6 +218,41 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
             : quantSource === "pm_15m_minute_ranges"
               ? "15m-minute"
               : quantSource;
+    const volGateEnabled = event.vol_gate_enabled ?? false;
+    const volGateBlocked = event.vol_gate_blocked ?? false;
+    const volGateReason = event.vol_gate_reason ?? null;
+    const volGatePrevPctOfAvg = event.vol_gate_prev_pct_of_avg ?? null;
+    const volGateMinPctOfAvg = event.vol_gate_min_pct_of_avg ?? null;
+    const volGateHistorySize = event.vol_gate_history_size ?? null;
+    const volGateHasDecision =
+        volGatePrevPctOfAvg !== null && volGateMinPctOfAvg !== null;
+    const volGateProgressPct =
+        volGateHasDecision && volGateMinPctOfAvg! > 0
+            ? Math.min(100, (volGatePrevPctOfAvg! / volGateMinPctOfAvg!) * 100)
+            : event.vol_rv_pct_of_avg != null
+              ? Math.min(100, event.vol_rv_pct_of_avg)
+              : 0;
+    const volGateStatusLabel = !volGateEnabled
+        ? "gate off"
+        : volGateReason === "insufficient_history"
+          ? "warming up"
+          : volGateBlocked
+            ? "blocked"
+            : "open";
+    const volGateFillClass = !volGateEnabled
+        ? "probability-fill-neutral"
+        : volGateReason === "insufficient_history"
+          ? "probability-fill-neutral"
+          : volGateBlocked
+            ? "probability-fill-down"
+            : "probability-fill-up";
+    const volGateTextClass = !volGateEnabled
+        ? ""
+        : volGateReason === "insufficient_history"
+          ? ""
+          : volGateBlocked
+            ? "prob-down"
+            : "prob-up";
 
     const ksTooltip = (edgePct: number) =>
         `Kelly por evento. Source=${hasQuantData ? "quant" : "model"} | bankroll=${formatUsd(bankroll)} (${bankrollReal !== null ? "api" : "manual"}) | edge=${edgePct.toFixed(2)}% | frac=${kellyFraction.toFixed(2)}x`;
@@ -684,45 +720,59 @@ function EventCard({ eventId, event, isFirstCard = false }: EventCardProps) {
                 </section>
             )}
 
-            {event.vol_rv_pct_of_avg != null && (
+            {(event.vol_rv_pct_of_avg != null || volGateEnabled) && (
                 <section className="quant-edge-strip">
                     <div className="probability-title-row">
-                        <span>Volatility</span>
+                        <span>Volatility Gate</span>
                         <span className="quant-edge-sample">
-                            {event.vol_noise_ratio != null
-                                ? `noise ${event.vol_noise_ratio.toFixed(2)}`
-                                : ""}
+                            {volGateStatusLabel}
                         </span>
                     </div>
                     <div className="probability-bar">
                         <div
-                            className={
-                                event.vol_rv_pct_of_avg >= 100
-                                    ? "probability-fill-up"
-                                    : event.vol_rv_pct_of_avg >= 80
-                                    ? "probability-fill-neutral"
-                                    : "probability-fill-down"
-                            }
+                            className={volGateFillClass}
                             style={{
-                                width: `${Math.min(100, event.vol_rv_pct_of_avg)}%`,
+                                width: `${volGateProgressPct}%`,
                             }}
                         />
                     </div>
                     <div className="probability-values">
-                        <span
-                            className={
-                                event.vol_rv_pct_of_avg >= 100
-                                    ? "prob-up"
-                                    : event.vol_rv_pct_of_avg >= 80
-                                    ? ""
-                                    : "prob-down"
-                            }
-                        >
-                            RV {event.vol_rv_pct_of_avg.toFixed(1)}% of avg
+                        <span className={volGateTextClass}>
+                            {volGateHasDecision
+                                ? `Prev RV ${volGatePrevPctOfAvg!.toFixed(1)}% of avg`
+                                : event.vol_rv_pct_of_avg != null
+                                  ? `Current RV ${event.vol_rv_pct_of_avg.toFixed(1)}% of avg`
+                                  : "Waiting for vol history"}
                         </span>
-                        {event.vol_range_pct != null && (
+                        {volGateMinPctOfAvg != null ? (
+                            <span className="quant-edge-sample">
+                                min {volGateMinPctOfAvg.toFixed(1)}%
+                            </span>
+                        ) : event.vol_range_pct != null ? (
                             <span className="quant-edge-sample">
                                 range {event.vol_range_pct.toFixed(3)}%
+                            </span>
+                        ) : null}
+                    </div>
+                    <div className="probability-values">
+                        <span className="quant-edge-sample">
+                            {volGateHistorySize != null
+                                ? `history n=${volGateHistorySize}`
+                                : ""}
+                        </span>
+                        {(event.vol_noise_ratio != null ||
+                            event.vol_range_pct != null) && (
+                            <span className="quant-edge-sample">
+                                {[
+                                    event.vol_noise_ratio != null
+                                        ? `noise ${event.vol_noise_ratio.toFixed(2)}`
+                                        : null,
+                                    event.vol_range_pct != null
+                                        ? `range ${event.vol_range_pct.toFixed(3)}%`
+                                        : null,
+                                ]
+                                    .filter(Boolean)
+                                    .join(" · ")}
                             </span>
                         )}
                     </div>

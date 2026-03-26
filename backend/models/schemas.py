@@ -57,6 +57,20 @@ class EventData(BaseModel):
     quant_sample_size: Optional[int] = None
     quant_range_histogram: Optional[dict] = None
     quant_buy_gate: Optional[dict] = None
+    vol_rv_current: Optional[float] = None
+    vol_rv_avg: Optional[float] = None
+    vol_rv_pct_of_avg: Optional[float] = None
+    vol_noise_ratio: Optional[float] = None
+    vol_range_pct: Optional[float] = None
+    vol_gate_enabled: Optional[bool] = None
+    vol_gate_blocked: Optional[bool] = None
+    vol_gate_reason: Optional[str] = None
+    vol_gate_history_size: Optional[int] = None
+    vol_gate_avg_rv: Optional[float] = None
+    vol_gate_prev_rv: Optional[float] = None
+    vol_gate_threshold_rv: Optional[float] = None
+    vol_gate_prev_pct_of_avg: Optional[float] = None
+    vol_gate_min_pct_of_avg: Optional[float] = None
 
 
 # --- WebSocket message envelopes ---
@@ -73,6 +87,20 @@ class PriceUpdatePayload(BaseModel):
     quant_sample_size: Optional[int] = None
     quant_range_histogram: Optional[dict] = None
     quant_buy_gate: Optional[dict] = None
+    vol_rv_current: Optional[float] = None
+    vol_rv_avg: Optional[float] = None
+    vol_rv_pct_of_avg: Optional[float] = None
+    vol_noise_ratio: Optional[float] = None
+    vol_range_pct: Optional[float] = None
+    vol_gate_enabled: Optional[bool] = None
+    vol_gate_blocked: Optional[bool] = None
+    vol_gate_reason: Optional[str] = None
+    vol_gate_history_size: Optional[int] = None
+    vol_gate_avg_rv: Optional[float] = None
+    vol_gate_prev_rv: Optional[float] = None
+    vol_gate_threshold_rv: Optional[float] = None
+    vol_gate_prev_pct_of_avg: Optional[float] = None
+    vol_gate_min_pct_of_avg: Optional[float] = None
 
 
 class OrderBookUpdatePayload(BaseModel):
@@ -142,6 +170,9 @@ class SettingsData(BaseModel):
     quant_gate_min_diff_pct: float = 0.0
     quant_gate_min_sample_strong_signal: int = 20
     quant_gate_strong_signal_threshold: float = 0.72
+    vol_gate_enabled: bool = False
+    vol_gate_lookback_n: int = 20
+    vol_gate_min_pct_of_avg: float = 0.8
     monitored_tickers: list[str] = ["BTC", "ETH", "SOL", "XRP"]
     bot_risk_enabled: bool = True
     bot_max_buys_per_event_side: int = 1
