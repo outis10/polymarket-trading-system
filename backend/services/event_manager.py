@@ -107,6 +107,7 @@ _BOT_ORDERS_FIELDNAMES = [
     "adverse_selection_3s",  # Fase 7
     "adverse_selection_5s",  # Fase 7
     "fak_attempts",
+    "vol_gate_prev_pct_of_avg",
     "kelly_pct",
     "bankroll_usd",
     "percentile_at_signal",
@@ -2889,9 +2890,28 @@ class EventManager:
             changed = False
             for row in rows:
                 status = str(row.get("status", "")).strip().lower()
-                if status != "placed":
+                res_status = str(row.get("resolution_status", "")).strip().lower()
+                if res_status in ("resolved", "no_execution"):
                     continue
-                if str(row.get("resolution_status", "")).strip().lower() == "resolved":
+
+                # Close out unexecuted rows (timeout/sending/no_fill) once event ends
+                if status in ("timeout", "sending", "no_fill", "failed"):
+                    event_id_ne = str(row.get("event_id", "")).strip()
+                    end_raw_ne = str(row.get("event_end_utc_at_send", "")).strip()
+                    if not end_raw_ne:
+                        ev_ne = self.events.get(event_id_ne)
+                        if isinstance(ev_ne, dict):
+                            end_raw_ne = str(ev_ne.get("event_end_utc", "")).strip()
+                    try:
+                        end_dt_ne = datetime.fromisoformat(end_raw_ne) if end_raw_ne else None
+                    except Exception:
+                        end_dt_ne = None
+                    if end_dt_ne is not None and now_utc >= end_dt_ne:
+                        row["resolution_status"] = "no_execution"
+                        changed = True
+                    continue
+
+                if status != "placed":
                     continue
 
                 event_id = str(row.get("event_id", "")).strip()
@@ -4583,10 +4603,12 @@ class EventManager:
 
         if side == "yes":
             event["order_book_yes"] = ob
-            event["yes_price"] = mid
+            if best_bid > 0 and best_ask > 0:
+                event["yes_price"] = mid
         else:
             event["order_book_no"] = ob
-            event["no_price"] = mid
+            if best_bid > 0 and best_ask > 0:
+                event["no_price"] = mid
 
         if event.get("yes_price") is not None and event.get("no_price") is not None:
             total = float(event.get("yes_price", 0) or 0) + float(
@@ -4971,6 +4993,7 @@ class EventManager:
                 "adverse_selection_1s": "",
                 "adverse_selection_3s": "",
                 "adverse_selection_5s": "",
+                "vol_gate_prev_pct_of_avg": event_dict.get("vol_gate_prev_pct_of_avg", ""),
                 "kelly_pct": "",
                 "bankroll_usd": "",
                 "percentile_at_signal": "",
@@ -5249,13 +5272,24 @@ class EventManager:
                 bankroll_usd=bankroll_usd,
             )
             if not bool(evaluation.get("eligible")):
-                logger.info(
-                    "Bot auto-order skipped by unified eligibility: %s | event=%s side=%s",
-                    evaluation.get("reason"),
-                    event_id,
-                    side,
-                )
-                return
+                if evaluation.get("reason") == "no_ask_price":
+                    await asyncio.sleep(1.0)
+                    now_utc = datetime.now(tz=timezone.utc)
+                    evaluation = self.evaluate_bot_order_candidate(
+                        event_id=event_id,
+                        event_dict=event_dict,
+                        side=side,
+                        now_utc=now_utc,
+                        bankroll_usd=bankroll_usd,
+                    )
+                if not bool(evaluation.get("eligible")):
+                    logger.info(
+                        "Bot auto-order skipped by unified eligibility: %s | event=%s side=%s",
+                        evaluation.get("reason"),
+                        event_id,
+                        side,
+                    )
+                    return
             ask_price = float(evaluation.get("ask_price", 0.0) or 0.0)
             notional_usd = float(evaluation.get("notional_usd", 0.0) or 0.0)
             shares = float(evaluation.get("shares", 0.0) or 0.0)
@@ -5571,6 +5605,7 @@ class EventManager:
                 "adverse_selection_1s": "",
                 "adverse_selection_3s": "",
                 "adverse_selection_5s": "",
+                "vol_gate_prev_pct_of_avg": event_dict.get("vol_gate_prev_pct_of_avg", ""),
                 "kelly_pct": round(kelly_pct * 100, 4) if kelly_pct is not None else "",
                 "bankroll_usd": round(bankroll_usd, 2)
                 if bankroll_usd is not None
