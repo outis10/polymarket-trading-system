@@ -195,3 +195,6 @@ class SettingsData(BaseModel):
     # Bot order controls
     bot_enforce_timeframe_filter: bool = True
     bot_min_seconds_before_end: int = 30
+    take_profit_enabled: bool = False
+    take_profit_trigger_price: float = 0.95
+    take_profit_min_price: float = 0.90

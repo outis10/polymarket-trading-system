@@ -23,6 +23,17 @@ Actualízalo cuando cambien decisiones, scripts o flujos importantes.
   - `vol_gate_history_size`, `vol_gate_avg_rv`, `vol_gate_prev_rv`,
   - `vol_gate_threshold_rv`, `vol_gate_prev_pct_of_avg`, `vol_gate_min_pct_of_avg`.
 
+### Estado actualizado (2026-03-25, take profit hardening)
+- `take_profit` dejó de usar `SELL limit` resting y ahora intenta salida inmediata con `place_market_order`.
+- El tracker de posición ya no descuenta shares al mero aceptar la orden:
+  - reduce posición solo con `filled_shares_real` confirmado,
+  - si no hay fill confirmado, no toca `_position_tracker`.
+- El latch `_take_profit_triggered_positions` ahora se libera en `finally`:
+  - permite reintentos si no hubo fill,
+  - evita quedar pegado en fills parciales o futuras reaperturas del mismo `event_id + side`.
+- El chequeo de `take_profit` ahora corre también en `_update_live()`:
+  - queda activo tanto con streamer como con fallback por polling.
+
 ### Telegram remote control (2026-03-16)
 - V1 implementada sobre el backend FastAPI existente:
   - router localhost-only: `backend/routers/control.py`

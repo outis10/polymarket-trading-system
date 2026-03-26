@@ -171,6 +171,9 @@ export interface SettingsData {
     // Bot order controls
     bot_enforce_timeframe_filter?: boolean;
     bot_min_seconds_before_end?: number;
+    take_profit_enabled?: boolean;
+    take_profit_trigger_price?: number;
+    take_profit_min_price?: number;
     keyboard_shortcuts_enabled?: boolean;
 }
 

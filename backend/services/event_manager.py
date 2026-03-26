@@ -412,6 +412,38 @@ def _extract_fills_detail(result: Any) -> tuple[int, float, float, str]:
     return fill_count, round(total_notional, 6), round(total_shares, 6), fills_json
 
 
+def _extract_fills_detail_for_side(
+    result: Any, side: str
+) -> tuple[int, float, float, str]:
+    """
+    Extract fill instrumentation for BUY/SELL responses.
+
+    BUY:
+      makingAmount = USD spent
+      takingAmount = shares received
+    SELL:
+      makingAmount = shares sold
+      takingAmount = USD received
+    """
+    fill_count, total_notional, total_shares, fills_json = _extract_fills_detail(result)
+    if fill_count > 0:
+        return fill_count, total_notional, total_shares, fills_json
+
+    if result is None:
+        return 0, 0.0, 0.0, ""
+    if not isinstance(result, dict):
+        obj_dict = getattr(result, "__dict__", None)
+        result = obj_dict if isinstance(obj_dict, dict) else {}
+
+    making = _as_float(result.get("makingAmount"))
+    taking = _as_float(result.get("takingAmount"))
+    if str(side).strip().upper() == "SELL":
+        real_shares = making if making and making > 0 else 0.0
+        real_notional = taking if taking and taking > 0 else 0.0
+        return 0, real_notional, real_shares, ""
+    return 0, total_notional, total_shares, fills_json
+
+
 def _ensure_paper_trades_csv() -> None:
     os.makedirs(os.path.dirname(_PAPER_TRADES_LOG_PATH), exist_ok=True)
     if os.path.exists(_PAPER_TRADES_LOG_PATH):
@@ -3196,7 +3228,6 @@ class EventManager:
             self.settings.get("take_profit_trigger_price", 0.95)
         )
         take_profit_min = float(self.settings.get("take_profit_min_price", 0.90))
-        gap = float(self.settings.get("bot_fak_gap_tolerance", 0.05))
 
         for side, pos in list(positions.items()):
             if not pos or float(pos.get("shares", 0)) <= 0:
@@ -3214,14 +3245,13 @@ class EventManager:
             )
             if best_bid < take_profit_trigger:
                 continue
-            sell_price = max(round(best_bid - gap, 4), take_profit_min)
             self._take_profit_triggered_positions.add(key)
             logger.info(
-                "TP trigger: %s %s bid=%.4f sell_price=%.4f shares=%.4f",
+                "TP trigger: %s %s bid=%.4f min_price=%.4f shares=%.4f",
                 event_id,
                 side,
                 best_bid,
-                sell_price,
+                take_profit_min,
                 pos["shares"],
             )
             asyncio.create_task(
@@ -3232,7 +3262,7 @@ class EventManager:
                     shares=float(pos["shares"]),
                     avg_entry_price=float(pos.get("avg_price", 0)),
                     placed_at_utc=pos.get("placed_at_utc", ""),
-                    sell_price=sell_price,
+                    min_sell_price=take_profit_min,
                     best_bid=best_bid,
                 )
             )
@@ -3245,10 +3275,10 @@ class EventManager:
         shares: float,
         avg_entry_price: float,
         placed_at_utc: str,
-        sell_price: float,
+        min_sell_price: float,
         best_bid: float,
     ) -> None:
-        """Place a SELL limit order for take-profit and record the exit in bot_orders CSV."""
+        """Place an immediate SELL for take-profit and record only confirmed fills."""
         import math
 
         shares = math.floor(shares * 100) / 100
@@ -3282,14 +3312,48 @@ class EventManager:
             )
         try:
             result = await asyncio.to_thread(
-                client.place_order, token_id, "SELL", sell_price, shares
+                client.place_market_order, token_id, "SELL", shares
             )
             if result:
+                fill_price_real = _extract_fill_price_from_result(result)
+                (
+                    _fill_count,
+                    filled_notional_usd_real,
+                    filled_shares_real,
+                    _fills_detail_json,
+                ) = _extract_fills_detail_for_side(result, "SELL")
+                confirmed_shares = (
+                    min(shares, filled_shares_real) if filled_shares_real > 0 else 0.0
+                )
+                if confirmed_shares <= 0:
+                    logger.warning(
+                        "TP execute: sell returned without confirmed fill for %s %s",
+                        event_id,
+                        side,
+                    )
+                    return
+                exec_price = (
+                    float(fill_price_real)
+                    if isinstance(fill_price_real, float) and fill_price_real > 0
+                    else (
+                        filled_notional_usd_real / confirmed_shares
+                        if filled_notional_usd_real > 0 and confirmed_shares > 0
+                        else best_bid
+                    )
+                )
+                if exec_price < min_sell_price:
+                    logger.warning(
+                        "TP execute: fill below min price for %s %s (exec=%.4f min=%.4f)",
+                        event_id,
+                        side,
+                        exec_price,
+                        min_sell_price,
+                    )
                 self.record_position_sell(
-                    event_id=event_id, outcome=side, shares_sold=shares
+                    event_id=event_id, outcome=side, shares_sold=confirmed_shares
                 )
                 exit_at = datetime.now(tz=timezone.utc).isoformat()
-                pnl = round(shares * (sell_price - avg_entry_price), 4)
+                pnl = round(confirmed_shares * (exec_price - avg_entry_price), 4)
                 if placed_at_utc:
                     _update_bot_order_log_row(
                         placed_at_utc=placed_at_utc,
@@ -3297,7 +3361,7 @@ class EventManager:
                         side=side,
                         updates={
                             "take_profit_exit_at_utc": exit_at,
-                            "take_profit_exit_price": f"{sell_price:.4f}",
+                            "take_profit_exit_price": f"{exec_price:.4f}",
                             "take_profit_bid_at_trigger": f"{best_bid:.4f}",
                             "take_profit_pnl_usd": f"{pnl:.4f}",
                         },
@@ -3306,8 +3370,8 @@ class EventManager:
                     "TP executed: %s %s %.4f shares @ %.4f (bid=%.4f pnl=%.4f)",
                     event_id,
                     side,
-                    shares,
-                    sell_price,
+                    confirmed_shares,
+                    exec_price,
                     best_bid,
                     pnl,
                 )
@@ -3317,6 +3381,7 @@ class EventManager:
                 )
         except Exception as exc:
             logger.error("TP execute error %s %s: %s", event_id, side, exc)
+        finally:
             self._take_profit_triggered_positions.discard((event_id, side))
 
     def validate_order_risk_guards(
@@ -5927,6 +5992,7 @@ class EventManager:
             self._track_opportunities_for_event(
                 event_id, event_dict, datetime.now(tz=timezone.utc)
             )
+            asyncio.create_task(self._check_take_profit(event_id, event_dict))
             # Bot auto-order: fire-and-forget, strategy-dependent
             if str(self.settings.get("trading_mode", "manual")).lower() == "bot":
                 _strategy = str(

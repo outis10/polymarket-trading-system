@@ -78,6 +78,9 @@ export const useEventsStore = create<EventsState>((set) => ({
         order_book_min_broadcast_ms: 120,
         bot_enforce_timeframe_filter: true,
         bot_min_seconds_before_end: 30,
+        take_profit_enabled: false,
+        take_profit_trigger_price: 0.95,
+        take_profit_min_price: 0.9,
         keyboard_shortcuts_enabled:
             localStorage.getItem("keyboard_shortcuts_enabled") === "true",
     },
