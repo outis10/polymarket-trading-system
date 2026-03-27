@@ -186,6 +186,55 @@ def fetch_binance_klines(symbol: str, start_time_ms: int) -> list[dict]:
         return []
 
 
+def fetch_binance_volatility_context(symbol: str, n: int = 10) -> dict:
+    """Fetch realized volatility and shock ratio from last N completed 1m candles.
+
+    Returns dict with:
+      rv_5m: std of last 5 log-returns (percentage units, e.g. 0.05 ≈ 0.05%)
+      shock_ratio: |last return| / median(|returns|), None if median ≈ 0
+    Returns empty dict on error or insufficient data.
+    """
+    import math
+    import requests
+
+    try:
+        resp = requests.get(
+            f"{BINANCE_API}/klines",
+            params={"symbol": symbol, "interval": "1m", "limit": n + 2},
+            timeout=5,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        # data[-1] is the current (incomplete) candle — skip it
+        closes = [float(k[4]) for k in data[:-1]]
+        if len(closes) < 6:
+            return {}
+        returns = [
+            math.log(closes[i] / closes[i - 1]) * 100
+            for i in range(1, len(closes))
+            if closes[i - 1] > 0
+        ]
+        if len(returns) < 5:
+            return {}
+        last5 = returns[-5:]
+        mean5 = sum(last5) / len(last5)
+        rv_5m = math.sqrt(sum((r - mean5) ** 2 for r in last5) / len(last5))
+        abs_returns = [abs(r) for r in returns]
+        sorted_abs = sorted(abs_returns)
+        mid = len(sorted_abs) // 2
+        median_abs = (
+            (sorted_abs[mid - 1] + sorted_abs[mid]) / 2
+            if len(sorted_abs) % 2 == 0
+            else sorted_abs[mid]
+        )
+        shock_ratio = (
+            round(abs_returns[-1] / median_abs, 4) if median_abs > 1e-10 else None
+        )
+        return {"rv_5m": round(rv_5m, 6), "shock_ratio": shock_ratio}
+    except Exception:
+        return {}
+
+
 def fetch_binance_volume_1m(symbol: str) -> Optional[float]:
     """Fetch USDT volume of the last completed 1-minute candle for a symbol.
 

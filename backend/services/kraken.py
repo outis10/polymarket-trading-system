@@ -306,6 +306,65 @@ def fetch_kraken_klines(symbol: str, start_time_ms: int) -> list[dict]:
         return []
 
 
+def fetch_kraken_volatility_context(symbol: str, n: int = 10) -> dict:
+    """Fetch realized volatility and shock ratio from last N completed 1m candles.
+
+    Kraken OHLC rows: [time, open, high, low, close, vwap, volume, count]
+    Returns dict with rv_5m and shock_ratio (same semantics as binance version).
+    Returns empty dict on error or insufficient data.
+    """
+    import math
+    import requests
+
+    kraken_pair = _BINANCE_TO_KRAKEN.get(symbol.upper())
+    if not kraken_pair:
+        return {}
+    try:
+        resp = requests.get(
+            f"{KRAKEN_REST_API}/OHLC",
+            params={"pair": kraken_pair, "interval": 1},
+            timeout=5,
+        )
+        resp.raise_for_status()
+        result = resp.json().get("result", {})
+        rows = None
+        for key, val in result.items():
+            if key != "last" and isinstance(val, list):
+                rows = val
+                break
+        if not rows or len(rows) < 8:
+            return {}
+        # rows[-1] is the current (incomplete) candle — skip it
+        completed = rows[-(n + 2) : -1]  # noqa: E203
+        closes = [float(r[4]) for r in completed]
+        if len(closes) < 6:
+            return {}
+        returns = [
+            math.log(closes[i] / closes[i - 1]) * 100
+            for i in range(1, len(closes))
+            if closes[i - 1] > 0
+        ]
+        if len(returns) < 5:
+            return {}
+        last5 = returns[-5:]
+        mean5 = sum(last5) / len(last5)
+        rv_5m = math.sqrt(sum((r - mean5) ** 2 for r in last5) / len(last5))
+        abs_returns = [abs(r) for r in returns]
+        sorted_abs = sorted(abs_returns)
+        mid = len(sorted_abs) // 2
+        median_abs = (
+            (sorted_abs[mid - 1] + sorted_abs[mid]) / 2
+            if len(sorted_abs) % 2 == 0
+            else sorted_abs[mid]
+        )
+        shock_ratio = (
+            round(abs_returns[-1] / median_abs, 4) if median_abs > 1e-10 else None
+        )
+        return {"rv_5m": round(rv_5m, 6), "shock_ratio": shock_ratio}
+    except Exception:
+        return {}
+
+
 def fetch_kraken_volume_1m(symbol: str) -> Optional[float]:
     """Fetch volume of the last completed 1-minute candle for a symbol.
 

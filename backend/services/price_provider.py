@@ -116,6 +116,23 @@ def get_volume_fetcher(source: str = DEFAULT_SOURCE) -> Callable[[str], Optional
     return fetch_binance_volume_1m
 
 
+def get_volatility_context_fetcher(
+    source: str = DEFAULT_SOURCE,
+) -> Callable[[str], dict]:
+    """Return a callable fetch_volatility_context(symbol: str) -> dict.
+
+    Returns dict with rv_5m (realized vol, last 5 1m candles) and shock_ratio.
+    """
+    source = (source or DEFAULT_SOURCE).lower().strip()
+
+    if source == "kraken":
+        from .kraken import fetch_kraken_volatility_context
+        return fetch_kraken_volatility_context
+
+    from .binance import fetch_binance_volatility_context
+    return fetch_binance_volatility_context
+
+
 def get_price_streamer(
     source: str,
     symbol: str,

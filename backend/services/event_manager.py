@@ -33,6 +33,7 @@ from .price_provider import (
     get_price_fetcher,
     get_price_streamer,
     get_single_price_fetcher,
+    get_volatility_context_fetcher,
     get_volume_fetcher,
 )
 from .volatility_monitor import volatility_monitor
@@ -75,6 +76,8 @@ _BOT_ORDERS_FIELDNAMES = [
     "spread_pct_at_decision",
     "bid_ask_imbalance",
     "vol_1m_usdt_at_send",
+    "rv_5m_at_send",
+    "shock_ratio_at_send",
     "fill_price_real",
     "filled_at_utc",
     "fill_latency_ms",
@@ -164,6 +167,7 @@ _PAPER_TRADES_FIELDNAMES = [
     "pnl_simulated",
     "status",
     "ladder_entry",
+    "vol_gate_prev_pct_of_avg",
 ]
 
 _VOL_LOG_FIELDNAMES = [
@@ -2740,6 +2744,7 @@ class EventManager:
             "pnl_simulated": "",
             "status": "pending",
             "ladder_entry": ladder_entry_num,
+            "vol_gate_prev_pct_of_avg": event_dict.get("vol_gate_prev_pct_of_avg", ""),
         }
         with open(_paper_trades_log_path(), "a", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=_PAPER_TRADES_FIELDNAMES)
@@ -5272,24 +5277,13 @@ class EventManager:
                 bankroll_usd=bankroll_usd,
             )
             if not bool(evaluation.get("eligible")):
-                if evaluation.get("reason") == "no_ask_price":
-                    await asyncio.sleep(1.0)
-                    now_utc = datetime.now(tz=timezone.utc)
-                    evaluation = self.evaluate_bot_order_candidate(
-                        event_id=event_id,
-                        event_dict=event_dict,
-                        side=side,
-                        now_utc=now_utc,
-                        bankroll_usd=bankroll_usd,
-                    )
-                if not bool(evaluation.get("eligible")):
-                    logger.info(
-                        "Bot auto-order skipped by unified eligibility: %s | event=%s side=%s",
-                        evaluation.get("reason"),
-                        event_id,
-                        side,
-                    )
-                    return
+                logger.info(
+                    "Bot auto-order skipped by unified eligibility: %s | event=%s side=%s",
+                    evaluation.get("reason"),
+                    event_id,
+                    side,
+                )
+                return
             ask_price = float(evaluation.get("ask_price", 0.0) or 0.0)
             notional_usd = float(evaluation.get("notional_usd", 0.0) or 0.0)
             shares = float(evaluation.get("shares", 0.0) or 0.0)
@@ -5584,6 +5578,8 @@ class EventManager:
                 "vol_1m_usdt_at_send": round(vol_1m_usdt_at_send, 2)
                 if isinstance(vol_1m_usdt_at_send, float)
                 else "",
+                "rv_5m_at_send": "",
+                "shock_ratio_at_send": "",
                 "fill_price_real": "",
                 "slippage_pct": "",
                 "filled_notional_usd_real": "",
@@ -5733,17 +5729,26 @@ class EventManager:
                         and shares > 0
                         else ""
                     )
-                    # Volume fetch is off the critical path — runs after fill confirmation
+                    # Off-critical-path fetches — run after fill confirmation
+                    _price_source = self.settings.get("price_source", "binance")
+                    _vol_symbol = (
+                        self._extract_event_ticker(event_id, event_dict).upper()
+                        + "USDT"
+                    )
                     try:
-                        _price_source = self.settings.get("price_source", "binance")
-                        _vol_symbol = (
-                            self._extract_event_ticker(event_id, event_dict).upper()
-                            + "USDT"
-                        )
                         _fetch_vol = get_volume_fetcher(_price_source)
                         vol_1m_usdt_at_send = await asyncio.to_thread(
                             _fetch_vol, _vol_symbol
                         )
+                    except Exception:
+                        pass
+                    rv_5m_at_send: float | None = None
+                    shock_ratio_at_send: float | None = None
+                    try:
+                        _fetch_vol_ctx = get_volatility_context_fetcher(_price_source)
+                        _vol_ctx = await asyncio.to_thread(_fetch_vol_ctx, _vol_symbol)
+                        rv_5m_at_send = _vol_ctx.get("rv_5m")
+                        shock_ratio_at_send = _vol_ctx.get("shock_ratio")
                     except Exception:
                         pass
                     _update_bot_order_log_row(
@@ -5780,6 +5785,12 @@ class EventManager:
                             "fill_ratio": _fill_ratio,
                             "vol_1m_usdt_at_send": round(vol_1m_usdt_at_send, 2)
                             if isinstance(vol_1m_usdt_at_send, float)
+                            else "",
+                            "rv_5m_at_send": round(rv_5m_at_send, 6)
+                            if isinstance(rv_5m_at_send, float)
+                            else "",
+                            "shock_ratio_at_send": round(shock_ratio_at_send, 4)
+                            if isinstance(shock_ratio_at_send, float)
                             else "",
                             "status": "placed",
                         },
