@@ -21,6 +21,15 @@ Actualízalo cuando cambien decisiones, scripts o flujos importantes.
 - Riesgo residual:
   - `data-api` puede tener algo de lag; si falla, el endpoint cae a `tracker_fallback`.
 
+### Estado actualizado (2026-03-26, runtime settings editados directo en disco)
+
+- `EventManager` ahora hot-reload `runtime_settings*.json` también cuando el archivo cambia en disco:
+  - compara `mtime` del `SETTINGS_PATH`,
+  - recarga settings en el loop live,
+  - aplica `handle_runtime_settings_side_effects(...)`,
+  - y emite `settings_update` por WS para sincronizar la UI.
+- Antes de este cambio, editar `config/runtime_settings.json` o `config/runtime_settings_v2.json` a mano no tenía efecto hasta reinicio o guardado por REST/WS.
+
 ### Estado actualizado (2026-03-25, volatility gate alineado)
 - `vol_gate` quedó integrado a la evaluación unificada `evaluate_bot_order_candidate()`:
   - tracking/analytics/bot ahora comparten el mismo bloqueo `vol_gate_blocked`,

@@ -293,12 +293,13 @@ def _read_csv_rows(path, ticker: str | None, limit: int) -> list[dict]:
     """Read CSV file in a thread — keeps the event loop free."""
     rows: list[dict] = []
     try:
-        with open(path, newline="") as f:
-            for row in csv.DictReader(f):
+        with open(path, newline="", encoding="utf-8", errors="replace") as f:
+            sanitized = (line.replace("\x00", "") for line in f)
+            for row in csv.DictReader(sanitized):
                 if ticker and str(row.get("ticker", "")).upper() != ticker:
                     continue
                 rows.append(row)
-    except FileNotFoundError:
+    except (FileNotFoundError, csv.Error):
         pass
     return rows[-max(1, limit) :]
 

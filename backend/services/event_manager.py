@@ -451,6 +451,31 @@ def _extract_fills_detail_for_side(
     return 0, total_notional, total_shares, fills_json
 
 
+def _detect_buy_fill_anomaly(
+    *,
+    requested_shares: float,
+    requested_notional_usd: float,
+    ask_price: float,
+    fill_price_real: float | None,
+    filled_shares_real: float,
+) -> str | None:
+    """Return anomaly reason when parsed BUY fill metrics are not internally plausible."""
+    if requested_shares <= 0 or requested_notional_usd <= 0 or filled_shares_real <= 0:
+        return None
+    if not isinstance(fill_price_real, float) or fill_price_real <= 0:
+        return None
+
+    fill_ratio = filled_shares_real / requested_shares
+    # Parser bug guard: notional is fixed in BUY FOK; a >2x share improvement plus
+    # a fill price far below the quoted ask is not credible and contaminates analytics.
+    if fill_ratio > 2.0 and ask_price > 0 and fill_price_real < (ask_price * 0.25):
+        return (
+            f"implausible_buy_fill ratio={fill_ratio:.4f}"
+            f" fill_price={fill_price_real:.4f} ask={ask_price:.4f}"
+        )
+    return None
+
+
 def _ensure_paper_trades_csv() -> None:
     paper_path = _paper_trades_log_path()
     os.makedirs(os.path.dirname(paper_path), exist_ok=True)
@@ -691,6 +716,7 @@ class EventManager:
         self._runtime_settings_path = os.path.normpath(
             os.environ.get("SETTINGS_PATH", _default_settings)
         )
+        self._runtime_settings_mtime_ns: int | None = None
         self._persisted_setting_keys = set(self.settings.keys())
         self._last_paper_reconcile_at: datetime | None = None
         self._last_bot_orders_reconcile_at: datetime | None = None
@@ -774,8 +800,10 @@ class EventManager:
         """Load persisted runtime mode/settings from disk, if available."""
         path = self._runtime_settings_path
         if not os.path.exists(path):
+            self._runtime_settings_mtime_ns = None
             return
         try:
+            stat_result = os.stat(path)
             with open(path) as f:
                 payload = json.load(f)
         except Exception as exc:
@@ -822,6 +850,34 @@ class EventManager:
                 self.handle_runtime_settings_side_effects(
                     set(persisted_settings.keys())
                 )
+        self._runtime_settings_mtime_ns = int(getattr(stat_result, "st_mtime_ns", 0))
+
+    async def _maybe_reload_runtime_settings_from_disk(self) -> None:
+        """Hot-reload runtime settings if the JSON file changed on disk."""
+        path = self._runtime_settings_path
+        if not path or not os.path.exists(path):
+            return
+        try:
+            current_mtime_ns = int(os.stat(path).st_mtime_ns)
+        except Exception:
+            return
+        if self._runtime_settings_mtime_ns is None:
+            self._runtime_settings_mtime_ns = current_mtime_ns
+            return
+        if current_mtime_ns == self._runtime_settings_mtime_ns:
+            return
+        logger.info("Runtime settings changed on disk — reloading %s", path)
+        self._load_runtime_settings()
+        try:
+            await manager.broadcast(
+                {
+                    "type": "settings_update",
+                    "event_id": "",
+                    "data": self.settings,
+                }
+            )
+        except Exception:
+            pass
 
     def _get_live_manual_bankroll_usd(self) -> float:
         live = self.settings.get("kelly_live_bankroll_usd")
@@ -2908,7 +2964,9 @@ class EventManager:
                         if isinstance(ev_ne, dict):
                             end_raw_ne = str(ev_ne.get("event_end_utc", "")).strip()
                     try:
-                        end_dt_ne = datetime.fromisoformat(end_raw_ne) if end_raw_ne else None
+                        end_dt_ne = (
+                            datetime.fromisoformat(end_raw_ne) if end_raw_ne else None
+                        )
                     except Exception:
                         end_dt_ne = None
                     if end_dt_ne is not None and now_utc >= end_dt_ne:
@@ -4998,7 +5056,9 @@ class EventManager:
                 "adverse_selection_1s": "",
                 "adverse_selection_3s": "",
                 "adverse_selection_5s": "",
-                "vol_gate_prev_pct_of_avg": event_dict.get("vol_gate_prev_pct_of_avg", ""),
+                "vol_gate_prev_pct_of_avg": event_dict.get(
+                    "vol_gate_prev_pct_of_avg", ""
+                ),
                 "kelly_pct": "",
                 "bankroll_usd": "",
                 "percentile_at_signal": "",
@@ -5601,7 +5661,9 @@ class EventManager:
                 "adverse_selection_1s": "",
                 "adverse_selection_3s": "",
                 "adverse_selection_5s": "",
-                "vol_gate_prev_pct_of_avg": event_dict.get("vol_gate_prev_pct_of_avg", ""),
+                "vol_gate_prev_pct_of_avg": event_dict.get(
+                    "vol_gate_prev_pct_of_avg", ""
+                ),
                 "kelly_pct": round(kelly_pct * 100, 4) if kelly_pct is not None else "",
                 "bankroll_usd": round(bankroll_usd, 2)
                 if bankroll_usd is not None
@@ -5977,6 +6039,7 @@ class EventManager:
 
     async def _update_live(self):
         """Update all live events (REST-based periodic update)."""
+        await self._maybe_reload_runtime_settings_from_disk()
         client = get_client()
         now_iso = datetime.now(tz=timezone.utc).isoformat()
         event_ids = list(self.events.keys())
