@@ -311,6 +311,29 @@ class PolymarketClient:
 
         return self.place_order(token_id, side, price, size, "MARKET")
 
+    def place_gtc_limit_order(
+        self,
+        token_id: str,
+        side: str,
+        price: float,
+        amount_usd: float,
+    ) -> Optional[Dict[str, Any]]:
+        """Place a GTC (Good-Till-Cancelled) limit order.
+
+        Args:
+            token_id: The token ID to trade
+            side: 'BUY' or 'SELL'
+            price: Limit price per share (0-1)
+            amount_usd: Notional amount in USDC; converted to shares internally
+
+        Returns:
+            Order result dict (contains 'orderID' or 'id') or raises on error.
+        """
+        if price <= 0:
+            raise ValueError(f"price must be > 0, got {price}")
+        shares = round(amount_usd / price, 6)
+        return self.place_order(token_id, side, price, shares)
+
     def cancel_order(self, order_id: str) -> bool:
         """
         Cancel an existing order

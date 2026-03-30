@@ -230,7 +230,11 @@ def fetch_binance_volatility_context(symbol: str, n: int = 10) -> dict:
         shock_ratio = (
             round(abs_returns[-1] / median_abs, 4) if median_abs > 1e-10 else None
         )
-        return {"rv_5m": round(rv_5m, 6), "shock_ratio": shock_ratio}
+        # Efficiency Ratio: |net move| / sum of absolute moves (range 0-1)
+        net_move = abs(closes[-1] - closes[0])
+        total_path = sum(abs(closes[i] - closes[i - 1]) for i in range(1, len(closes)))
+        er_14 = round(net_move / total_path, 4) if total_path > 1e-10 else None
+        return {"rv_5m": round(rv_5m, 6), "shock_ratio": shock_ratio, "er_14": er_14}
     except Exception:
         return {}
 

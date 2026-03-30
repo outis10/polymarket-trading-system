@@ -78,6 +78,7 @@ _BOT_ORDERS_FIELDNAMES = [
     "vol_1m_usdt_at_send",
     "rv_5m_at_send",
     "shock_ratio_at_send",
+    "er_at_send",
     "fill_price_real",
     "filled_at_utc",
     "fill_latency_ms",
@@ -186,6 +187,15 @@ _VOL_LOG_FIELDNAMES = [
     "price_high",
     "price_low",
 ]
+
+
+# Substrings in CLOB exception messages that indicate thin-liquidity no-fill
+# (as opposed to network errors or real failures).
+_no_liq_signals: tuple[str, ...] = (
+    "no orders found to match",
+    "not enough liquidity",
+    "insufficient liquidity",
+)
 
 
 def _output_dir_path() -> str:
@@ -606,6 +616,8 @@ class EventManager:
             "take_profit_min_price": 0.90,  # floor: never sell below this
             "fak_price_tolerance": 0.02,  # extra cents added to ask to survive book movement during latency
             "bot_fak_gap_tolerance": 0.05,  # added to ask_price on single placement attempt
+            "bot_order_mode": "fak",  # "fak" | "gtc_limit"
+            "bot_limit_ttl_secs": 2.0,  # seconds before cancelling an unfilled GTC limit
             "bot_min_diff_abs": {},  # per-asset absolute diff filter e.g. {"BTC": 20}
             "bot_strategy": "gate_transition",  # "gate_transition" | "best_side_reentry"
             "bot_reentry_min_edge_improvement_pct": 2.0,  # min edge gain (pp) required for re-entry
@@ -737,6 +749,7 @@ class EventManager:
         self._persisted_setting_keys = set(self.settings.keys())
         self._last_paper_reconcile_at: datetime | None = None
         self._last_bot_orders_reconcile_at: datetime | None = None
+        self._last_gtc_orphan_check_at: datetime | None = None
         self._paper_event_cache: dict[str, dict[str, Any]] = {}
 
     def _load_order_guard_records_from_csv(self) -> list[dict]:
@@ -4050,6 +4063,7 @@ class EventManager:
                     self._maybe_refresh_live_events()
                     await self._watchdog_price_streams()
                     await self._update_live()
+                    await self._reconcile_gtc_orphans()
                     self._finalize_completed_events_volatility()
                     self._tick_counter += 1
                     # Live mode uses incremental WS updates; send full snapshots less often.
@@ -5261,6 +5275,183 @@ class EventManager:
             except Exception:
                 pass
 
+    async def _gtc_ttl_cancel_task(
+        self,
+        *,
+        client,
+        order_id: str,
+        ttl_secs: float,
+        prelog_ts: str,
+        event_id: str,
+        side: str,
+        key: tuple,
+        now_utc,
+    ) -> None:
+        """Background task: wait TTL seconds, then cancel the GTC limit if still open.
+
+        If the order was already filled when the TTL fires, logs it as placed.
+        If still open, cancels and logs as no_fill with cooldown.
+        """
+        await asyncio.sleep(ttl_secs)
+        try:
+            open_orders = await asyncio.to_thread(client.get_open_orders)
+            open_ids = {
+                str(o.get("id", "") or o.get("orderID", ""))
+                for o in open_orders
+            }
+            if str(order_id) in open_ids:
+                # Still open — cancel and mark no_fill
+                await asyncio.to_thread(client.cancel_order, str(order_id))
+                _update_bot_order_log_row(
+                    prelog_ts,
+                    event_id,
+                    side,
+                    {
+                        "status": "no_fill",
+                        "fills_detail_json": "error:gtc_ttl_expired",
+                    },
+                )
+                self._bot_prev_gate_enabled[key] = False
+                _cooldown_secs = float(
+                    self.settings.get("bot_no_fill_cooldown_secs", 2)
+                )
+                self._no_fill_cooldown_until[key] = (
+                    datetime.now(timezone.utc).timestamp() + _cooldown_secs
+                )
+                self._order_guard_records = [
+                    r
+                    for r in self._order_guard_records
+                    if not (
+                        r.get("event_id") == event_id
+                        and r.get("outcome") == side
+                        and r.get("at_utc") == now_utc
+                    )
+                ]
+                logger.info(
+                    "GTC limit TTL expired — cancelled order %s for %s %s",
+                    order_id,
+                    event_id,
+                    side,
+                )
+            else:
+                # Not in open orders — was filled
+                _update_bot_order_log_row(
+                    prelog_ts,
+                    event_id,
+                    side,
+                    {"order_id": str(order_id), "status": "placed"},
+                )
+                logger.info(
+                    "GTC limit filled within TTL: order %s for %s %s",
+                    order_id,
+                    event_id,
+                    side,
+                )
+        except Exception as exc:
+            logger.error(
+                "GTC TTL cancel task error for %s %s order %s: %s",
+                event_id,
+                side,
+                order_id,
+                exc,
+            )
+
+    async def _reconcile_gtc_orphans(self) -> None:
+        """Cancel any GTC limit orders that are still open in the CLOB but whose
+        TTL cancel task died (e.g. bot restart, network error).
+
+        Runs every 30 s. Scans today's bot_orders CSV for rows with:
+          status="sending" + maker_vs_taker_mode="gtc_limit" + order_id present
+          + placed more than (bot_limit_ttl_secs + 10 s) ago
+
+        Makes ONE get_open_orders() call; cancels orphans and updates CSV.
+        """
+        now_utc = datetime.now(tz=timezone.utc)
+        if (
+            self._last_gtc_orphan_check_at is not None
+            and (now_utc - self._last_gtc_orphan_check_at).total_seconds() < 30
+        ):
+            return
+        self._last_gtc_orphan_check_at = now_utc
+
+        path = _bot_orders_log_path()
+        if not os.path.exists(path):
+            return
+
+        try:
+            with open(path, newline="") as f:
+                rows = list(csv.DictReader(f))
+        except Exception:
+            return
+
+        ttl = float(self.settings.get("bot_limit_ttl_secs", 2.0))
+        grace = ttl + 10.0  # seconds after which we treat the row as orphaned
+
+        orphans = []
+        for row in rows:
+            if row.get("status") != "sending":
+                continue
+            if row.get("maker_vs_taker_mode") != "gtc_limit":
+                continue
+            order_id = str(row.get("order_id", "")).strip()
+            if not order_id:
+                continue
+            placed_raw = str(row.get("placed_at_utc", "")).strip()
+            try:
+                placed_dt = datetime.fromisoformat(placed_raw)
+            except Exception:
+                continue
+            if (now_utc - placed_dt).total_seconds() < grace:
+                continue
+            orphans.append((row, order_id, placed_raw))
+
+        if not orphans:
+            return
+
+        logger.info("GTC orphan check: found %d orphaned sending rows", len(orphans))
+
+        client = get_client()
+        if not client:
+            return
+
+        try:
+            open_orders = await asyncio.to_thread(client.get_open_orders)
+            open_ids = {
+                str(o.get("id", "") or o.get("orderID", ""))
+                for o in open_orders
+            }
+        except Exception as exc:
+            logger.warning("GTC orphan check: could not fetch open orders: %s", exc)
+            return
+
+        for row, order_id, placed_raw in orphans:
+            event_id = str(row.get("event_id", "")).strip()
+            side = str(row.get("side", "")).strip()
+            if order_id in open_ids:
+                try:
+                    await asyncio.to_thread(client.cancel_order, order_id)
+                    _update_bot_order_log_row(
+                        placed_raw, event_id, side,
+                        {"status": "no_fill", "fills_detail_json": "error:gtc_orphan_cancelled"},
+                    )
+                    logger.info(
+                        "GTC orphan cancelled: order %s for %s %s", order_id, event_id, side
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "GTC orphan: could not cancel order %s: %s", order_id, exc
+                    )
+            else:
+                # Not in open orders → was filled but TTL task missed it
+                _update_bot_order_log_row(
+                    placed_raw, event_id, side,
+                    {"status": "placed"},
+                )
+                logger.info(
+                    "GTC orphan: order %s for %s %s was already filled — marked placed",
+                    order_id, event_id, side,
+                )
+
     async def _bot_maybe_place_order(
         self,
         event_id: str,
@@ -5657,6 +5848,7 @@ class EventManager:
                 else "",
                 "rv_5m_at_send": "",
                 "shock_ratio_at_send": "",
+                "er_at_send": "",
                 "fill_price_real": "",
                 "slippage_pct": "",
                 "filled_notional_usd_real": "",
@@ -5713,6 +5905,105 @@ class EventManager:
             # Record fired edge for best_side_reentry re-entry throttle
             self._bot_last_fired_edge[key] = (quant_prob - ask_price) * 100.0
 
+            _order_mode = str(self.settings.get("bot_order_mode", "fak")).lower()
+            _send_timeout = float(
+                self.settings.get("bot_order_send_timeout_seconds", 8.0)
+            )
+
+            # Defaults so the outer error-handler can always reference them,
+            # even when the exception is raised before the FAK/GTC block sets them.
+            _fak_attempts_used = 1
+            _filled_at_utc = now_utc
+            _fill_latency_ms = 0
+
+            # ── GTC limit + TTL cancel ────────────────────────────────────────
+            # GTC limit orders specify shares directly → CLOB minimum is 5 shares.
+            # FAK market orders specify USD notional → no shares minimum, fall through.
+            _use_gtc = _order_mode == "gtc_limit"
+            if _use_gtc:
+                _pm_min_shares = float(self.settings.get("pm_min_shares", 5))
+                _shares_estimate = notional_usd / ask_price if ask_price > 0 else 0
+                if _shares_estimate < _pm_min_shares:
+                    # Bump notional to exactly pm_min_shares * ask_price so the GTC
+                    # limit order meets the CLOB minimum. Kelly said less, but the
+                    # edge is positive so taking the minimum stake is still +EV.
+                    _bumped = round(_pm_min_shares * ask_price, 4)
+                    logger.info(
+                        "Bot auto-order: bumping notional %.2f→%.2f "
+                        "(%.2f shares → %g) for %s %s ask=%.4f",
+                        notional_usd,
+                        _bumped,
+                        _shares_estimate,
+                        _pm_min_shares,
+                        event_id,
+                        side,
+                        ask_price,
+                    )
+                    notional_usd = _bumped
+                    _update_bot_order_log_row(
+                        _prelog_ts, event_id, side, {"notional_usd": notional_usd}
+                    )
+
+            if _use_gtc:
+                _send_at_utc = datetime.now(tz=timezone.utc)
+                _gtc_result = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        client.place_gtc_limit_order,
+                        token_id,
+                        "BUY",
+                        ask_price,
+                        notional_usd,
+                    ),
+                    timeout=_send_timeout,
+                )
+
+                _gtc_order_id = (
+                    getattr(_gtc_result, "id", None)
+                    or getattr(_gtc_result, "orderID", None)
+                    or (_gtc_result.get("id") if isinstance(_gtc_result, dict) else None)
+                    or (_gtc_result.get("orderID") if isinstance(_gtc_result, dict) else None)
+                    or str(_gtc_result)[:16]
+                ) if _gtc_result else None
+
+                if not _gtc_order_id:
+                    raise ValueError("GTC limit order returned no order_id")
+
+                _send_latency_ms = round(
+                    (datetime.now(tz=timezone.utc) - _send_at_utc).total_seconds() * 1000
+                )
+                _update_bot_order_log_row(
+                    _prelog_ts,
+                    event_id,
+                    side,
+                    {
+                        "order_id": str(_gtc_order_id),
+                        "fill_latency_ms": _send_latency_ms,
+                        "maker_vs_taker_mode": "gtc_limit",
+                    },
+                )
+                _ttl = float(self.settings.get("bot_limit_ttl_secs", 2.0))
+                asyncio.create_task(
+                    self._gtc_ttl_cancel_task(
+                        client=client,
+                        order_id=str(_gtc_order_id),
+                        ttl_secs=_ttl,
+                        prelog_ts=_prelog_ts,
+                        event_id=event_id,
+                        side=side,
+                        key=key,
+                        now_utc=now_utc,
+                    )
+                )
+                logger.info(
+                    "GTC limit placed: order_id=%s ttl=%.1fs event=%s side=%s",
+                    _gtc_order_id,
+                    _ttl,
+                    event_id,
+                    side,
+                )
+                return  # TTL task handles fill detection and log update
+
+            # ── FAK (default) ────────────────────────────────────────────────
             # Apply gap tolerance to survive order book movement during network latency.
             # ask_price is used for edge/slippage calculations; order_price is what hits the CLOB.
             _gap_tolerance = float(self.settings.get("bot_fak_gap_tolerance", 0.05))
@@ -5721,22 +6012,16 @@ class EventManager:
             result = None
             _fak_attempts_used = 1
             _send_at_utc = datetime.now(tz=timezone.utc)
-            _send_timeout = float(
-                self.settings.get("bot_order_send_timeout_seconds", 8.0)
+            result = await asyncio.wait_for(
+                asyncio.to_thread(
+                    client.place_fok_order,
+                    token_id,
+                    "BUY",
+                    notional_usd,
+                    order_price,
+                ),
+                timeout=_send_timeout,
             )
-            try:
-                result = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        client.place_fok_order,
-                        token_id,
-                        "BUY",
-                        notional_usd,
-                        order_price,
-                    ),
-                    timeout=_send_timeout,
-                )
-            except Exception:
-                raise
 
             _filled_at_utc = datetime.now(tz=timezone.utc)
             _fill_latency_ms = round(
@@ -5855,6 +6140,7 @@ class EventManager:
                             pass
                         rv_5m_at_send: float | None = None
                         shock_ratio_at_send: float | None = None
+                        er_at_send: float | None = None
                         try:
                             _fetch_vol_ctx = get_volatility_context_fetcher(
                                 _price_source
@@ -5864,6 +6150,7 @@ class EventManager:
                             )
                             rv_5m_at_send = _vol_ctx.get("rv_5m")
                             shock_ratio_at_send = _vol_ctx.get("shock_ratio")
+                            er_at_send = _vol_ctx.get("er_14")
                         except Exception:
                             pass
                         _update_bot_order_log_row(
@@ -5906,6 +6193,9 @@ class EventManager:
                                 else "",
                                 "shock_ratio_at_send": round(shock_ratio_at_send, 4)
                                 if isinstance(shock_ratio_at_send, float)
+                                else "",
+                                "er_at_send": round(er_at_send, 4)
+                                if isinstance(er_at_send, float)
                                 else "",
                                 "status": "placed",
                             },
@@ -5984,12 +6274,12 @@ class EventManager:
                         }
                     )
             else:
-                logger.error(
-                    "Bot auto-order: place_order returned no result for %s %s",
+                logger.warning(
+                    "Bot auto-order: no fill from CLOB for %s %s (no_fill)",
                     event_id,
                     side,
                 )
-                # Rollback phantom exposure — CLOB returned no result, no USDC spent
+                # Rollback phantom exposure — no USDC spent
                 self._bot_prev_gate_enabled[key] = False
                 self._order_guard_records = [
                     r
@@ -6000,7 +6290,13 @@ class EventManager:
                         and r.get("at_utc") == now_utc
                     )
                 ]
-                # Update the pre-logged "sending" row to reflect the failure
+                # Apply cooldown so the gate can retry after a short pause
+                _cooldown_secs = float(
+                    self.settings.get("bot_no_fill_cooldown_secs", 0.5)
+                )
+                self._no_fill_cooldown_until[key] = (
+                    datetime.now(timezone.utc).timestamp() + _cooldown_secs
+                )
                 _update_bot_order_log_row(
                     _prelog_ts,
                     event_id,
@@ -6008,7 +6304,7 @@ class EventManager:
                     {
                         "filled_at_utc": _filled_at_utc.isoformat(),
                         "fill_latency_ms": _fill_latency_ms,
-                        "status": "failed",
+                        "status": "no_fill",
                         "fills_detail_json": "error:no_result_from_clob",
                     },
                 )
@@ -6040,7 +6336,7 @@ class EventManager:
                         # Unlock gate + cooldown: retry after N secs if signal still active
                         self._bot_prev_gate_enabled[key] = False
                         _cooldown_secs = float(
-                            self.settings.get("bot_no_fill_cooldown_secs", 2)
+                            self.settings.get("bot_no_fill_cooldown_secs", 0.5)
                         )
                         self._no_fill_cooldown_until[key] = (
                             datetime.now(timezone.utc).timestamp() + _cooldown_secs
