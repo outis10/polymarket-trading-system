@@ -30,6 +30,14 @@ Actualízalo cuando cambien decisiones, scripts o flujos importantes.
   - y emite `settings_update` por WS para sincronizar la UI.
 - Antes de este cambio, editar `config/runtime_settings.json` o `config/runtime_settings_v2.json` a mano no tenía efecto hasta reinicio o guardado por REST/WS.
 
+### Estado actualizado (2026-03-27, take-profit logging)
+
+- `_update_bot_order_log_row()` ya puede actualizar filas `placed` cuando el update corresponde a salida (`take_profit_exit_*`).
+- Antes de este fix, `take profit` sí podía ejecutar la venta pero no persistía:
+  - la fila original de entrada ya estaba en `status=placed`,
+  - y el helper solo actualizaba filas `status=sending`,
+  - por eso `take_profit_exit_at_utc`, `take_profit_exit_price` y `take_profit_pnl_usd` quedaban vacíos.
+
 ### Estado actualizado (2026-03-25, volatility gate alineado)
 - `vol_gate` quedó integrado a la evaluación unificada `evaluate_bot_order_candidate()`:
   - tracking/analytics/bot ahora comparten el mismo bloqueo `vol_gate_blocked`,

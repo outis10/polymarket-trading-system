@@ -254,7 +254,12 @@ def _append_bot_order_log(row: dict) -> None:
 def _update_bot_order_log_row(
     placed_at_utc: str, event_id: str, side: str, updates: dict
 ) -> None:
-    """Atomically update a 'sending' row in today's bot orders CSV with final fill data."""
+    """Atomically update a matching bot-order row in today's CSV.
+
+    Default path updates the pre-logged `sending` row with final fill data.
+    For exit annotations (for example take-profit fields), also allow updating
+    an already `placed` row so the original entry can carry its recorded exit.
+    """
     path = _bot_orders_log_path()
     if not os.path.exists(path):
         return
@@ -262,12 +267,24 @@ def _update_bot_order_log_row(
         with open(path, newline="") as f:
             reader = csv.DictReader(f)
             rows = list(reader)
+        allow_placed = any(
+            key in updates
+            for key in (
+                "take_profit_exit_at_utc",
+                "take_profit_exit_price",
+                "take_profit_bid_at_trigger",
+                "take_profit_pnl_usd",
+            )
+        )
         for row in rows:
             if (
                 row.get("placed_at_utc") == placed_at_utc
                 and row.get("event_id") == event_id
                 and row.get("side") == side
-                and row.get("status") == "sending"
+                and (
+                    row.get("status") == "sending"
+                    or (allow_placed and row.get("status") == "placed")
+                )
             ):
                 row.update(updates)
                 break
@@ -5791,72 +5808,108 @@ class EventManager:
                         and shares > 0
                         else ""
                     )
-                    # Off-critical-path fetches — run after fill confirmation
-                    _price_source = self.settings.get("price_source", "binance")
-                    _vol_symbol = (
-                        self._extract_event_ticker(event_id, event_dict).upper()
-                        + "USDT"
+                    _fill_anomaly_reason = _detect_buy_fill_anomaly(
+                        requested_shares=shares,
+                        requested_notional_usd=notional_usd,
+                        ask_price=ask_price,
+                        fill_price_real=fill_price_real,
+                        filled_shares_real=filled_shares_real,
                     )
-                    try:
-                        _fetch_vol = get_volume_fetcher(_price_source)
-                        vol_1m_usdt_at_send = await asyncio.to_thread(
-                            _fetch_vol, _vol_symbol
+                    if _fill_anomaly_reason:
+                        logger.warning(
+                            "Bot auto-order: anomalous BUY fill metrics for %s %s: %s",
+                            event_id,
+                            side,
+                            _fill_anomaly_reason,
                         )
-                    except Exception:
-                        pass
-                    rv_5m_at_send: float | None = None
-                    shock_ratio_at_send: float | None = None
-                    try:
-                        _fetch_vol_ctx = get_volatility_context_fetcher(_price_source)
-                        _vol_ctx = await asyncio.to_thread(_fetch_vol_ctx, _vol_symbol)
-                        rv_5m_at_send = _vol_ctx.get("rv_5m")
-                        shock_ratio_at_send = _vol_ctx.get("shock_ratio")
-                    except Exception:
-                        pass
-                    _update_bot_order_log_row(
-                        _prelog_ts,
-                        event_id,
-                        side,
-                        {
-                            "order_id": str(order_id),
-                            "fill_price_real": round(fill_price_real, 6)
-                            if isinstance(fill_price_real, float)
-                            else "",
-                            "filled_at_utc": _filled_at_utc.isoformat(),
-                            "fill_latency_ms": _fill_latency_ms,
-                            "slippage_pct": round(slippage_pct, 4)
-                            if isinstance(slippage_pct, float)
-                            else "",
-                            "filled_notional_usd_real": round(
-                                filled_notional_usd_real, 4
+                        _update_bot_order_log_row(
+                            _prelog_ts,
+                            event_id,
+                            side,
+                            {
+                                "order_id": str(order_id),
+                                "filled_at_utc": _filled_at_utc.isoformat(),
+                                "fill_latency_ms": _fill_latency_ms,
+                                "filled_notional_usd_real": round(
+                                    filled_notional_usd_real, 4
+                                )
+                                if filled_notional_usd_real > 0
+                                else round(notional_usd, 4),
+                                "fills_detail_json": f"warning:{_fill_anomaly_reason}",
+                                "status": "fill_anomaly",
+                            },
+                        )
+                    else:
+                        # Off-critical-path fetches — run after fill confirmation
+                        _price_source = self.settings.get("price_source", "binance")
+                        _vol_symbol = (
+                            self._extract_event_ticker(event_id, event_dict).upper()
+                            + "USDT"
+                        )
+                        try:
+                            _fetch_vol = get_volume_fetcher(_price_source)
+                            vol_1m_usdt_at_send = await asyncio.to_thread(
+                                _fetch_vol, _vol_symbol
                             )
-                            if filled_notional_usd_real > 0
-                            else "",
-                            "filled_shares_real": round(filled_shares_real, 6)
-                            if filled_shares_real > 0
-                            else "",
-                            "fill_count": fill_count if fill_count > 0 else "",
-                            "fills_detail_json": fills_detail_json,
-                            "edge_at_fill_pct": round(edge_at_fill_pct, 4)
-                            if isinstance(edge_at_fill_pct, float)
-                            else "",
-                            "fak_attempts": _fak_attempts_used,
-                            "realized_slippage_bps": _realized_slippage_bps,
-                            "implementation_shortfall_bps": _is_bps,
-                            "implementation_shortfall_usd": _is_usd,
-                            "fill_ratio": _fill_ratio,
-                            "vol_1m_usdt_at_send": round(vol_1m_usdt_at_send, 2)
-                            if isinstance(vol_1m_usdt_at_send, float)
-                            else "",
-                            "rv_5m_at_send": round(rv_5m_at_send, 6)
-                            if isinstance(rv_5m_at_send, float)
-                            else "",
-                            "shock_ratio_at_send": round(shock_ratio_at_send, 4)
-                            if isinstance(shock_ratio_at_send, float)
-                            else "",
-                            "status": "placed",
-                        },
-                    )
+                        except Exception:
+                            pass
+                        rv_5m_at_send: float | None = None
+                        shock_ratio_at_send: float | None = None
+                        try:
+                            _fetch_vol_ctx = get_volatility_context_fetcher(
+                                _price_source
+                            )
+                            _vol_ctx = await asyncio.to_thread(
+                                _fetch_vol_ctx, _vol_symbol
+                            )
+                            rv_5m_at_send = _vol_ctx.get("rv_5m")
+                            shock_ratio_at_send = _vol_ctx.get("shock_ratio")
+                        except Exception:
+                            pass
+                        _update_bot_order_log_row(
+                            _prelog_ts,
+                            event_id,
+                            side,
+                            {
+                                "order_id": str(order_id),
+                                "fill_price_real": round(fill_price_real, 6)
+                                if isinstance(fill_price_real, float)
+                                else "",
+                                "filled_at_utc": _filled_at_utc.isoformat(),
+                                "fill_latency_ms": _fill_latency_ms,
+                                "slippage_pct": round(slippage_pct, 4)
+                                if isinstance(slippage_pct, float)
+                                else "",
+                                "filled_notional_usd_real": round(
+                                    filled_notional_usd_real, 4
+                                )
+                                if filled_notional_usd_real > 0
+                                else "",
+                                "filled_shares_real": round(filled_shares_real, 6)
+                                if filled_shares_real > 0
+                                else "",
+                                "fill_count": fill_count if fill_count > 0 else "",
+                                "fills_detail_json": fills_detail_json,
+                                "edge_at_fill_pct": round(edge_at_fill_pct, 4)
+                                if isinstance(edge_at_fill_pct, float)
+                                else "",
+                                "fak_attempts": _fak_attempts_used,
+                                "realized_slippage_bps": _realized_slippage_bps,
+                                "implementation_shortfall_bps": _is_bps,
+                                "implementation_shortfall_usd": _is_usd,
+                                "fill_ratio": _fill_ratio,
+                                "vol_1m_usdt_at_send": round(vol_1m_usdt_at_send, 2)
+                                if isinstance(vol_1m_usdt_at_send, float)
+                                else "",
+                                "rv_5m_at_send": round(rv_5m_at_send, 6)
+                                if isinstance(rv_5m_at_send, float)
+                                else "",
+                                "shock_ratio_at_send": round(shock_ratio_at_send, 4)
+                                if isinstance(shock_ratio_at_send, float)
+                                else "",
+                                "status": "placed",
+                            },
+                        )
                 except Exception as fill_exc:
                     # Fill extraction failed but order IS confirmed on-chain
                     logger.warning(
