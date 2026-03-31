@@ -153,6 +153,8 @@ export interface SettingsData {
     bot_drawdown_enabled?: boolean;
     bot_drawdown_stop_pct?: number;
     bot_order_notional_cap_usd?: number;
+    bot_order_mode?: string;
+    bot_limit_ttl_secs?: number;
     bot_paper_mode?: boolean;
     bot_second_entry_opposite_enabled?: boolean;
     bot_second_entry_max_ask_price?: number;

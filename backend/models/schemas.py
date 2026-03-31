@@ -182,6 +182,8 @@ class SettingsData(BaseModel):
     bot_drawdown_enabled: bool = True
     bot_drawdown_stop_pct: float = 50.0
     bot_order_notional_cap_usd: float = 5.0
+    bot_order_mode: str = "fak"
+    bot_limit_ttl_secs: float = 2.0
     bot_paper_mode: bool = False
     bot_second_entry_opposite_enabled: bool = False
     bot_second_entry_max_ask_price: float = 0.0
