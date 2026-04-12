@@ -5296,8 +5296,7 @@ class EventManager:
         try:
             open_orders = await asyncio.to_thread(client.get_open_orders)
             open_ids = {
-                str(o.get("id", "") or o.get("orderID", ""))
-                for o in open_orders
+                str(o.get("id", "") or o.get("orderID", "")) for o in open_orders
             }
             if str(order_id) in open_ids:
                 # Still open — cancel and mark no_fill
@@ -5417,8 +5416,7 @@ class EventManager:
         try:
             open_orders = await asyncio.to_thread(client.get_open_orders)
             open_ids = {
-                str(o.get("id", "") or o.get("orderID", ""))
-                for o in open_orders
+                str(o.get("id", "") or o.get("orderID", "")) for o in open_orders
             }
         except Exception as exc:
             logger.warning("GTC orphan check: could not fetch open orders: %s", exc)
@@ -5431,11 +5429,19 @@ class EventManager:
                 try:
                     await asyncio.to_thread(client.cancel_order, order_id)
                     _update_bot_order_log_row(
-                        placed_raw, event_id, side,
-                        {"status": "no_fill", "fills_detail_json": "error:gtc_orphan_cancelled"},
+                        placed_raw,
+                        event_id,
+                        side,
+                        {
+                            "status": "no_fill",
+                            "fills_detail_json": "error:gtc_orphan_cancelled",
+                        },
                     )
                     logger.info(
-                        "GTC orphan cancelled: order %s for %s %s", order_id, event_id, side
+                        "GTC orphan cancelled: order %s for %s %s",
+                        order_id,
+                        event_id,
+                        side,
                     )
                 except Exception as exc:
                     logger.warning(
@@ -5444,12 +5450,16 @@ class EventManager:
             else:
                 # Not in open orders → was filled but TTL task missed it
                 _update_bot_order_log_row(
-                    placed_raw, event_id, side,
+                    placed_raw,
+                    event_id,
+                    side,
                     {"status": "placed"},
                 )
                 logger.info(
                     "GTC orphan: order %s for %s %s was already filled — marked placed",
-                    order_id, event_id, side,
+                    order_id,
+                    event_id,
+                    side,
                 )
 
     async def _bot_maybe_place_order(
@@ -5726,8 +5736,10 @@ class EventManager:
                     )
                     return
 
+            _order_mode = str(self.settings.get("bot_order_mode", "fak")).lower()
             logger.info(
-                "Bot auto-order: placing FOK BUY $%.2f for %s %s (ask=%.4f shares=%.4f)",
+                "Bot auto-order: placing %s BUY $%.2f for %s %s (ask=%.4f shares=%.4f)",
+                _order_mode.upper(),
                 notional_usd,
                 event_id,
                 side,
@@ -5861,7 +5873,7 @@ class EventManager:
                 "implementation_shortfall_bps": "",
                 "implementation_shortfall_usd": "",
                 "fill_ratio": "",
-                "maker_vs_taker_mode": "fak",
+                "maker_vs_taker_mode": _order_mode,
                 # fill simulator (v1.1-b) — populated at pre-log time from order book snapshot
                 **_fill_sim_log,
                 "cancel_count": "",
@@ -5905,7 +5917,6 @@ class EventManager:
             # Record fired edge for best_side_reentry re-entry throttle
             self._bot_last_fired_edge[key] = (quant_prob - ask_price) * 100.0
 
-            _order_mode = str(self.settings.get("bot_order_mode", "fak")).lower()
             _send_timeout = float(
                 self.settings.get("bot_order_send_timeout_seconds", 8.0)
             )
@@ -5958,18 +5969,31 @@ class EventManager:
                 )
 
                 _gtc_order_id = (
-                    getattr(_gtc_result, "id", None)
-                    or getattr(_gtc_result, "orderID", None)
-                    or (_gtc_result.get("id") if isinstance(_gtc_result, dict) else None)
-                    or (_gtc_result.get("orderID") if isinstance(_gtc_result, dict) else None)
-                    or str(_gtc_result)[:16]
-                ) if _gtc_result else None
+                    (
+                        getattr(_gtc_result, "id", None)
+                        or getattr(_gtc_result, "orderID", None)
+                        or (
+                            _gtc_result.get("id")
+                            if isinstance(_gtc_result, dict)
+                            else None
+                        )
+                        or (
+                            _gtc_result.get("orderID")
+                            if isinstance(_gtc_result, dict)
+                            else None
+                        )
+                        or str(_gtc_result)[:16]
+                    )
+                    if _gtc_result
+                    else None
+                )
 
                 if not _gtc_order_id:
                     raise ValueError("GTC limit order returned no order_id")
 
                 _send_latency_ms = round(
-                    (datetime.now(tz=timezone.utc) - _send_at_utc).total_seconds() * 1000
+                    (datetime.now(tz=timezone.utc) - _send_at_utc).total_seconds()
+                    * 1000
                 )
                 _update_bot_order_log_row(
                     _prelog_ts,

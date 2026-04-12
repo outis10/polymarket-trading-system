@@ -67,6 +67,8 @@ export const useEventsStore = create<EventsState>((set) => ({
         bot_drawdown_enabled: true,
         bot_drawdown_stop_pct: 50,
         bot_order_notional_cap_usd: 5,
+        bot_order_mode: "fak",
+        bot_limit_ttl_secs: 2,
         bot_paper_mode: false,
         bot_second_entry_opposite_enabled: false,
         bot_second_entry_max_ask_price: 0,
