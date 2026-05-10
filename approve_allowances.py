@@ -3,10 +3,12 @@
 Script para aprobar allowances en Polymarket (solo para MetaMask/EOA)
 Este paso es necesario ANTES de poder hacer trading con signature_type=0
 """
-from py_clob_client.client import ClobClient
 import sys
 from dotenv import load_dotenv
 import os
+
+from py_clob_client_v2 import ClobClient
+from py_clob_client_v2.clob_types import AssetType, BalanceAllowanceParams
 
 # Cargar variables de entorno
 load_dotenv()
@@ -80,15 +82,19 @@ def main():
         print("✓ Cliente inicializado")
         print()
 
-        # Verificar allowances actuales
-        print("Verificando allowances actuales...")
+        coll_params = BalanceAllowanceParams(
+            asset_type=AssetType.COLLATERAL,
+            signature_type=0,
+        )
+
+        # Verificar allowance actual
+        print("Verificando allowance actual...")
         try:
-            allowances = client.get_allowances()
-            print(f"  USDC Allowance actual: {allowances.get('usdc', 'N/A')}")
-            print(f"  CTF Allowance actual: {allowances.get('ctf', 'N/A')}")
+            allowance = client.get_balance_allowance(coll_params)
+            print(f"  Collateral allowance actual: {allowance}")
             print()
         except Exception as e:
-            print(f"  No se pudieron verificar allowances actuales: {e}")
+            print(f"  No se pudo verificar el allowance actual: {e}")
             print()
 
         # Aprobar allowances
@@ -96,20 +102,19 @@ def main():
         print("⏳ Esto puede tardar unos segundos (esperando confirmación en blockchain)...")
         print()
 
-        client.set_allowances()
+        client.update_balance_allowance(coll_params)
 
         print("✓ Allowances aprobados exitosamente!")
         print()
 
         # Verificar nuevamente
-        print("Verificando allowances finales...")
+        print("Verificando allowance final...")
         try:
-            allowances = client.get_allowances()
-            print(f"  ✓ USDC Allowance: {allowances.get('usdc', 'N/A')}")
-            print(f"  ✓ CTF Allowance: {allowances.get('ctf', 'N/A')}")
+            allowance = client.get_balance_allowance(coll_params)
+            print(f"  ✓ Collateral allowance: {allowance}")
             print()
         except Exception as e:
-            print(f"  Advertencia: No se pudieron verificar allowances: {e}")
+            print(f"  Advertencia: No se pudo verificar el allowance: {e}")
             print()
 
         print("=" * 60)

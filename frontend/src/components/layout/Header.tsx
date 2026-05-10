@@ -20,6 +20,9 @@ export default function Header({ route, onNavigate }: HeaderProps) {
     const mode = useEventsStore((s) => s.settings.mode);
     const tradingMode = useEventsStore((s) => s.settings.trading_mode);
     const paperMode = useEventsStore((s) => s.settings.bot_paper_mode);
+    const paperStartBankrollUsd = useEventsStore(
+        (s) => s.settings.kelly_paper_bankroll_usd,
+    );
     const paperCurrentBankrollUsd = useEventsStore(
         (s) => s.settings.paper_current_bankroll_usd,
     );
@@ -97,7 +100,13 @@ export default function Header({ route, onNavigate }: HeaderProps) {
             : null;
 
     const showPaperBadge = tradingMode === "bot" && paperMode === true;
+    const paperStartBankroll = toFiniteNumber(paperStartBankrollUsd);
     const paperCurrentBankroll = toFiniteNumber(paperCurrentBankrollUsd);
+    const paperNetPnlUsd =
+        paperStartBankroll !== null && paperCurrentBankroll !== null
+            ? paperCurrentBankroll - paperStartBankroll
+            : null;
+    const displayedNetPnlUsd = showPaperBadge ? paperNetPnlUsd : netPnlUsd;
     const paperBankrollText =
         paperCurrentBankroll !== null
             ? `Paper $${paperCurrentBankroll.toLocaleString("en-US", {
@@ -127,13 +136,17 @@ export default function Header({ route, onNavigate }: HeaderProps) {
                         })}
                     </span>
                 )}
-                {netPnlUsd !== null && (
+                {displayedNetPnlUsd !== null && (
                     <span
-                        className={`net-pnl-chip ${netPnlUsd >= 0 ? "net-pnl-chip--positive" : "net-pnl-chip--negative"}`}
-                        title="Net PnL = Equity actual − Equity al inicio del bot"
+                        className={`net-pnl-chip ${displayedNetPnlUsd >= 0 ? "net-pnl-chip--positive" : "net-pnl-chip--negative"}`}
+                        title={
+                            showPaperBadge
+                                ? "Paper Net PnL = Paper Current Bankroll − Paper Start Bankroll"
+                                : "Net PnL = Equity actual − Equity al inicio del bot"
+                        }
                     >
-                        Net PnL: {netPnlUsd >= 0 ? "+" : ""}
-                        {netPnlUsd.toLocaleString("en-US", {
+                        Net PnL: {displayedNetPnlUsd >= 0 ? "+" : ""}
+                        {displayedNetPnlUsd.toLocaleString("en-US", {
                             minimumFractionDigits: 2,
                             maximumFractionDigits: 2,
                         })}

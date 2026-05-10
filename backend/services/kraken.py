@@ -440,6 +440,8 @@ class KrakenStreamer:
                 await ws.ping()
         except asyncio.CancelledError:
             pass
+        except websockets.ConnectionClosed:
+            pass
 
     async def start(self):
         """Connect and stream trade events."""

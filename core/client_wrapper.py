@@ -1,16 +1,38 @@
-"""Wrapper for py-clob-client with extended functionality"""
+"""Wrapper for Polymarket CLOB clients with a stable app-facing interface."""
 
 import logging
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import (
-    AssetType,
-    BalanceAllowanceParams,
-    MarketOrderArgs,
-    OrderArgs,
-    OrderType,
-)
+try:
+    from py_clob_client_v2 import (
+        ApiCreds,
+        ClobClient,
+        MarketOrderArgs,
+        OrderArgs,
+        OrderPayload,
+        OrderType,
+        PartialCreateOrderOptions,
+        Side,
+    )
+    from py_clob_client_v2.clob_types import AssetType, BalanceAllowanceParams
+
+    _SDK_VERSION = "v2"
+except ImportError:
+    from py_clob_client.client import ClobClient
+    from py_clob_client.clob_types import (
+        ApiCreds,
+        AssetType,
+        BalanceAllowanceParams,
+        MarketOrderArgs,
+        OrderArgs,
+        OrderType,
+    )
+
+    OrderPayload = None
+    PartialCreateOrderOptions = None
+    Side = None
+    _SDK_VERSION = "v1"
 
 from config.settings import PolymarketConfig
 
@@ -27,6 +49,7 @@ class PolymarketClient:
         """
         self.config = config
         self.logger = logging.getLogger(__name__)
+        self.sdk_version = _SDK_VERSION
 
         # Initialize ClobClient with L1 authentication
         self.client = ClobClient(
@@ -41,8 +64,6 @@ class PolymarketClient:
         if config.api_key and config.secret and config.passphrase:
             # Use existing credentials
             self.logger.info("Using existing API credentials")
-            from py_clob_client.clob_types import ApiCreds
-
             api_creds = ApiCreds(
                 api_key=config.api_key,
                 api_secret=config.secret,
@@ -52,15 +73,69 @@ class PolymarketClient:
         else:
             # Derive new credentials from private key
             self.logger.info("Deriving API credentials from private key...")
-            api_creds = self.client.create_or_derive_api_creds()
+            if hasattr(self.client, "create_or_derive_api_key"):
+                api_creds = self.client.create_or_derive_api_key()
+            else:
+                api_creds = self.client.create_or_derive_api_creds()
             self.client.set_api_creds(api_creds)
             self.logger.info("API credentials derived successfully")
 
         self.logger.info(
             f"Polymarket client initialized "
-            f"(testnet={config.use_testnet}, chain_id={config.chain_id}, "
+            f"(sdk={self.sdk_version}, testnet={config.use_testnet}, chain_id={config.chain_id}, "
             f"signature_type={config.signature_type})"
         )
+
+    @staticmethod
+    def _normalize_order_book_summary(orderbook: Any) -> Any:
+        """Return an object exposing .bids/.asks/.last_trade_price for both SDKs."""
+        if orderbook is None:
+            return None
+        if hasattr(orderbook, "bids") and hasattr(orderbook, "asks"):
+            return orderbook
+        if not isinstance(orderbook, dict):
+            return orderbook
+
+        def _norm_levels(levels: Any) -> list:
+            out = []
+            for level in levels or []:
+                if hasattr(level, "price") and hasattr(level, "size"):
+                    out.append(level)
+                    continue
+                if isinstance(level, dict):
+                    out.append(
+                        SimpleNamespace(
+                            price=level.get("price"),
+                            size=level.get("size"),
+                        )
+                    )
+            return out
+
+        return SimpleNamespace(
+            bids=_norm_levels(orderbook.get("bids")),
+            asks=_norm_levels(orderbook.get("asks")),
+            last_trade_price=orderbook.get("last_trade_price")
+            or orderbook.get("lastPrice")
+            or orderbook.get("last_price"),
+        )
+
+    def update_balance_allowance(
+        self,
+        asset_type: Any,
+        token_id: Optional[str] = None,
+    ) -> Any:
+        """Refresh allowance for collateral or conditional tokens."""
+        normalized_asset_type = asset_type
+        if isinstance(asset_type, str):
+            normalized_asset_type = getattr(AssetType, asset_type.upper(), asset_type)
+        params = BalanceAllowanceParams(
+            asset_type=normalized_asset_type,
+            token_id=token_id,
+            signature_type=self.config.signature_type,
+        )
+        if not hasattr(self.client, "update_balance_allowance"):
+            raise AttributeError("Client does not support update_balance_allowance")
+        return self.client.update_balance_allowance(params)
 
     # Market Data Methods
 
@@ -107,6 +182,33 @@ class PolymarketClient:
             self.logger.error(f"Error getting market {condition_id}: {e}")
             return None
 
+    @staticmethod
+    def _is_order_book_not_found_error(exc: Exception) -> bool:
+        text = str(exc).lower()
+        return "status_code=404" in text or "no orderbook exists" in text
+
+    def get_order_book_with_status(self, token_id: str) -> tuple[Optional[Any], str]:
+        """
+        Get order book plus a coarse status classification.
+
+        Returns:
+            (orderbook, status) where status is one of:
+            - "ok"
+            - "not_found"   -> token exists in metadata but CLOB has no order book
+            - "error"       -> any other failure
+        """
+        try:
+            orderbook = self._normalize_order_book_summary(
+                self.client.get_order_book(token_id)
+            )
+            return orderbook, "ok"
+        except Exception as e:
+            if self._is_order_book_not_found_error(e):
+                self.logger.warning("No order book exists for token %s", token_id)
+                return None, "not_found"
+            self.logger.error(f"Error getting order book for {token_id}: {e}")
+            return None, "error"
+
     def get_order_book(self, token_id: str) -> Optional[Dict[str, Any]]:
         """
         Get order book for a specific token
@@ -117,12 +219,8 @@ class PolymarketClient:
         Returns:
             Order book with bids and asks or None if error
         """
-        try:
-            orderbook = self.client.get_order_book(token_id)
-            return orderbook
-        except Exception as e:
-            self.logger.error(f"Error getting order book for {token_id}: {e}")
-            return None
+        orderbook, _status = self.get_order_book_with_status(token_id)
+        return orderbook
 
     def get_market_price(self, token_id: str, side: str = "buy") -> Optional[float]:
         """
@@ -208,23 +306,20 @@ class PolymarketClient:
             Order result dictionary or None if failed
         """
         try:
-            # Get tick size for proper price rounding
-            tick_size = 0.01  # default
+            tick_size = 0.01
             try:
                 tick_size = float(self.client.get_tick_size(token_id))
                 self.logger.info(f"Tick size for token: {tick_size}")
             except Exception as e:
                 self.logger.warning(f"Could not get tick size: {e}")
 
-            # Round price to tick size
             rounded_price = round(price / tick_size) * tick_size
-            rounded_price = round(rounded_price, 2)
+            rounded_price = round(rounded_price, 4)
 
             self.logger.info(
                 f"Placing order: {side} {size} @ {rounded_price} (original: {price}) for token {token_id[:8]}..."
             )
 
-            # Create order with all required parameters
             order_args = OrderArgs(
                 token_id=token_id,
                 price=rounded_price,
@@ -232,8 +327,28 @@ class PolymarketClient:
                 side=side.upper(),
             )
 
-            # Use create_and_post_order
-            result = self.client.create_and_post_order(order_args)
+            if self.sdk_version == "v2":
+                # Some v2 markets require the current maker fee bps to be embedded
+                # in the signed order payload; otherwise the CLOB rejects the order
+                # with "invalid fee rate (0)".
+                try:
+                    setattr(
+                        order_args,
+                        "fee_rate_bps",
+                        int(self.client.get_fee_rate_bps(token_id)),
+                    )
+                except Exception as e:
+                    self.logger.warning(
+                        f"Could not fetch fee_rate_bps for {token_id[:8]}: {e}"
+                    )
+                options = PartialCreateOrderOptions(tick_size=str(tick_size))
+                result = self.client.create_and_post_order(
+                    order_args,
+                    options=options,
+                    order_type=OrderType.GTC,
+                )
+            else:
+                result = self.client.create_and_post_order(order_args)
             self.logger.info(f"Order result: {result}")
             return result
 
@@ -279,8 +394,24 @@ class PolymarketClient:
                 order_type=OrderType.FAK,
                 price=hint_price if hint_price > 0 else 0,
             )
-            signed_order = self.client.create_market_order(order_args)
-            result = self.client.post_order(signed_order, OrderType.FAK)
+            if self.sdk_version == "v2":
+                try:
+                    setattr(
+                        order_args,
+                        "fee_rate_bps",
+                        int(self.client.get_fee_rate_bps(token_id)),
+                    )
+                except Exception as e:
+                    self.logger.warning(
+                        f"Could not fetch fee_rate_bps for {token_id[:8]}: {e}"
+                    )
+                result = self.client.create_and_post_market_order(
+                    order_args=order_args,
+                    order_type=OrderType.FAK,
+                )
+            else:
+                signed_order = self.client.create_market_order(order_args)
+                result = self.client.post_order(signed_order, OrderType.FAK)
             self.logger.info(f"FAK order result: {result}")
             return result
         except Exception as e:
@@ -301,15 +432,43 @@ class PolymarketClient:
         Returns:
             Order result dictionary or None if failed
         """
-        # Get current market price
-        price = self.get_market_price(
-            token_id, "sell" if side.upper() == "BUY" else "buy"
-        )
-        if not price:
-            self.logger.error("Could not get market price for market order")
-            return None
+        try:
+            if self.sdk_version == "v2":
+                price = self.get_market_price(
+                    token_id, "sell" if side.upper() == "BUY" else "buy"
+                )
+                order_args = MarketOrderArgs(
+                    token_id=token_id,
+                    amount=size,
+                    side=side.upper(),
+                    order_type=OrderType.FOK,
+                    price=price if price else 0,
+                )
+                try:
+                    setattr(
+                        order_args,
+                        "fee_rate_bps",
+                        int(self.client.get_fee_rate_bps(token_id)),
+                    )
+                except Exception as e:
+                    self.logger.warning(
+                        f"Could not fetch fee_rate_bps for {token_id[:8]}: {e}"
+                    )
+                return self.client.create_and_post_market_order(
+                    order_args=order_args,
+                    order_type=OrderType.FOK,
+                )
 
-        return self.place_order(token_id, side, price, size, "MARKET")
+            price = self.get_market_price(
+                token_id, "sell" if side.upper() == "BUY" else "buy"
+            )
+            if not price:
+                self.logger.error("Could not get market price for market order")
+                return None
+            return self.place_order(token_id, side, price, size, "MARKET")
+        except Exception as e:
+            self.logger.error(f"Error placing market order: {e}")
+            raise
 
     def place_gtc_limit_order(
         self,
@@ -332,6 +491,33 @@ class PolymarketClient:
         if price <= 0:
             raise ValueError(f"price must be > 0, got {price}")
         shares = round(amount_usd / price, 6)
+        if self.sdk_version == "v2":
+            tick_size = 0.01
+            try:
+                tick_size = float(self.client.get_tick_size(token_id))
+            except Exception:
+                pass
+            order_args = OrderArgs(
+                token_id=token_id,
+                price=round(round(price / tick_size) * tick_size, 4),
+                size=shares,
+                side=side.upper(),
+            )
+            try:
+                setattr(
+                    order_args,
+                    "fee_rate_bps",
+                    int(self.client.get_fee_rate_bps(token_id)),
+                )
+            except Exception as e:
+                self.logger.warning(
+                    f"Could not fetch fee_rate_bps for {token_id[:8]}: {e}"
+                )
+            return self.client.create_and_post_order(
+                order_args,
+                options=PartialCreateOrderOptions(tick_size=str(tick_size)),
+                order_type=OrderType.GTC,
+            )
         return self.place_order(token_id, side, price, shares)
 
     def cancel_order(self, order_id: str) -> bool:
@@ -345,7 +531,10 @@ class PolymarketClient:
             True if successful, False otherwise
         """
         try:
-            self.client.cancel_order(order_id)
+            if self.sdk_version == "v2":
+                self.client.cancel_order(OrderPayload(orderID=order_id))
+            else:
+                self.client.cancel_order(order_id)
             self.logger.info(f"Order {order_id} cancelled")
             return True
         except Exception as e:
@@ -381,6 +570,8 @@ class PolymarketClient:
             List of open order dictionaries
         """
         try:
+            if hasattr(self.client, "get_open_orders"):
+                return self.client.get_open_orders()
             orders = self.client.get_orders()
             return [o for o in orders if o.get("status") == "OPEN"]
         except Exception as e:
@@ -420,7 +611,7 @@ class PolymarketClient:
                 signature_type=self.config.signature_type,
             )
             allowance = self.client.get_balance_allowance(params)
-            self.logger.info(
+            self.logger.debug(
                 f"Balance allowance raw: {allowance} (type: {type(allowance)})"
             )
 

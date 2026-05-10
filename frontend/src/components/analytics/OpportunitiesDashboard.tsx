@@ -100,6 +100,45 @@ interface RawPaperTradeResponse {
     rows: RawPaperTrade[];
 }
 
+
+interface RawDecisionTraceRow {
+    trace_id: string;
+    phase: string;
+    final_decision?: string;
+    decision_time_utc?: string;
+    timestamp?: string;
+    event_id: string;
+    ticker: string;
+    side: string;
+    mode?: string;
+    eligible?: boolean;
+    reason?: string;
+    quant_prob?: number | string;
+    ask_price?: number | string;
+    edge_pct?: number | string;
+    kelly_pct?: number | string;
+    stake_usd?: number | string;
+    notional_usd?: number | string;
+    vol_gate_blocked?: boolean;
+    chop_gate_blocked?: boolean;
+    chop_gate_reason?: string;
+    chop_flip_count_prev?: number | string;
+    bankroll_usd_snapshot?: number | string;
+    order_id?: string;
+    fill_price_real?: number | string;
+    slippage_pct?: number | string;
+    implementation_shortfall_usd?: number | string;
+    error?: string;
+    fills_detail_json?: string;
+}
+
+interface RawDecisionTraceResponse {
+    count: number;
+    ticker_filter: string | null;
+    rows: RawDecisionTraceRow[];
+}
+
+
 interface RawBotOrder {
     placed_at_utc: string;
     event_id: string;
@@ -154,6 +193,10 @@ interface RawBotOrder {
     fill_sim_slippage_vs_mid_bps?: string;
     fill_sim_book_consumption_pct?: string;
     fill_sim_fully_fillable?: string;
+    take_profit_exit_at_utc?: string;
+    take_profit_exit_price?: string;
+    take_profit_bid_at_trigger?: string;
+    take_profit_pnl_usd?: string;
     close_price_at_resolution?: string;
     event_outcome_real?: "up" | "down" | "";
     won?: string;
@@ -196,6 +239,14 @@ const CHART_SCOPE_OPTIONS: Array<{ value: ChartScope; label: string }> = [
     { value: "selected", label: "Selected Ticker" },
     { value: "all", label: "All Tickers" },
 ];
+const ANALYTICS_LIMITS = {
+    outcomes: 400,
+    signals: 400,
+    blocked: 400,
+    paper: 400,
+    decisionTrace: 250,
+    botOrders: 250,
+} as const;
 
 const asNumber = (value: unknown) => {
     const n = Number(value);
@@ -264,6 +315,9 @@ export default function OpportunitiesDashboard() {
     const [signalRows, setSignalRows] = useState<RawSignal[]>([]);
     const [blockedRows, setBlockedRows] = useState<RawBlocked[]>([]);
     const [paperRows, setPaperRows] = useState<RawPaperTrade[]>([]);
+    const [decisionTraceRows, setDecisionTraceRows] = useState<
+        RawDecisionTraceRow[]
+    >([]);
     const [botOrderRows, setBotOrderRows] = useState<RawBotOrder[]>([]);
     const [resettingLiveBaseline, setResettingLiveBaseline] = useState(false);
     const [diagnosticTarget, setDiagnosticTarget] =
@@ -298,17 +352,22 @@ export default function OpportunitiesDashboard() {
         useState<VolatilityState | null>(null);
 
     const loadData = async () => {
+        if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+            return;
+        }
         setLoading(true);
         setError("");
         try {
-            const [rawRes, signalsRes, blockedRes, paperRes, botOrdersRes] =
+            const tickerParam = ticker === "ALL" ? "" : `&ticker=${ticker}`;
+            const [rawRes, signalsRes, blockedRes, paperRes, decisionTraceRes, botOrdersRes] =
                 await Promise.all([
-                    apiFetch(`/api/stats/opportunities/raw?limit=5000`),
-                    apiFetch(`/api/stats/opportunities/signals/raw?limit=5000`),
-                    apiFetch(`/api/stats/opportunities/blocked/raw?limit=5000`),
-                    apiFetch(`/api/stats/paper/raw?limit=5000`),
+                    apiFetch(`/api/stats/opportunities/raw?limit=${ANALYTICS_LIMITS.outcomes}${tickerParam}`),
+                    apiFetch(`/api/stats/opportunities/signals/raw?limit=${ANALYTICS_LIMITS.signals}${tickerParam}`),
+                    apiFetch(`/api/stats/opportunities/blocked/raw?limit=${ANALYTICS_LIMITS.blocked}${tickerParam}`),
+                    apiFetch(`/api/stats/paper/raw?limit=${ANALYTICS_LIMITS.paper}${tickerParam}`),
+                    apiFetch(`/api/stats/decision-trace/raw?limit=${ANALYTICS_LIMITS.decisionTrace}${tickerParam}`),
                     apiFetch(
-                        `/api/stats/bot-orders/raw?limit=5000&days=${days}`,
+                        `/api/stats/bot-orders/raw?limit=${ANALYTICS_LIMITS.botOrders}&days=${days}${tickerParam}`,
                     ),
                 ]);
             if (
@@ -316,10 +375,11 @@ export default function OpportunitiesDashboard() {
                 !signalsRes.ok ||
                 !blockedRes.ok ||
                 !paperRes.ok ||
+                !decisionTraceRes.ok ||
                 !botOrdersRes.ok
             ) {
                 throw new Error(
-                    `Failed to load analytics (${rawRes.status}/${signalsRes.status}/${blockedRes.status}/${paperRes.status}/${botOrdersRes.status})`,
+                    `Failed to load analytics (${rawRes.status}/${signalsRes.status}/${blockedRes.status}/${paperRes.status}/${decisionTraceRes.status}/${botOrdersRes.status})`,
                 );
             }
 
@@ -327,6 +387,8 @@ export default function OpportunitiesDashboard() {
             const signalJson = (await signalsRes.json()) as RawSignalResponse;
             const blockedJson = (await blockedRes.json()) as RawBlockedResponse;
             const paperJson = (await paperRes.json()) as RawPaperTradeResponse;
+            const decisionTraceJson =
+                (await decisionTraceRes.json()) as RawDecisionTraceResponse;
             const botOrdersJson =
                 (await botOrdersRes.json()) as RawBotOrderResponse;
             setRawRows(Array.isArray(rawJson.rows) ? rawJson.rows : []);
@@ -337,6 +399,11 @@ export default function OpportunitiesDashboard() {
                 Array.isArray(blockedJson.rows) ? blockedJson.rows : [],
             );
             setPaperRows(Array.isArray(paperJson.rows) ? paperJson.rows : []);
+            setDecisionTraceRows(
+                Array.isArray(decisionTraceJson.rows)
+                    ? decisionTraceJson.rows
+                    : [],
+            );
             setBotOrderRows(
                 Array.isArray(botOrdersJson.rows) ? botOrdersJson.rows : [],
             );
@@ -388,20 +455,23 @@ export default function OpportunitiesDashboard() {
 
     useEffect(() => {
         loadData();
-        const interval = setInterval(loadData, 60000); // 60s — analytics doesn't need 15s refresh
+        const interval = setInterval(loadData, 300000); // 5m — analytics shouldn't compete with live bot runtime
         return () => clearInterval(interval);
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [days]);
+    }, [days, ticker]);
 
     useEffect(() => {
         const loadVolatility = () => {
+            if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+                return;
+            }
             apiFetch("/api/stats/volatility-state")
                 .then((r) => r.json())
                 .then((data: VolatilityState) => setVolatilityState(data))
                 .catch(() => {/* silently ignore — not critical */});
         };
         loadVolatility();
-        const interval = setInterval(loadVolatility, 20000); // 20s polling
+        const interval = setInterval(loadVolatility, 60000); // 60s polling
         return () => clearInterval(interval);
     }, []);
 
@@ -502,6 +572,28 @@ export default function OpportunitiesDashboard() {
             (row) => String(row.ticker || "").toUpperCase() === ticker,
         );
     }, [paperRowsInWindow, ticker]);
+
+    const decisionTraceRowsInWindow = useMemo(() => {
+        return decisionTraceRows.filter((row) => {
+            const ts = row.decision_time_utc || row.timestamp || "";
+            if (!inLastDays(ts, days)) return false;
+            if (regimeFilter === "weekday" && isWeekendUtc(ts)) {
+                return false;
+            }
+            if (regimeFilter === "weekend" && !isWeekendUtc(ts)) {
+                return false;
+            }
+            return true;
+        });
+    }, [decisionTraceRows, days, regimeFilter]);
+
+    const filteredDecisionTraceRows = useMemo(() => {
+        if (ticker === "ALL") return decisionTraceRowsInWindow;
+        return decisionTraceRowsInWindow.filter(
+            (row) => String(row.ticker || "").toUpperCase() === ticker,
+        );
+    }, [decisionTraceRowsInWindow, ticker]);
+
 
     const botOrderRowsInWindow = useMemo(() => {
         return botOrderRows.filter((row) => {
@@ -746,10 +838,40 @@ export default function OpportunitiesDashboard() {
         };
     }, [filteredPaperRows]);
 
-    const paperTradingCurve = useMemo<TradingEquityPoint[]>(() => {
-        const baseEquity = asNumber(
+    const paperTradingCurveBaseEquity = useMemo(() => {
+        const manualBaseEquity = asNumber(
             runtimeSettings.kelly_paper_bankroll_usd ?? 1000,
         );
+        const currentPaperEquity = asNumber(
+            runtimeSettings.paper_current_bankroll_usd,
+        );
+        const resolvedPnlInWindow = filteredPaperRows.reduce((acc, row) => {
+            if (String(row.status).toLowerCase() !== "resolved") return acc;
+            return acc + asNumber(row.pnl_simulated);
+        }, 0);
+
+        // When analytics is showing the unfiltered paper view, anchor the
+        // curve to the current compounded bankroll so the final point matches
+        // the paper badge in the header.
+        if (
+            ticker === "ALL" &&
+            regimeFilter === "all" &&
+            currentPaperEquity > 0
+        ) {
+            return Math.max(0, currentPaperEquity - resolvedPnlInWindow);
+        }
+
+        return manualBaseEquity;
+    }, [
+        filteredPaperRows,
+        regimeFilter,
+        runtimeSettings.kelly_paper_bankroll_usd,
+        runtimeSettings.paper_current_bankroll_usd,
+        ticker,
+    ]);
+
+    const paperTradingCurve = useMemo<TradingEquityPoint[]>(() => {
+        const baseEquity = paperTradingCurveBaseEquity;
         const rows = filteredPaperRows
             .slice()
             .sort(
@@ -770,21 +892,80 @@ export default function OpportunitiesDashboard() {
             lastTsMs = tsMs;
             return { ts: new Date(tsMs).toISOString(), equity };
         });
-    }, [filteredPaperRows, runtimeSettings.kelly_paper_bankroll_usd]);
+    }, [filteredPaperRows, paperTradingCurveBaseEquity]);
 
     const paperTradingCurveMetrics = useMemo(() => {
         const first = paperTradingCurve[0];
         const last = paperTradingCurve[paperTradingCurve.length - 1];
         return {
             points: paperTradingCurve.length,
-            startEquity:
-                first?.equity ??
-                asNumber(runtimeSettings.kelly_paper_bankroll_usd ?? 1000),
-            finalEquity:
-                last?.equity ??
-                asNumber(runtimeSettings.kelly_paper_bankroll_usd ?? 1000),
+            startEquity: first?.equity ?? paperTradingCurveBaseEquity,
+            finalEquity: last?.equity ?? paperTradingCurveBaseEquity,
         };
-    }, [paperTradingCurve, runtimeSettings.kelly_paper_bankroll_usd]);
+    }, [paperTradingCurve, paperTradingCurveBaseEquity]);
+
+    const decisionTraceMetrics = useMemo(() => {
+        const total = filteredDecisionTraceRows.length;
+        const evaluated = filteredDecisionTraceRows.filter(
+            (r) => r.phase === "evaluated",
+        );
+        const blocked = evaluated.filter((r) => r.eligible === false).length;
+        const eligible = evaluated.filter((r) => r.eligible === true).length;
+        const paperLogged = filteredDecisionTraceRows.filter(
+            (r) => r.phase === "paper_logged",
+        ).length;
+        const preSend = filteredDecisionTraceRows.filter(
+            (r) => r.phase === "pre_send",
+        ).length;
+        const placed = filteredDecisionTraceRows.filter(
+            (r) => r.final_decision === "placed",
+        ).length;
+        const noFill = filteredDecisionTraceRows.filter(
+            (r) => r.final_decision === "no_fill",
+        ).length;
+        const failed = filteredDecisionTraceRows.filter((r) => {
+            const d = String(r.final_decision || "").toLowerCase();
+            return d === "failed" || d === "timeout";
+        }).length;
+        const chopBlocked = evaluated.filter(
+            (r) =>
+                r.chop_gate_blocked === true ||
+                String(r.reason || "").includes("chop"),
+        ).length;
+        const volBlocked = evaluated.filter(
+            (r) =>
+                r.vol_gate_blocked === true ||
+                String(r.reason || "").includes("vol_gate"),
+        ).length;
+        return {
+            total,
+            evaluated: evaluated.length,
+            blocked,
+            eligible,
+            paperLogged,
+            preSend,
+            placed,
+            noFill,
+            failed,
+            chopBlocked,
+            volBlocked,
+        };
+    }, [filteredDecisionTraceRows]);
+
+    const decisionTraceReasonRows = useMemo(() => {
+        const agg = new Map<string, { n: number; blocked: number }>();
+        for (const row of filteredDecisionTraceRows) {
+            if (row.phase !== "evaluated") continue;
+            const reason = String(row.reason || "eligible");
+            const prev = agg.get(reason) || { n: 0, blocked: 0 };
+            prev.n += 1;
+            if (row.eligible === false) prev.blocked += 1;
+            agg.set(reason, prev);
+        }
+        return Array.from(agg.entries())
+            .map(([reason, value]) => ({ reason, ...value }))
+            .sort((a, b) => b.n - a.n);
+    }, [filteredDecisionTraceRows]);
 
     const liveTradingCurve = useMemo<TradingEquityPoint[]>(() => {
         const baseEquity = asNumber(
@@ -1434,7 +1615,7 @@ export default function OpportunitiesDashboard() {
                     <ul>
                         <li>
                             API: `GET
-                            /api/stats/paper/raw?limit=5000&ticker=BTC`
+                            /api/stats/paper/raw?limit=2000&ticker=BTC`
                         </li>
                         <li>CSV file: `backtest_output/paper_trades.csv`</li>
                         <li>
@@ -1720,6 +1901,9 @@ export default function OpportunitiesDashboard() {
                             <th title="Spread relativo en porcentaje: (ask − bid) / mid × 100">Spread %</th>
                             <th title="Latencia total desde envío de orden hasta recepción del fill del CLOB, en milisegundos">Latency (ms)</th>
                             <th title="Slippage en porcentaje: (fill_price − arrival_price) / arrival_price × 100. Positivo = peor ejecución">Slippage %</th>
+                            <th title="Precio de salida del take profit, si existió">TP Exit</th>
+                            <th title="Best bid que disparó el take profit">TP Trigger</th>
+                            <th title="PnL realizado por take profit">TP PnL</th>
                             <th title="Resultado binario: 1 si el evento resolvió en el lado tomado, 0 si no">WON</th>
                             <th title="PnL neto de la orden (usando precio real de fill)">PnL</th>
                             <th title="Estado de la orden: placed, no_fill, failed, resolved">Status</th>
@@ -1860,6 +2044,31 @@ export default function OpportunitiesDashboard() {
                                             {row.slippage_pct !== undefined &&
                                             row.slippage_pct !== ""
                                                 ? `${asNumber(row.slippage_pct).toFixed(4)}%`
+                                                : "n/a"}
+                                        </td>
+                                        <td>
+                                            {row.take_profit_exit_price !==
+                                                undefined &&
+                                            row.take_profit_exit_price !== ""
+                                                ? asNumber(
+                                                      row.take_profit_exit_price,
+                                                  ).toFixed(4)
+                                                : "n/a"}
+                                        </td>
+                                        <td>
+                                            {row.take_profit_bid_at_trigger !==
+                                                undefined &&
+                                            row.take_profit_bid_at_trigger !== ""
+                                                ? asNumber(
+                                                      row.take_profit_bid_at_trigger,
+                                                  ).toFixed(4)
+                                                : "n/a"}
+                                        </td>
+                                        <td>
+                                            {row.take_profit_pnl_usd !==
+                                                undefined &&
+                                            row.take_profit_pnl_usd !== ""
+                                                ? `$${asNumber(row.take_profit_pnl_usd).toFixed(2)}`
                                                 : "n/a"}
                                         </td>
                                         <td>
@@ -2010,6 +2219,122 @@ export default function OpportunitiesDashboard() {
                                     <td className="analytics-event-id">
                                         {row.event_id}
                                     </td>
+                                </tr>
+                            ))}
+                    </tbody>
+                </table>
+            </section>
+            <section className="analytics-panel">
+                <h3>Decision Trace</h3>
+                <div className="analytics-chart-help">
+                    <div>How to read</div>
+                    <ul>
+                        <li>Source: `backtest_output/decision_trace.jsonl`.</li>
+                        <li>Each `trace_id` groups one bot decision lifecycle.</li>
+                        <li>`evaluated` is the most important row: it tells you if the signal was eligible and why it was blocked.</li>
+                        <li>Later phases show whether it went to paper, pre-send, placed, no-fill or failed.</li>
+                    </ul>
+                </div>
+                <div className="analytics-mini-kpis">
+                    <span>Total rows: {decisionTraceMetrics.total}</span>
+                    <span>Evaluated: {decisionTraceMetrics.evaluated}</span>
+                    <span>Blocked: {decisionTraceMetrics.blocked}</span>
+                    <span>Eligible: {decisionTraceMetrics.eligible}</span>
+                    <span>Paper: {decisionTraceMetrics.paperLogged}</span>
+                    <span>Pre-send: {decisionTraceMetrics.preSend}</span>
+                    <span>Placed: {decisionTraceMetrics.placed}</span>
+                    <span>No fill: {decisionTraceMetrics.noFill}</span>
+                    <span>Failed/Timeout: {decisionTraceMetrics.failed}</span>
+                    <span>Chop blocked: {decisionTraceMetrics.chopBlocked}</span>
+                    <span>Vol blocked: {decisionTraceMetrics.volBlocked}</span>
+                </div>
+                <table className="analytics-table">
+                    <thead>
+                        <tr>
+                            <th>Reason</th>
+                            <th>Count</th>
+                            <th>Blocked</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {decisionTraceReasonRows.length === 0 && (
+                            <tr>
+                                <td colSpan={3} className="analytics-empty">
+                                    No decision trace reasons available.
+                                </td>
+                            </tr>
+                        )}
+                        {decisionTraceReasonRows.slice(0, 12).map((row) => (
+                            <tr key={row.reason}>
+                                <td>{row.reason}</td>
+                                <td>{row.n}</td>
+                                <td>{row.blocked}</td>
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+                <table className="analytics-table" style={{ marginTop: 12 }}>
+                    <thead>
+                        <tr>
+                            <th>Time (UTC)</th>
+                            <th>Ticker</th>
+                            <th>Side</th>
+                            <th>Phase</th>
+                            <th>Decision</th>
+                            <th>Reason</th>
+                            <th>QE %</th>
+                            <th>Ask</th>
+                            <th>Kelly %</th>
+                            <th>Stake $</th>
+                            <th>Flips</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {filteredDecisionTraceRows.length === 0 && (
+                            <tr>
+                                <td colSpan={11} className="analytics-empty">
+                                    No decision trace rows available.
+                                </td>
+                            </tr>
+                        )}
+                        {filteredDecisionTraceRows
+                            .slice()
+                            .reverse()
+                            .slice(0, 50)
+                            .map((row, idx) => (
+                                <tr key={`${row.trace_id}-${row.phase}-${idx}`}>
+                                    <td>
+                                        {String(
+                                            row.decision_time_utc ||
+                                                row.timestamp ||
+                                                "",
+                                        )
+                                            .replace("T", " ")
+                                            .slice(0, 19)}
+                                    </td>
+                                    <td>{row.ticker}</td>
+                                    <td>{String(row.side || "").toUpperCase()}</td>
+                                    <td>{row.phase}</td>
+                                    <td>
+                                        {row.final_decision ||
+                                            (row.eligible ? "eligible" : "blocked")}
+                                    </td>
+                                    <td title={row.error || row.fills_detail_json || ""}>
+                                        {row.reason ||
+                                            row.error ||
+                                            row.fills_detail_json ||
+                                            "n/a"}
+                                    </td>
+                                    <td>{asNumber(row.edge_pct).toFixed(2)}%</td>
+                                    <td>{asNumber(row.ask_price).toFixed(4)}</td>
+                                    <td>{asNumber(row.kelly_pct).toFixed(4)}</td>
+                                    <td>
+                                        $
+                                        {asNumber(
+                                            row.stake_usd || row.notional_usd,
+                                        ).toFixed(2)}
+                                    </td>
+                                    <td>{asNumber(row.chop_flip_count_prev)}</td>
                                 </tr>
                             ))}
                     </tbody>

@@ -59,6 +59,7 @@ export const useEventsStore = create<EventsState>((set) => ({
         vol_gate_lookback_n: 20,
         vol_gate_min_pct_of_avg: 0.8,
         monitored_tickers: ["BTC", "ETH", "SOL", "XRP"],
+        bot_disabled_ticker_sides: [] as string[],
         bot_risk_enabled: true,
         bot_max_buys_per_event_side: 1,
         bot_cooldown_seconds_per_event_side: 60,

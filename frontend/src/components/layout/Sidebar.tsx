@@ -18,6 +18,7 @@ export default function Sidebar({ send }: SidebarProps) {
     const [refreshLiveMessage, setRefreshLiveMessage] = useState("");
     const [blockedHoursRaw, setBlockedHoursRaw] = useState<string | null>(null);
     const [enabledSlotsRaw, setEnabledSlotsRaw] = useState<string | null>(null);
+    const [disabledTickerSidesRaw, setDisabledTickerSidesRaw] = useState<string | null>(null);
 
     const handleModeChange = (mode: string) => {
         send({ type: "switch_mode", mode });
@@ -822,6 +823,38 @@ export default function Sidebar({ send }: SidebarProps) {
                                 ),
                             })
                         }
+                    />
+
+                    <label
+                        className="field-label"
+                        title="Bloquea combinaciones ticker+side para el bot. Formato: ETH:up,BTC:down. Vacío = sin bloqueo."
+                    >
+                        Disabled Ticker Sides{" "}
+                        <span style={{ fontSize: "0.75em", opacity: 0.6 }}>
+                            vacío=off
+                        </span>
+                    </label>
+                    <input
+                        className="sidebar-number-input"
+                        type="text"
+                        placeholder="ej: ETH:up,BTC:down"
+                        value={
+                            disabledTickerSidesRaw ??
+                            (settings.bot_disabled_ticker_sides ?? []).join(",")
+                        }
+                        onChange={(e) => setDisabledTickerSidesRaw(e.target.value)}
+                        onBlur={(e) => {
+                            const pairs = e.target.value
+                                .split(",")
+                                .map((s) => s.trim().toUpperCase())
+                                .filter((s) =>
+                                    /^(BTC|ETH|SOL|XRP):(UP|DOWN)$/.test(s),
+                                );
+                            handleKellySettingChange({
+                                bot_disabled_ticker_sides: pairs,
+                            });
+                            setDisabledTickerSidesRaw(null);
+                        }}
                     />
 
                     <label className="field-label">

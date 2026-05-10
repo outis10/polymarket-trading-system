@@ -9,11 +9,16 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 logger = logging.getLogger(__name__)
 
 GAMMA_API = "https://gamma-api.polymarket.com/events"
 GAMMA_MARKETS_API = "https://gamma-api.polymarket.com/markets"
+
+_GAMMA_TIMEOUT = 20
+_GAMMA_SESSION: requests.Session | None = None
 
 SYMBOL_HINTS: dict[str, tuple[str, ...]] = {
     "BTC": ("bitcoin", "btc"),
@@ -38,6 +43,35 @@ TIMEFRAME_KEYWORDS: dict[int, tuple[str, ...]] = {
 SLUG_TIMEFRAME_RE = re.compile(
     r"(?P<symbol>btc|eth|sol|xrp)-updown-(?P<tf>5m|15m|1h)-(?P<epoch>\d+)"
 )
+
+
+def _gamma_session() -> requests.Session:
+    global _GAMMA_SESSION
+    if _GAMMA_SESSION is not None:
+        return _GAMMA_SESSION
+
+    retry = Retry(
+        total=2,
+        connect=2,
+        read=2,
+        backoff_factor=0.5,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=frozenset({"GET"}),
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=4, pool_maxsize=8)
+
+    session = requests.Session()
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    _GAMMA_SESSION = session
+    return session
+
+
+def _gamma_get_json(url: str, *, params: dict[str, Any]) -> Any:
+    resp = _gamma_session().get(url, params=params, timeout=_GAMMA_TIMEOUT)
+    resp.raise_for_status()
+    return resp.json()
 
 
 def _parse_iso_utc(value: str | None) -> datetime | None:
@@ -253,9 +287,7 @@ def _load_markets_fallback_by_slug(
             "ascending": "true",
             "order": "endDate",
         }
-        resp = requests.get(GAMMA_MARKETS_API, params=params, timeout=20)
-        resp.raise_for_status()
-        payload = resp.json()
+        payload = _gamma_get_json(GAMMA_MARKETS_API, params=params)
         if not isinstance(payload, list) or not payload:
             break
 
@@ -331,9 +363,7 @@ def discover_live_events(config: dict[str, Any]) -> list[dict[str, Any]]:
             "order": "endDate",
         }
 
-        resp = requests.get(GAMMA_API, params=params, timeout=20)
-        resp.raise_for_status()
-        payload = resp.json()
+        payload = _gamma_get_json(GAMMA_API, params=params)
         if not isinstance(payload, list) or not payload:
             break
 

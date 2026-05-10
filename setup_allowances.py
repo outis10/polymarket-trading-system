@@ -3,9 +3,11 @@
 Setup allowances for Polymarket trading.
 This approves USDC spending for the Polymarket exchange.
 """
-from py_clob_client.client import ClobClient
 import os
 from dotenv import load_dotenv
+
+from py_clob_client_v2 import ClobClient
+from py_clob_client_v2.clob_types import AssetType, BalanceAllowanceParams
 
 load_dotenv()
 
@@ -34,7 +36,7 @@ def main():
 
     # Derive API credentials
     print("Deriving API credentials...")
-    api_creds = client.create_or_derive_api_creds()
+    api_creds = client.create_or_derive_api_key()
     client.set_api_creds(api_creds)
     print("OK")
     print()
@@ -42,7 +44,12 @@ def main():
     # Check current allowance
     print("Checking current allowance...")
     try:
-        allowance = client.get_balance_allowance()
+        allowance = client.get_balance_allowance(
+            BalanceAllowanceParams(
+                asset_type=AssetType.COLLATERAL,
+                signature_type=signature_type,
+            )
+        )
         print(f"Current allowance: {allowance}")
     except Exception as e:
         print(f"Could not get allowance: {e}")
@@ -61,7 +68,12 @@ def main():
 
     try:
         # Update allowance to maximum
-        result = client.update_balance_allowance()
+        result = client.update_balance_allowance(
+            BalanceAllowanceParams(
+                asset_type=AssetType.COLLATERAL,
+                signature_type=signature_type,
+            )
+        )
         print(f"Allowance updated: {result}")
         print()
         print("SUCCESS! You can now trade via the API.")

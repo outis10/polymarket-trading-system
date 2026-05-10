@@ -274,20 +274,15 @@ def fetch_binance_volume_1m(symbol: str) -> Optional[float]:
 class BinanceStreamer:
     """Connects to Binance WebSocket for real-time trade prices."""
 
-    def __init__(self, symbol: str, on_price: asyncio.coroutines = None, ping_interval: int = 20):
+    def __init__(
+        self, symbol: str, on_price: asyncio.coroutines = None, ping_interval: int = 20
+    ):
         self.symbol = symbol.lower()
         self.on_price = on_price
         self.ping_interval = max(5, int(ping_interval))
+        self.ping_timeout = max(10, self.ping_interval)
         self._ws = None
         self._running = False
-
-    async def _ping_loop(self, ws):
-        try:
-            while True:
-                await asyncio.sleep(self.ping_interval)
-                await ws.ping()
-        except asyncio.CancelledError:
-            pass
 
     async def start(self):
         """Connect and stream trade events."""
@@ -295,29 +290,36 @@ class BinanceStreamer:
         self._running = True
         while self._running:
             try:
-                async with websockets.connect(url) as ws:
+                async with websockets.connect(
+                    url,
+                    ping_interval=self.ping_interval,
+                    ping_timeout=self.ping_timeout,
+                    close_timeout=5,
+                ) as ws:
                     self._ws = ws
                     logger.info("Binance WS connected: %s", url)
-                    ping_task = asyncio.create_task(self._ping_loop(ws))
-                    try:
-                        async for raw in ws:
-                            if not self._running:
-                                break
-                            try:
-                                msg = json.loads(raw)
-                                price = float(msg.get("p", 0))
-                                if price > 0 and self.on_price:
-                                    await self.on_price(self.symbol.upper(), price)
-                            except Exception:
-                                pass
-                    finally:
-                        ping_task.cancel()
-            except websockets.ConnectionClosed:
-                logger.warning("Binance WS disconnected, reconnecting...")
-                await asyncio.sleep(2)
+                    async for raw in ws:
+                        if not self._running:
+                            break
+                        try:
+                            msg = json.loads(raw)
+                            price = float(msg.get("p", 0))
+                            if price > 0 and self.on_price:
+                                await self.on_price(self.symbol.upper(), price)
+                        except Exception:
+                            pass
+            except websockets.ConnectionClosed as exc:
+                if self._running:
+                    logger.warning(
+                        "Binance WS disconnected for %s (%s), reconnecting...",
+                        self.symbol.upper(),
+                        exc,
+                    )
+                    await asyncio.sleep(2)
             except Exception as e:
-                logger.error("Binance WS error: %s", e)
-                await asyncio.sleep(5)
+                if self._running:
+                    logger.error("Binance WS error for %s: %s", self.symbol.upper(), e)
+                    await asyncio.sleep(5)
 
     async def stop(self):
         self._running = False

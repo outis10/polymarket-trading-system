@@ -144,7 +144,13 @@ export interface SettingsData {
     vol_gate_enabled?: boolean;
     vol_gate_lookback_n?: number;
     vol_gate_min_pct_of_avg?: number;
+    chop_gate_enabled?: boolean;
+    chop_gate_observe_only?: boolean;
+    chop_gate_sample_interval_seconds?: number;
+    chop_gate_max_flips?: number;
+    chop_gate_block_events?: number;
     monitored_tickers?: string[];
+    bot_disabled_ticker_sides?: string[];
     bot_risk_enabled?: boolean;
     bot_max_buys_per_event_side?: number;
     bot_cooldown_seconds_per_event_side?: number;

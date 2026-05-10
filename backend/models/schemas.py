@@ -71,6 +71,14 @@ class EventData(BaseModel):
     vol_gate_threshold_rv: Optional[float] = None
     vol_gate_prev_pct_of_avg: Optional[float] = None
     vol_gate_min_pct_of_avg: Optional[float] = None
+    chop_gate_enabled: Optional[bool] = None
+    chop_gate_observe_only: Optional[bool] = None
+    chop_gate_blocked: Optional[bool] = None
+    chop_gate_reason: Optional[str] = None
+    chop_flip_count_prev: Optional[int] = None
+    chop_samples_prev: Optional[int] = None
+    chop_gate_max_flips: Optional[int] = None
+    chop_gate_would_block: Optional[bool] = None
 
 
 # --- WebSocket message envelopes ---
@@ -101,6 +109,14 @@ class PriceUpdatePayload(BaseModel):
     vol_gate_threshold_rv: Optional[float] = None
     vol_gate_prev_pct_of_avg: Optional[float] = None
     vol_gate_min_pct_of_avg: Optional[float] = None
+    chop_gate_enabled: Optional[bool] = None
+    chop_gate_observe_only: Optional[bool] = None
+    chop_gate_blocked: Optional[bool] = None
+    chop_gate_reason: Optional[str] = None
+    chop_flip_count_prev: Optional[int] = None
+    chop_samples_prev: Optional[int] = None
+    chop_gate_max_flips: Optional[int] = None
+    chop_gate_would_block: Optional[bool] = None
 
 
 class OrderBookUpdatePayload(BaseModel):
@@ -173,7 +189,13 @@ class SettingsData(BaseModel):
     vol_gate_enabled: bool = False
     vol_gate_lookback_n: int = 20
     vol_gate_min_pct_of_avg: float = 0.8
+    chop_gate_enabled: bool = True
+    chop_gate_observe_only: bool = True
+    chop_gate_sample_interval_seconds: int = 5
+    chop_gate_max_flips: int = 999
+    chop_gate_block_events: int = 1
     monitored_tickers: list[str] = ["BTC", "ETH", "SOL", "XRP"]
+    bot_disabled_ticker_sides: list[str] = []
     bot_risk_enabled: bool = True
     bot_max_buys_per_event_side: int = 1
     bot_cooldown_seconds_per_event_side: int = 60
@@ -194,6 +216,9 @@ class SettingsData(BaseModel):
     # Order book streaming controls
     order_book_max_levels: int = 8
     order_book_min_broadcast_ms: int = 120
+    order_book_snapshot_enabled: bool = True
+    order_book_snapshot_interval_seconds: int = 10
+    order_book_snapshot_levels: int = 3
     # Bot order controls
     bot_enforce_timeframe_filter: bool = True
     bot_min_seconds_before_end: int = 30

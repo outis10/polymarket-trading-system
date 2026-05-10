@@ -1,5 +1,6 @@
 # Core dependencies
-py-clob-client  # Latest: 0.34.4 (Jan 2026)
+py-clob-client-v2
+py-clob-client  # transitional: helper scripts still import the legacy module
 python-dotenv
 pyyaml
 web3  # on-chain transactions (redeem positions)

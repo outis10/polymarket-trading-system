@@ -184,6 +184,14 @@ async def websocket_events(websocket: WebSocket):
                                 for t in raw_tickers
                                 if str(t).strip()
                             ]
+                    if "bot_disabled_ticker_sides" in settings:
+                        raw_pairs = settings["bot_disabled_ticker_sides"]
+                        if isinstance(raw_pairs, list):
+                            event_manager.settings["bot_disabled_ticker_sides"] = [
+                                str(p).upper().strip()
+                                for p in raw_pairs
+                                if str(p).strip()
+                            ]
                     if "bot_risk_enabled" in settings:
                         event_manager.settings["bot_risk_enabled"] = bool(
                             settings["bot_risk_enabled"]

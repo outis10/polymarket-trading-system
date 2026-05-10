@@ -1,0 +1,115 @@
+{
+    "mode": "live",
+    "settings": {
+        "auto_redeem_bankroll_pct": 0.1,
+        "auto_redeem_enabled": true,
+        "auto_redeem_threshold_usd": 15,
+        "bot_cooldown_seconds_per_event_side": 5,
+        "bot_drawdown_enabled": false,
+        "bot_drawdown_stop_pct": 0,
+        "bot_enforce_timeframe_filter": true,
+        "bot_fak_gap_tolerance": 0.05,
+        "bot_global_min_seconds_between_orders": 2,
+        "bot_order_mode": "gtc_limit",
+        "bot_limit_ttl_secs": 2,
+        "bot_max_buys_per_event_side": 1,
+        "bot_max_event_exposure_pct": 10,
+        "bot_max_ticker_exposure_pct": 0,
+        "bot_min_diff_abs": {
+            "BTC": 10
+        },
+        "bot_min_seconds_before_end": 0,
+        "bot_mode": "NRM",
+
+        "bot_order_notional_cap_usd": 5,
+        "bot_order_send_timeout_seconds": 8,
+        "bot_paper_mode": false,
+        "bot_reentry_min_edge_improvement_pct": 2,
+        "bot_risk_enabled": true,
+        "bot_second_entry_max_ask_price": 0,
+        "bot_second_entry_min_edge_pct": 5,
+        "bot_second_entry_opposite_enabled": false,
+        "bot_strategy": "gate_transition",
+        "bot_trade_ladder": [
+            {
+                "min_ask": {
+                    "down": 0.47,
+                    "up": 0.47
+                },
+                "min_edge_pct": 6,
+                "side_filter": "any",
+                "stake_multiplier": 1
+            },
+            {
+                "min_ask": 0.45,
+                "min_edge_pct": 5,
+                "side_filter": "opposite",
+                "stake_multiplier": 1.5
+            },
+            {
+                "min_ask": 0.47,
+                "min_edge_pct": 5,
+                "side_filter": "any",
+                "stake_multiplier": 1
+            }
+        ],
+        "chart_options": [],
+        "execution_enabled": false,
+        "execution_min_net_edge_pct": 2,
+        "fak_price_tolerance": 0.03,
+        "kelly_bankroll": 100,
+        "kelly_enabled": true,
+        "kelly_fraction": 1,
+        "kelly_live_bankroll_usd": 50,
+        "kelly_max_bet_pct": 25,
+        "kelly_max_event_exposure_pct": 25,
+        "kelly_min_edge_pct": 5,
+        "kelly_paper_bankroll_usd": 30,
+        "live_equity_start_at_utc": "2026-03-20T20:54:19.825773+00:00",
+        "live_equity_start_bankroll_usd": 40,
+        "mode": "live",
+        "monitored_tickers": ["ETH", "BTC"],
+        "order_book_max_levels": 8,
+        "order_book_min_broadcast_ms": 120,
+        "paper_compound_enabled": true,
+        "paper_current_bankroll_usd": 101.567685,
+        "pm_min_notional_usd": 1,
+        "pm_min_shares": 5,
+        "price_source": "binance",
+        "prob_smoothing": "none",
+        "prob_smoothing_rolling_window": 3,
+        "quant_gate_blocked_hours_pst": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 23],
+        "quant_gate_enabled": true,
+        "quant_gate_enabled_slots": [
+            2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+            22, 23, 24, 25, 26, 27, 28, 29
+        ],
+        "quant_gate_max_ask_price": 0,
+        "quant_gate_max_price_c": 90,
+        "quant_gate_max_spread_pct": 0,
+        "quant_gate_min_ask_price": 0,
+        "quant_gate_min_edge_pct": 0,
+        "quant_gate_min_price_c": 10,
+        "quant_gate_min_prob": 0,
+        "quant_gate_min_sample": 0,
+        "quant_gate_min_sample_strong_signal": 20,
+        "quant_gate_strong_signal_threshold": 0.72,
+        "refresh_rate": 1,
+        "take_profit_enabled": true,
+        "take_profit_min_price": 0.9,
+        "take_profit_trigger_price": 0.95,
+        "timeframe_filter": "5m",
+        "trading_mode": "bot",
+        "vol_gate_enabled": false,
+        "vol_gate_lookback_n": 20,
+        "vol_gate_min_pct_of_avg": 0.5,
+        "volatility_alert_cooldown": 1800,
+        "volatility_flip_trigger": 3,
+        "volatility_thresholds": {
+            "BTC": 30,
+            "ETH": 2
+        },
+        "volatility_window_seconds": 3600
+    },
+    "updated_at_utc": "2026-04-01T03:15:43.827485+00:00"
+}

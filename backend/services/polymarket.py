@@ -121,14 +121,22 @@ def fetch_real_prices(client, event_config: dict) -> Optional[dict]:
         if not yes_token or not no_token:
             return None
 
-        from concurrent.futures import ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=2) as _pool:
-            _f_yes = _pool.submit(client.get_order_book, yes_token)
-            _f_no  = _pool.submit(client.get_order_book, no_token)
-            yes_ob = _f_yes.result()
-            no_ob  = _f_no.result()
+        yes_ob, yes_status = client.get_order_book_with_status(yes_token)
+        no_ob, no_status = client.get_order_book_with_status(no_token)
+
+        result = {
+            "yes_status": yes_status,
+            "no_status": no_status,
+            "not_found_sides": [
+                side
+                for side, status in (("yes", yes_status), ("no", no_status))
+                if status == "not_found"
+            ],
+            "order_book_yes": _convert_order_book(yes_ob, max_levels=8),
+            "order_book_no": _convert_order_book(no_ob, max_levels=8),
+        }
         if not yes_ob or not no_ob:
-            return None
+            return result
 
         yes_bids = yes_ob.bids or []
         yes_asks = yes_ob.asks or []
@@ -140,16 +148,17 @@ def fetch_real_prices(client, event_config: dict) -> Optional[dict]:
         no_bid = max((float(b.price) for b in no_bids), default=0.50)
         no_ask = min((float(a.price) for a in no_asks), default=0.50)
 
-        return {
+        result.update(
+            {
             "yes_price": (yes_bid + yes_ask) / 2,
             "no_price": (no_bid + no_ask) / 2,
             "yes_bid": yes_bid,
             "yes_ask": yes_ask,
             "no_bid": no_bid,
             "no_ask": no_ask,
-            "order_book_yes": _convert_order_book(yes_ob, max_levels=8),
-            "order_book_no": _convert_order_book(no_ob, max_levels=8),
-        }
+            }
+        )
+        return result
     except Exception as e:
         logger.error("Error fetching prices: %s", e)
         return None

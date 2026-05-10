@@ -2,11 +2,12 @@
 """
 Script para aprobar allowances en Polymarket (versión automática)
 """
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
 import sys
 from dotenv import load_dotenv
 import os
+
+from py_clob_client_v2 import ApiCreds, ClobClient
+from py_clob_client_v2.clob_types import BalanceAllowanceParams, AssetType
 
 # Cargar variables de entorno
 load_dotenv()
@@ -85,7 +86,6 @@ def main():
         # Configurar API credentials si están disponibles
         if api_key and api_secret and api_passphrase:
             print("Configurando credenciales API...")
-            from py_clob_client.clob_types import ApiCreds
             api_creds = ApiCreds(
                 api_key=api_key,
                 api_secret=api_secret,
@@ -95,7 +95,7 @@ def main():
             print("✓ Credenciales API configuradas")
         else:
             print("Derivando credenciales API...")
-            api_creds = client.create_or_derive_api_creds()
+            api_creds = client.create_or_derive_api_key()
             client.set_api_creds(api_creds)
             print("✓ Credenciales API derivadas")
 

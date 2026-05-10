@@ -38,6 +38,86 @@ Actualízalo cuando cambien decisiones, scripts o flujos importantes.
   - y el helper solo actualizaba filas `status=sending`,
   - por eso `take_profit_exit_at_utc`, `take_profit_exit_price` y `take_profit_pnl_usd` quedaban vacíos.
 
+### Estado actualizado (2026-04-12, migración base a CLOB client v2)
+
+- El bot/backend principal ya quedó migrado para usar `py-clob-client-v2` a través de `core/client_wrapper.py`.
+- La interfaz pública del wrapper se mantuvo estable:
+  - `place_fok_order`
+  - `place_gtc_limit_order`
+  - `place_market_order`
+  - `get_open_orders`
+  - `cancel_order`
+  - `get_balance`
+  - `get_order_book`
+- `core/client_wrapper.py` ahora:
+  - prefiere `py_clob_client_v2`,
+  - hace fallback a `py_clob_client` v1 si v2 no está instalado,
+  - normaliza `order_book` para que el resto del backend siga usando `.bids/.asks`.
+- `backend/services/event_manager.py` y `backend/routers/trading.py` ya no importan tipos del SDK directo para allowances:
+  - ahora usan `client.update_balance_allowance(...)` del wrapper.
+- Dependencias:
+  - `backend/requirements.txt` ya apunta a `py-clob-client-v2`,
+  - `requirements.txt` raíz mantiene `py-clob-client` además de v2 solo como compatibilidad temporal para scripts legacy fuera del bot.
+- Riesgo residual:
+  - scripts auxiliares viejos (`approve_allowances*.py`, `simple_test.py`, algunos `examples/`) siguen importando v1 directo y no están migrados aún.
+
+### Estado actualizado (2026-04-14, chop gate observación)
+
+- Se agregó `chop_gate` al backend dentro de `EventManager` como filtro de choppiness basado en flips de dirección del spot en la ventana previa del evento.
+- Estado inicial:
+  - `chop_gate_enabled = true`
+  - `chop_gate_observe_only = true`
+  - `chop_gate_sample_interval_seconds = 5`
+  - `chop_gate_max_flips = 999`
+  - `chop_gate_block_events = 1`
+- Con esa configuración:
+  - el sistema ya recolecta data,
+  - escribe historial en `backtest_output/chop_history.csv`,
+  - expone estado runtime (`chop_gate_*`) en payloads live,
+  - pero no bloquea órdenes todavía.
+- Si más adelante se quiere activar el bloqueo real:
+  - mantener `chop_gate_enabled = true`,
+  - poner `chop_gate_observe_only = false`,
+  - y bajar `chop_gate_max_flips` al umbral calibrado.
+
+### Estado actualizado (2026-04-17, snapshots compactos de order book)
+
+- `EventManager` ahora escribe snapshots compactos del libro en `backtest_output/orderbook_snapshots.jsonl`.
+- Los snapshots salen desde ambos flujos:
+  - `PolymarketStreamer` (`source="stream"`),
+  - fallback REST/polling (`source="polling"`).
+- El log no guarda el libro crudo completo; guarda agregados útiles para backtest de ejecución:
+  - `best_bid`, `best_ask`, `mid`, `spread`, `spread_pct`,
+  - `top_bid_shares`, `top_ask_shares`,
+  - profundidad nocional top-N,
+  - `depth_to_buy/sell_{1,2,5}usd`,
+  - `book_imbalance`,
+  - `levels` con top niveles compactos.
+- Nuevos settings runtime:
+  - `order_book_snapshot_enabled = true`
+  - `order_book_snapshot_interval_seconds = 10`
+  - `order_book_snapshot_levels = 3`
+- Objetivo:
+  - habilitar un backtest v2 más realista de latencia/ejecución sin esperar a guardar un dump completo del CLOB en cada tick.
+
+### Estado actualizado (2026-04-20, delay model 2s en Analytics)
+
+- Se implementó un modelo base de latencia `+2s` en backend/frontend usando:
+  - `backtest_output/paper_trades.csv`
+  - `backtest_output/orderbook_snapshots.jsonl`
+- Endpoint nuevo:
+  - `GET /api/stats/delay-model/raw?limit=5000&ticker=BTC&delay_seconds=2&max_lag_seconds=5`
+- Lógica:
+  - para cada `paper_trade`, busca el primer snapshot del mismo `event_id + side` en `decision_time + delay`,
+  - calcula `delayed_best_ask`, `delayed_edge_pct`, `edge_decay_pct`,
+  - y expone cobertura/match (`matched_snapshot`, `snapshot_lag_ms`) y profundidad compacta (`ask_depth_notional_topn`).
+- Frontend Analytics:
+  - nueva card `Delay Model (+2s)` en `OpportunitiesDashboard`,
+  - muestra KPIs de cobertura, supervivencia del edge, lag promedio y tabla raw reciente.
+- Caveat actual:
+  - la suficiencia de liquidez se estima solo con la profundidad compacta top-N guardada en snapshots; no es un replay completo del CLOB.
+
+
 ### Estado actualizado (2026-03-25, volatility gate alineado)
 - `vol_gate` quedó integrado a la evaluación unificada `evaluate_bot_order_candidate()`:
   - tracking/analytics/bot ahora comparten el mismo bloqueo `vol_gate_blocked`,
@@ -186,6 +266,19 @@ Actualízalo cuando cambien decisiones, scripts o flujos importantes.
      - YES: `+(1-q_yes)` / `-q_yes`
      - NO:  `+(1-q_no)` / `-q_no`
 - Bloqueo actual: el CSV del pipeline no trae `q`; hay que definir fuente de `marketProb` (logs/snapshots/ask histórico por evento-slot).
+
+### Nota operativa (2026-04-14, evitar overfitting en guardrails nuevos)
+- Hallazgos recientes en `paper_trades.csv` / cruce con `merged_pm_slot_ranges_4cryptos.csv`:
+  - `vol_gate_prev_pct_of_avg` entre `100%–150%` viene siendo el bucket más fuerte.
+  - `slot 10`, `slot 14` y `range [-30,-20)` salieron débiles en el corte actual.
+  - bins con `count_of_klines_inside_range >= 600` muestran peor WR que bins intermedios, pero siguen aportando PnL; no alcanza para veto duro por sample size.
+- Decisión operativa por ahora:
+  - NO promover filtros duros permanentes solo por este corte.
+  - Tratar estos hallazgos como candidatos a `guardrails suaves` o `reduced sizing`, no como bloqueos definitivos.
+  - Si se endurece volatilidad, priorizar probar `vol_gate_min_pct_of_avg ~= 70` antes que subir directo a `100`.
+- Criterio para próxima sesión:
+  - cualquier nuevo filtro por `slot`, `range`, `vol` o `sample_count` debe validarse en ventana rolling / walk-forward antes de dejarlo fijo.
+  - preferir reglas condicionales del tipo `sample_count alto + vol baja` antes que exclusiones globales por una sola dimensión.
 
 ## Seguridad implementada (2026-02-22)
 

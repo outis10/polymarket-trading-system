@@ -101,6 +101,8 @@ class ChainlinkPriceStreamer:
                 await ws.ping()
         except asyncio.CancelledError:
             pass
+        except websockets.ConnectionClosed:
+            pass
 
     async def _handle_raw(self, raw: str):
         try:

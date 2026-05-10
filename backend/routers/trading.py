@@ -355,14 +355,10 @@ async def place_order(order: OrderRequest):
             # Ensure the CLOB has allowance to move conditional tokens (shares) from wallet.
             # Without this, sells fail with "not enough balance / allowance".
             try:
-                from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
-
-                cond_params = BalanceAllowanceParams(
-                    asset_type=AssetType.CONDITIONAL,
+                client.update_balance_allowance(
+                    asset_type="CONDITIONAL",
                     token_id=token_id,
-                    signature_type=client.config.signature_type,
                 )
-                client.client.update_balance_allowance(cond_params)
                 logger.info(
                     "[SELL] conditional allowance updated for token=%s", token_id
                 )

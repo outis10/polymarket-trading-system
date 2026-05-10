@@ -7,10 +7,14 @@ import json
 import logging
 import os
 import re
+import time
 import uuid
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
+
+import requests
 
 from ..config import load_events_config
 from ..ws.manager import manager
@@ -188,6 +192,30 @@ _VOL_LOG_FIELDNAMES = [
     "price_low",
 ]
 
+_CHOP_HISTORY_FIELDNAMES = [
+    "timestamp",
+    "asset",
+    "event_start",
+    "prev_window_start",
+    "samples",
+    "flip_count",
+    "would_block",
+    "blocked",
+    "max_flips_config",
+]
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(v) for v in value]
+    return str(value)
+
 
 # Substrings in CLOB exception messages that indicate thin-liquidity no-fill
 # (as opposed to network errors or real failures).
@@ -219,6 +247,47 @@ def _append_vol_log(row: dict) -> None:
         if not file_exists:
             writer.writeheader()
         writer.writerow({k: row.get(k, "") for k in _VOL_LOG_FIELDNAMES})
+
+
+def _chop_history_path() -> str:
+    return os.path.join(_output_dir_path(), "chop_history.csv")
+
+
+def _append_chop_history_log(row: dict) -> None:
+    path = _chop_history_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    file_exists = os.path.exists(path)
+    with open(path, "a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=_CHOP_HISTORY_FIELDNAMES)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow({k: row.get(k, "") for k in _CHOP_HISTORY_FIELDNAMES})
+
+
+def _decision_trace_path() -> str:
+    return os.path.join(_output_dir_path(), "decision_trace.jsonl")
+
+
+def _append_decision_trace(entry: dict[str, Any]) -> None:
+    path = _decision_trace_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    payload = _json_safe(entry)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(payload, ensure_ascii=True, sort_keys=True))
+        f.write("\n")
+
+
+def _orderbook_snapshots_path() -> str:
+    return os.path.join(_output_dir_path(), "orderbook_snapshots.jsonl")
+
+
+def _append_orderbook_snapshot(entry: dict[str, Any]) -> None:
+    path = _orderbook_snapshots_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    payload = _json_safe(entry)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(payload, ensure_ascii=True, sort_keys=True))
+        f.write("\n")
 
 
 def _bot_orders_log_path() -> str:
@@ -318,8 +387,21 @@ def _as_float(value: Any) -> float | None:
         return None
 
 
-def _extract_fill_price_from_result(result: Any) -> float | None:
-    """Best-effort extraction of real fill/avg price from order response."""
+def _extract_fill_price_from_result_for_side(
+    result: Any, side: str = "BUY"
+) -> float | None:
+    """Best-effort extraction of real fill/avg price from order response.
+
+    BUY:
+      makingAmount = USD spent
+      takingAmount = shares received
+      avg price = making / taking
+
+    SELL:
+      makingAmount = shares sold
+      takingAmount = USD received
+      avg price = taking / making
+    """
     if result is None:
         return None
 
@@ -380,15 +462,16 @@ def _extract_fill_price_from_result(result: Any) -> float | None:
     for nested_key in ("data", "result", "order", "fill"):
         nested = result.get(nested_key)
         if isinstance(nested, dict):
-            nested_price = _extract_fill_price_from_result(nested)
+            nested_price = _extract_fill_price_from_result_for_side(nested, side)
             if nested_price is not None:
                 return nested_price
 
-    # 4) Polymarket FAK: derive avg price from makingAmount / takingAmount.
-    #    makingAmount = USD spent, takingAmount = shares received.
+    # 4) Polymarket fallback from making/taking amounts.
     making = _as_float(result.get("makingAmount"))
     taking = _as_float(result.get("takingAmount"))
     if making and taking and making > 0 and taking > 0:
+        if str(side).strip().upper() == "SELL":
+            return taking / making
         return making / taking
 
     # 5) Last resort: plain "price" from result payload.
@@ -397,6 +480,11 @@ def _extract_fill_price_from_result(result: Any) -> float | None:
         return plain_price
 
     return None
+
+
+def _extract_fill_price_from_result(result: Any) -> float | None:
+    """Backward-compatible BUY/default extraction helper."""
+    return _extract_fill_price_from_result_for_side(result, "BUY")
 
 
 def _extract_fills_detail(result: Any) -> tuple[int, float, float, str]:
@@ -585,7 +673,13 @@ class EventManager:
             "vol_gate_enabled": False,
             "vol_gate_lookback_n": 20,
             "vol_gate_min_pct_of_avg": 0.8,
+            "chop_gate_enabled": True,
+            "chop_gate_observe_only": True,
+            "chop_gate_sample_interval_seconds": 5,
+            "chop_gate_max_flips": 999,
+            "chop_gate_block_events": 1,
             "monitored_tickers": ["BTC", "ETH", "SOL", "XRP"],
+            "bot_disabled_ticker_sides": [],
             "bot_risk_enabled": True,
             "bot_max_buys_per_event_side": 1,
             "bot_cooldown_seconds_per_event_side": 60,
@@ -604,6 +698,9 @@ class EventManager:
             "pm_min_notional_usd": 1.0,
             "order_book_max_levels": 8,
             "order_book_min_broadcast_ms": 120,
+            "order_book_snapshot_enabled": True,
+            "order_book_snapshot_interval_seconds": 10,
+            "order_book_snapshot_levels": 3,
             "bot_enforce_timeframe_filter": True,
             "bot_min_seconds_before_end": 30,
             "price_source": "binance",
@@ -655,6 +752,7 @@ class EventManager:
         self._snapshot_every_n_ticks: int = 5
         self._tick_counter: int = 0
         self._orderbook_last_emit_ms: dict[tuple[str, str], int] = {}
+        self._orderbook_last_snapshot_ms: dict[tuple[str, str], int] = {}
         self._live_event_configs: dict[str, dict] = {}
         # Quantitative PM probability table: {ticker: {minute: [(inf, sup, prob_up, prob_down, count)]}}
         self._pm_ranges: dict[
@@ -731,6 +829,10 @@ class EventManager:
         self._event_last_slot: dict[str, int] = {}
         self._vol_finalized_events: set = set()
         self._vol_history: dict[tuple, Any] = {}
+        self._chop_samples_by_ticker: dict[str, deque[tuple[datetime, float]]] = {}
+        self._chop_last_sample_at: dict[str, datetime] = {}
+        self._chop_eval_cache: dict[tuple[str, str], dict[str, Any]] = {}
+        self._chop_blocked_starts: dict[tuple[str, str], dict[str, Any]] = {}
         # Take-profit: positions already triggered to avoid double-firing
         self._take_profit_triggered_positions: set[tuple[str, str]] = set()
         _project_root = os.path.normpath(
@@ -2303,7 +2405,17 @@ class EventManager:
             "kelly_pct": None,
             "spread_pct_at_decision": _spread_pct_at_decision,
             "vol_gate_blocked": False,
+            "chop_gate_blocked": False,
         }
+        ticker_upper = self._extract_event_ticker(event_id, event_dict).upper()
+        disabled_ticker_sides = {
+            str(v).strip().upper()
+            for v in (self.settings.get("bot_disabled_ticker_sides", []) or [])
+            if str(v).strip()
+        }
+        if f"{ticker_upper}:{side_norm.upper()}" in disabled_ticker_sides:
+            result["reason"] = "ticker_side_disabled"
+            return result
 
         # Time-window filter: block trades outside configured trading windows
         if self._time_windows:
@@ -2364,6 +2476,13 @@ class EventManager:
                 result["reason"] = "vol_gate_blocked"
                 return result
 
+        if bool(self.settings.get("chop_gate_enabled", False)):
+            chop_gate_state = self._get_chop_gate_state(event_id, event_dict)
+            result["chop_gate_blocked"] = bool(chop_gate_state.get("blocked"))
+            if bool(chop_gate_state.get("blocked")):
+                result["reason"] = "chop_blocked"
+                return result
+
         quant_gate = event_dict.get("quant_buy_gate")
         if isinstance(quant_gate, dict):
             gate_side = quant_gate.get(side_norm)
@@ -2407,6 +2526,14 @@ class EventManager:
                 entry_min_ask = float(raw_min_ask)
             if entry_min_ask > 0 and ask_price < entry_min_ask:
                 result["reason"] = f"ladder_entry{ladder_entry_num}_ask_below_min"
+                return result
+            raw_max_ask = ladder_entry_cfg.get("max_ask", 0.0)
+            if isinstance(raw_max_ask, dict):
+                entry_max_ask = float(raw_max_ask.get(side_norm, 0.0))
+            else:
+                entry_max_ask = float(raw_max_ask)
+            if entry_max_ask > 0 and ask_price > entry_max_ask:
+                result["reason"] = f"ladder_entry{ladder_entry_num}_ask_above_max"
                 return result
         else:
             # Legacy second-entry logic
@@ -3032,7 +3159,7 @@ class EventManager:
                 q = _as_float(row.get("fill_price_real"))
                 if q is None or q <= 0:
                     q = _as_float(row.get("price"))
-                stake = _as_float(row.get("notional_usd"))
+                stake = _as_float(row.get("filled_notional_usd_real")) or _as_float(row.get("notional_usd"))
                 side = str(row.get("side", "")).strip().lower()
                 if (
                     close_price <= 0
@@ -3339,6 +3466,187 @@ class EventManager:
             return True
         return False
 
+    @staticmethod
+    def _count_chop_flips(samples: list[tuple[datetime, float]]) -> int:
+        directions: list[int] = []
+        for i in range(1, len(samples)):
+            diff = float(samples[i][1]) - float(samples[i - 1][1])
+            if diff > 0:
+                directions.append(1)
+            elif diff < 0:
+                directions.append(-1)
+        if len(directions) < 2:
+            return 0
+        return sum(
+            1 for i in range(1, len(directions)) if directions[i] != directions[i - 1]
+        )
+
+    def _record_chop_price(self, ticker: str, price: float, now_utc: datetime) -> None:
+        if not bool(self.settings.get("chop_gate_enabled", False)):
+            return
+        if price <= 0:
+            return
+        ticker_norm = str(ticker or "").upper().strip()
+        if not ticker_norm:
+            return
+        interval_seconds = max(
+            1, int(self.settings.get("chop_gate_sample_interval_seconds", 5) or 5)
+        )
+        last_at = self._chop_last_sample_at.get(ticker_norm)
+        if last_at is not None and (now_utc - last_at).total_seconds() < interval_seconds:
+            return
+
+        samples = self._chop_samples_by_ticker.setdefault(
+            ticker_norm, deque(maxlen=24 * 60 * 60)
+        )
+        samples.append((now_utc, float(price)))
+        self._chop_last_sample_at[ticker_norm] = now_utc
+
+        cutoff = now_utc - timedelta(hours=6)
+        while samples and samples[0][0] < cutoff:
+            samples.popleft()
+
+    def _get_event_start_utc(self, event_dict: dict) -> datetime | None:
+        raw_start = event_dict.get("event_start_utc")
+        if raw_start:
+            try:
+                start_dt = datetime.fromisoformat(str(raw_start))
+                if start_dt.tzinfo is None:
+                    start_dt = start_dt.replace(tzinfo=timezone.utc)
+                return start_dt
+            except Exception:
+                pass
+
+        raw_end = event_dict.get("event_end_utc")
+        timeframe_minutes = int(event_dict.get("timeframe_minutes", 0) or 0)
+        if raw_end and timeframe_minutes > 0:
+            try:
+                end_dt = datetime.fromisoformat(str(raw_end))
+                if end_dt.tzinfo is None:
+                    end_dt = end_dt.replace(tzinfo=timezone.utc)
+                return end_dt - timedelta(minutes=timeframe_minutes)
+            except Exception:
+                return None
+        return None
+
+    def _get_chop_gate_state(self, event_id: str, event_dict: dict) -> dict:
+        ticker = (
+            event_dict.get("_vol_ticker")
+            or self._extract_event_ticker(event_id, event_dict)
+            or ""
+        ).upper()
+        enabled = bool(self.settings.get("chop_gate_enabled", False))
+        observe_only = bool(self.settings.get("chop_gate_observe_only", True))
+        max_flips = max(0, int(self.settings.get("chop_gate_max_flips", 999) or 999))
+        block_events = max(
+            1, int(self.settings.get("chop_gate_block_events", 1) or 1)
+        )
+        event_minutes = int(event_dict.get("timeframe_minutes", 0) or 0)
+        start_dt = self._get_event_start_utc(event_dict)
+        if not ticker or start_dt is None or event_minutes <= 0:
+            return {
+                "enabled": enabled,
+                "observe_only": observe_only,
+                "reason": "unavailable",
+                "samples": 0,
+                "flip_count_prev": None,
+                "would_block": False,
+                "blocked": False,
+                "event_start": None,
+                "prev_window_start": None,
+                "max_flips": max_flips,
+            }
+
+        event_start_iso = start_dt.isoformat()
+        cache_key = (ticker, event_start_iso)
+        cached = self._chop_eval_cache.get(cache_key)
+        if cached is None:
+            prev_start_dt = start_dt - timedelta(minutes=event_minutes)
+            ticker_samples = list(self._chop_samples_by_ticker.get(ticker, ()))
+            window_samples = [
+                (ts, price)
+                for ts, price in ticker_samples
+                if prev_start_dt <= ts <= start_dt
+            ]
+            sample_count = len(window_samples)
+            flip_count = self._count_chop_flips(window_samples)
+            enough_samples = sample_count >= 3
+            would_block = bool(
+                enough_samples and max_flips < 999 and flip_count > max_flips
+            )
+            cached = {
+                "enabled": enabled,
+                "observe_only": observe_only,
+                "event_start": event_start_iso,
+                "prev_window_start": prev_start_dt.isoformat(),
+                "samples": sample_count,
+                "flip_count_prev": flip_count,
+                "would_block": would_block,
+                "max_flips": max_flips,
+                "reason": "ok" if enough_samples else "insufficient_samples",
+            }
+            self._chop_eval_cache[cache_key] = cached
+
+            if would_block:
+                for i in range(1, block_events):
+                    future_start_iso = (
+                        start_dt + timedelta(minutes=event_minutes * i)
+                    ).isoformat()
+                    self._chop_blocked_starts[(ticker, future_start_iso)] = {
+                        "source_event_start": event_start_iso
+                    }
+
+        carry_block = self._chop_blocked_starts.get(cache_key)
+        blocked = bool(
+            enabled
+            and not observe_only
+            and (cached["would_block"] or carry_block is not None)
+        )
+        reason = cached["reason"]
+        if blocked:
+            reason = (
+                "chop_flip_count_exceeded"
+                if cached["would_block"]
+                else "chop_blocked_carryover"
+            )
+        elif cached["would_block"]:
+            reason = "observe_only"
+
+        if not cached.get("_logged"):
+            _append_chop_history_log(
+                {
+                    "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+                    "asset": ticker,
+                    "event_start": cached["event_start"],
+                    "prev_window_start": cached["prev_window_start"],
+                    "samples": cached["samples"],
+                    "flip_count": cached["flip_count_prev"],
+                    "would_block": "1" if cached["would_block"] else "0",
+                    "blocked": "1" if blocked else "0",
+                    "max_flips_config": max_flips,
+                }
+            )
+            cached["_logged"] = True
+
+        return {
+            **cached,
+            "enabled": enabled,
+            "observe_only": observe_only,
+            "blocked": blocked,
+            "reason": reason,
+        }
+
+    def _apply_chop_gate_state(self, event_id: str, event_dict: dict) -> None:
+        state = self._get_chop_gate_state(event_id, event_dict)
+        event_dict["chop_gate_enabled"] = state["enabled"]
+        event_dict["chop_gate_observe_only"] = state["observe_only"]
+        event_dict["chop_gate_blocked"] = state["blocked"]
+        event_dict["chop_gate_reason"] = state["reason"]
+        event_dict["chop_flip_count_prev"] = state["flip_count_prev"]
+        event_dict["chop_samples_prev"] = state["samples"]
+        event_dict["chop_gate_max_flips"] = state["max_flips"]
+        event_dict["chop_gate_would_block"] = state["would_block"]
+
     async def _check_take_profit(self, event_id: str, event_dict: dict) -> None:
         """Fire a take-profit SELL if best_bid >= take_profit_trigger_price for any open position."""
         if not self.settings.get("take_profit_enabled", False):
@@ -3420,14 +3728,10 @@ class EventManager:
             self._take_profit_triggered_positions.discard((event_id, side))
             return
         try:
-            from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
-
-            cond_params = BalanceAllowanceParams(
-                asset_type=AssetType.CONDITIONAL,
+            client.update_balance_allowance(
+                asset_type="CONDITIONAL",
                 token_id=token_id,
-                signature_type=client.config.signature_type,
             )
-            client.client.update_balance_allowance(cond_params)
         except Exception as exc:
             logger.warning(
                 "TP execute: could not update conditional allowance: %s", exc
@@ -3437,7 +3741,9 @@ class EventManager:
                 client.place_market_order, token_id, "SELL", shares
             )
             if result:
-                fill_price_real = _extract_fill_price_from_result(result)
+                fill_price_real = _extract_fill_price_from_result_for_side(
+                    result, "SELL"
+                )
                 (
                     _fill_count,
                     filled_notional_usd_real,
@@ -4340,6 +4646,8 @@ class EventManager:
                         continue
                     merged.append(event_cfg)
                     seen.add(key)
+            except requests.RequestException as exc:
+                logger.warning("Live discovery transient network failure: %s", exc)
             except Exception as exc:
                 logger.error("Live discovery failed: %s", exc)
 
@@ -4622,6 +4930,136 @@ class EventManager:
             )
         return result
 
+    @staticmethod
+    def _estimate_book_shares_for_notional(
+        levels: list[dict], notional_usd: float
+    ) -> float:
+        if notional_usd <= 0:
+            return 0.0
+        remaining = float(notional_usd)
+        shares = 0.0
+        for level in levels:
+            try:
+                price = float(level.get("price", 0.0))
+                level_shares = float(level.get("shares", 0.0))
+            except (TypeError, ValueError):
+                continue
+            if price <= 0 or level_shares <= 0:
+                continue
+            level_notional = price * level_shares
+            take_notional = min(remaining, level_notional)
+            shares += take_notional / price
+            remaining -= take_notional
+            if remaining <= 1e-9:
+                break
+        return round(shares, 4)
+
+    @staticmethod
+    def _book_notional(levels: list[dict]) -> float:
+        total = 0.0
+        for level in levels:
+            try:
+                total += float(level.get("price", 0.0)) * float(
+                    level.get("shares", 0.0)
+                )
+            except (TypeError, ValueError):
+                continue
+        return round(total, 4)
+
+    def _maybe_append_orderbook_snapshot(
+        self,
+        *,
+        event_id: str,
+        event: dict,
+        side: str,
+        order_book: dict | None,
+        source: str,
+    ) -> None:
+        if not bool(self.settings.get("order_book_snapshot_enabled", True)):
+            return
+        if side not in ("yes", "no"):
+            return
+        if not isinstance(order_book, dict):
+            return
+
+        bids = order_book.get("bids")
+        asks = order_book.get("asks")
+        if not isinstance(bids, list) or not isinstance(asks, list) or (not bids and not asks):
+            return
+
+        now = datetime.now(tz=timezone.utc)
+        now_ms = int(now.timestamp() * 1000)
+        snapshot_interval_ms = max(
+            0,
+            int(self.settings.get("order_book_snapshot_interval_seconds", 10)) * 1000,
+        )
+        snapshot_key = (event_id, side)
+        last_snapshot_ms = self._orderbook_last_snapshot_ms.get(snapshot_key, 0)
+        if snapshot_interval_ms > 0 and (now_ms - last_snapshot_ms) < snapshot_interval_ms:
+            return
+
+        try:
+            best_bid = float(bids[0].get("price", 0.0)) if bids else 0.0
+            best_ask = float(asks[0].get("price", 0.0)) if asks else 0.0
+        except (TypeError, ValueError):
+            return
+
+        if best_bid > 0 and best_ask > 0:
+            mid = (best_bid + best_ask) / 2.0
+            spread = max(0.0, best_ask - best_bid)
+            spread_pct = (spread / mid * 100.0) if mid > 0 else 0.0
+        else:
+            mid = best_bid or best_ask or 0.0
+            spread = 0.0
+            spread_pct = 0.0
+
+        snapshot_levels = max(1, int(self.settings.get("order_book_snapshot_levels", 3)))
+        top_bids = bids[:snapshot_levels]
+        top_asks = asks[:snapshot_levels]
+        bid_depth_top = self._book_notional(top_bids)
+        ask_depth_top = self._book_notional(top_asks)
+        total_depth = bid_depth_top + ask_depth_top
+        imbalance = (
+            (bid_depth_top - ask_depth_top) / total_depth if total_depth > 0 else 0.0
+        )
+
+        snapshot = {
+            "timestamp_utc": now.isoformat(),
+            "event_id": event_id,
+            "ticker": event.get("ticker"),
+            "timeframe_minutes": event.get("timeframe_minutes"),
+            "event_start_utc": event.get("event_start_utc"),
+            "event_end_utc": event.get("event_end_utc"),
+            "source": source,
+            "book_side": side,
+            "best_bid": round(best_bid, 4),
+            "best_ask": round(best_ask, 4),
+            "mid": round(mid, 4),
+            "spread": round(spread, 4),
+            "spread_pct": round(spread_pct, 4),
+            "top_bid_shares": round(float(top_bids[0].get("shares", 0.0)), 4)
+            if top_bids
+            else 0.0,
+            "top_ask_shares": round(float(top_asks[0].get("shares", 0.0)), 4)
+            if top_asks
+            else 0.0,
+            "bid_depth_notional_topn": bid_depth_top,
+            "ask_depth_notional_topn": ask_depth_top,
+            "depth_to_buy_1usd": self._estimate_book_shares_for_notional(asks, 1.0),
+            "depth_to_buy_2usd": self._estimate_book_shares_for_notional(asks, 2.0),
+            "depth_to_buy_5usd": self._estimate_book_shares_for_notional(asks, 5.0),
+            "depth_to_sell_1usd": self._estimate_book_shares_for_notional(bids, 1.0),
+            "depth_to_sell_2usd": self._estimate_book_shares_for_notional(bids, 2.0),
+            "depth_to_sell_5usd": self._estimate_book_shares_for_notional(bids, 5.0),
+            "book_imbalance": round(imbalance, 4),
+            "levels": {
+                "bids": top_bids,
+                "asks": top_asks,
+            },
+        }
+        _append_orderbook_snapshot(snapshot)
+        self._orderbook_last_snapshot_ms[snapshot_key] = now_ms
+
     async def _on_polymarket_book(self, msg: dict) -> None:
         """Handle Polymarket realtime book updates and broadcast incrementally."""
         asset_id = str(
@@ -4694,6 +5132,13 @@ class EventManager:
             "spread": round(spread, 2),
             "volume": round(volume, 2),
         }
+        self._maybe_append_orderbook_snapshot(
+            event_id=event_id,
+            event=event,
+            side=side,
+            order_book=ob,
+            source="stream",
+        )
 
         if side == "yes":
             event["order_book_yes"] = ob
@@ -4761,6 +5206,9 @@ class EventManager:
             old = event_dict.get("current_price", 0)
             event_dict["current_price"] = price
             event_dict["price_change"] = ((price - old) / old * 100) if old > 0 else 0
+            self._record_chop_price(
+                ref_symbol, float(price), datetime.now(tz=timezone.utc)
+            )
 
             # Capture every tick for volatility — only when price actually changes
             if price > 0 and price != old:
@@ -4790,6 +5238,7 @@ class EventManager:
             self._apply_quant_metrics(event_dict, ecfg, datetime.now(tz=timezone.utc))
             self._apply_quant_buy_gates(event_dict)
             self._apply_vol_gate_state(event_id, event_dict)
+            self._apply_chop_gate_state(event_id, event_dict)
             self._track_opportunities_for_event(
                 event_id, event_dict, datetime.now(tz=timezone.utc)
             )
@@ -4842,6 +5291,22 @@ class EventManager:
                         ),
                         "vol_gate_min_pct_of_avg": event_dict.get(
                             "vol_gate_min_pct_of_avg"
+                        ),
+                        "chop_gate_enabled": event_dict.get("chop_gate_enabled"),
+                        "chop_gate_observe_only": event_dict.get(
+                            "chop_gate_observe_only"
+                        ),
+                        "chop_gate_blocked": event_dict.get("chop_gate_blocked"),
+                        "chop_gate_reason": event_dict.get("chop_gate_reason"),
+                        "chop_flip_count_prev": event_dict.get(
+                            "chop_flip_count_prev"
+                        ),
+                        "chop_samples_prev": event_dict.get("chop_samples_prev"),
+                        "chop_gate_max_flips": event_dict.get(
+                            "chop_gate_max_flips"
+                        ),
+                        "chop_gate_would_block": event_dict.get(
+                            "chop_gate_would_block"
                         ),
                     },
                 }
@@ -5508,6 +5973,7 @@ class EventManager:
             del self._no_fill_cooldown_until[key]
 
         self._bot_pending_orders.add(key)
+        trace_id = str(uuid.uuid4())
         _prelog_ts: str = ""
         _clob_confirmed: bool = False
         try:
@@ -5554,6 +6020,76 @@ class EventManager:
                 now_utc=now_utc,
                 bankroll_usd=bankroll_usd,
             )
+            trace_base = {
+                "trace_id": trace_id,
+                "event_id": event_id,
+                "ticker": self._extract_event_ticker(event_id, event_dict),
+                "side": side,
+                "mode": "paper"
+                if bool(self.settings.get("bot_paper_mode", False))
+                else "live",
+                "bot_mode": self.settings.get("bot_mode", "NRM"),
+                "timeframe_minutes": int(event_dict.get("timeframe_minutes", 0) or 0),
+                "event_start_utc": event_dict.get("event_start_utc", ""),
+                "event_end_utc": event_dict.get("event_end_utc", ""),
+                "decision_time_utc": now_utc.isoformat(),
+                "phase": "evaluated",
+                "eligible": bool(evaluation.get("eligible")),
+                "reason": evaluation.get("reason"),
+                "quant_prob": evaluation.get("quant_prob"),
+                "ask_price": evaluation.get("ask_price"),
+                "stake_usd": evaluation.get("stake_usd"),
+                "shares": evaluation.get("shares"),
+                "notional_usd": evaluation.get("notional_usd"),
+                "kelly_pct": evaluation.get("kelly_pct"),
+                "edge_pct": (
+                    round(
+                        (
+                            float(evaluation.get("quant_prob", 0.0) or 0.0)
+                            - float(evaluation.get("ask_price", 0.0) or 0.0)
+                        )
+                        * 100.0,
+                        4,
+                    )
+                    if evaluation.get("quant_prob") is not None
+                    and evaluation.get("ask_price") is not None
+                    else None
+                ),
+                "price_source_at_send": evaluation.get("price_source_at_send"),
+                "spread_pct_at_decision": evaluation.get("spread_pct_at_decision"),
+                "vol_gate_enabled": bool(self.settings.get("vol_gate_enabled", False)),
+                "vol_gate_blocked": bool(evaluation.get("vol_gate_blocked", False)),
+                "vol_gate_prev_pct_of_avg": event_dict.get(
+                    "vol_gate_prev_pct_of_avg"
+                ),
+                "vol_gate_reason": event_dict.get("vol_gate_reason"),
+                "chop_gate_enabled": bool(self.settings.get("chop_gate_enabled", False)),
+                "chop_gate_blocked": bool(evaluation.get("chop_gate_blocked", False)),
+                "chop_gate_reason": event_dict.get("chop_gate_reason"),
+                "chop_flip_count_prev": event_dict.get("chop_flip_count_prev"),
+                "chop_samples_prev": event_dict.get("chop_samples_prev"),
+                "chop_gate_would_block": event_dict.get("chop_gate_would_block"),
+                "drawdown_enabled": bool(
+                    self.settings.get(
+                        "bot_drawdown_circuit_breaker_enabled",
+                        self.settings.get("bot_drawdown_enabled", True),
+                    )
+                ),
+                "drawdown_stop_pct": self.settings.get("bot_drawdown_stop_pct"),
+                "live_equity_start_bankroll_usd": self.settings.get(
+                    "live_equity_start_bankroll_usd"
+                ),
+                "claimable_usd_snapshot": self._last_claimable_usd,
+                "bankroll_usd_snapshot": bankroll_usd,
+                "quant_gate": event_dict.get("quant_buy_gate", {}),
+                "slot": event_dict.get("quant_range_histogram", {}).get("slot")
+                if isinstance(event_dict.get("quant_range_histogram"), dict)
+                else None,
+                "range": event_dict.get("quant_range_histogram", {}).get("current_range")
+                if isinstance(event_dict.get("quant_range_histogram"), dict)
+                else None,
+            }
+            _append_decision_trace(trace_base)
             if not bool(evaluation.get("eligible")):
                 logger.info(
                     "Bot auto-order skipped by unified eligibility: %s | event=%s side=%s",
@@ -5699,6 +6235,19 @@ class EventManager:
                     price_source_at_decision=price_source_at_send,
                     ladder_entry_num=ladder_entry_num,
                     now_utc=now_utc,
+                )
+                _append_decision_trace(
+                    {
+                        **trace_base,
+                        "phase": "paper_logged",
+                        "final_decision": "paper_logged",
+                        "stake_usd": notional_usd,
+                        "shares": shares,
+                        "notional_usd": notional_usd,
+                        "market_prob_at_decision": ask_price,
+                        "quantum_edge_pct": round((quant_prob - ask_price) * 100.0, 4),
+                        "ladder_entry_num": ladder_entry_num,
+                    }
                 )
                 logger.info(
                     "Bot paper decision logged: event=%s side=%s stake=%.2f q=%.4f edge=%.4f src=%s",
@@ -5905,6 +6454,23 @@ class EventManager:
             _clob_confirmed = False  # True once place_fok_order returns a result
             _send_at_utc = now_utc  # overwritten right before CLOB call
             _append_bot_order_log(_pre_log_row)
+            _append_decision_trace(
+                {
+                    **trace_base,
+                    "phase": "pre_send",
+                    "final_decision": "order_sending",
+                    "prelog_ts": _prelog_ts,
+                    "order_mode": _order_mode,
+                    "token_id": token_id,
+                    "shares": round(shares, 6),
+                    "notional_usd": round(notional_usd, 4),
+                    "ask_price": round(ask_price, 6),
+                    "order_price": round(order_price, 6)
+                    if "_use_gtc" in locals() and not _use_gtc
+                    else round(ask_price, 6),
+                    "fill_sim": _fill_sim_log,
+                }
+            )
             self.register_order_fill(
                 event_id=event_id,
                 event=event_dict,
@@ -6024,6 +6590,17 @@ class EventManager:
                     _ttl,
                     event_id,
                     side,
+                )
+                _append_decision_trace(
+                    {
+                        **trace_base,
+                        "phase": "placed",
+                        "final_decision": "placed",
+                        "order_mode": "gtc_limit",
+                        "order_id": str(_gtc_order_id),
+                        "ttl_secs": _ttl,
+                        "fill_latency_ms": _send_latency_ms,
+                    }
                 )
                 return  # TTL task handles fill detection and log update
 
@@ -6148,6 +6725,19 @@ class EventManager:
                                 "status": "fill_anomaly",
                             },
                         )
+                        _append_decision_trace(
+                            {
+                                **trace_base,
+                                "phase": "fill_anomaly",
+                                "final_decision": "fill_anomaly",
+                                "order_id": str(order_id),
+                                "fill_latency_ms": _fill_latency_ms,
+                                "fill_price_real": fill_price_real,
+                                "filled_notional_usd_real": filled_notional_usd_real,
+                                "filled_shares_real": filled_shares_real,
+                                "fills_detail_json": f"warning:{_fill_anomaly_reason}",
+                            }
+                        )
                     else:
                         # Off-critical-path fetches — run after fill confirmation
                         _price_source = self.settings.get("price_source", "binance")
@@ -6224,6 +6814,35 @@ class EventManager:
                                 "status": "placed",
                             },
                         )
+                        _append_decision_trace(
+                            {
+                                **trace_base,
+                                "phase": "placed",
+                                "final_decision": "placed",
+                                "order_id": str(order_id),
+                                "fill_latency_ms": _fill_latency_ms,
+                                "fill_price_real": round(fill_price_real, 6)
+                                if isinstance(fill_price_real, float)
+                                else None,
+                                "filled_notional_usd_real": round(
+                                    filled_notional_usd_real, 4
+                                )
+                                if filled_notional_usd_real > 0
+                                else None,
+                                "filled_shares_real": round(filled_shares_real, 6)
+                                if filled_shares_real > 0
+                                else None,
+                                "fill_count": fill_count,
+                                "slippage_pct": round(slippage_pct, 4)
+                                if isinstance(slippage_pct, float)
+                                else None,
+                                "edge_at_fill_pct": round(edge_at_fill_pct, 4)
+                                if isinstance(edge_at_fill_pct, float)
+                                else None,
+                                "implementation_shortfall_usd": _is_usd,
+                                "fills_detail_json": fills_detail_json,
+                            }
+                        )
                 except Exception as fill_exc:
                     # Fill extraction failed but order IS confirmed on-chain
                     logger.warning(
@@ -6241,6 +6860,16 @@ class EventManager:
                             "fill_latency_ms": _fill_latency_ms,
                             "status": "placed",
                         },
+                    )
+                    _append_decision_trace(
+                        {
+                            **trace_base,
+                            "phase": "placed",
+                            "final_decision": "placed",
+                            "order_id": str(order_id),
+                            "fill_latency_ms": _fill_latency_ms,
+                            "fill_extract_error": str(fill_exc),
+                        }
                     )
                 logger.info("Bot auto-order placed: order_id=%s", order_id)
                 self.record_position_buy(
@@ -6332,6 +6961,16 @@ class EventManager:
                         "fills_detail_json": "error:no_result_from_clob",
                     },
                 )
+                _append_decision_trace(
+                    {
+                        **trace_base,
+                        "phase": "no_fill",
+                        "final_decision": "no_fill",
+                        "fill_latency_ms": _fill_latency_ms,
+                        "cooldown_secs": _cooldown_secs,
+                        "fills_detail_json": "error:no_result_from_clob",
+                    }
+                )
 
         except Exception as e:
             _filled_at_utc = datetime.now(tz=timezone.utc)
@@ -6404,6 +7043,16 @@ class EventManager:
                         "status": status,
                         **fail_info,
                     },
+                )
+                _append_decision_trace(
+                    {
+                        **trace_base,
+                        "phase": "exception",
+                        "final_decision": status,
+                        "fill_latency_ms": _fill_latency_ms,
+                        "error": str(e),
+                        **fail_info,
+                    }
                 )
             except Exception:
                 pass
@@ -6485,6 +7134,10 @@ class EventManager:
                     )
 
             cp = event_dict.get("current_price", 0)
+            if cp and ref_symbol:
+                self._record_chop_price(
+                    ref_symbol, float(cp), datetime.now(tz=timezone.utc)
+                )
             ptb = event_dict.get("price_to_beat", 0)
             if cp > 0 and ptb > 0:
                 swing = (cp - ptb) / ptb * 20
@@ -6502,6 +7155,7 @@ class EventManager:
             self._apply_quant_metrics(event_dict, ecfg, datetime.now(tz=timezone.utc))
             self._apply_quant_buy_gates(event_dict)
             self._apply_vol_gate_state(event_id, event_dict)
+            self._apply_chop_gate_state(event_id, event_dict)
             self._track_opportunities_for_event(
                 event_id, event_dict, datetime.now(tz=timezone.utc)
             )
@@ -6552,6 +7206,22 @@ class EventManager:
                         ),
                         "vol_gate_min_pct_of_avg": event_dict.get(
                             "vol_gate_min_pct_of_avg"
+                        ),
+                        "chop_gate_enabled": event_dict.get("chop_gate_enabled"),
+                        "chop_gate_observe_only": event_dict.get(
+                            "chop_gate_observe_only"
+                        ),
+                        "chop_gate_blocked": event_dict.get("chop_gate_blocked"),
+                        "chop_gate_reason": event_dict.get("chop_gate_reason"),
+                        "chop_flip_count_prev": event_dict.get(
+                            "chop_flip_count_prev"
+                        ),
+                        "chop_samples_prev": event_dict.get("chop_samples_prev"),
+                        "chop_gate_max_flips": event_dict.get(
+                            "chop_gate_max_flips"
+                        ),
+                        "chop_gate_would_block": event_dict.get(
+                            "chop_gate_would_block"
                         ),
                     },
                 }
@@ -6606,29 +7276,78 @@ class EventManager:
                 continue
             if not self._is_trackable_crypto_event(event_id, event_dict):
                 continue
+            skip_until = float(ecfg.get("_book_poll_skip_until", 0.0) or 0.0)
+            if skip_until > time.time():
+                continue
 
             pr = await asyncio.to_thread(fetch_real_prices, client, ecfg)
-            if pr:
+            if not pr:
+                continue
+
+            not_found_sides = pr.get("not_found_sides") or []
+            if not_found_sides:
+                fail_count = int(ecfg.get("_book_not_found_count", 0) or 0) + 1
+                ecfg["_book_not_found_count"] = fail_count
+                backoff_seconds = min(900, 30 * (2 ** min(fail_count - 1, 5)))
+                ecfg["_book_poll_skip_until"] = time.time() + backoff_seconds
+
+                if "yes" in not_found_sides:
+                    event_dict["order_book_yes"] = None
+                if "no" in not_found_sides:
+                    event_dict["order_book_no"] = None
+
+                last_log_at = float(ecfg.get("_book_not_found_logged_at", 0.0) or 0.0)
+                now_ts = time.time()
+                if (now_ts - last_log_at) >= 30:
+                    logger.warning(
+                        "Skipping invalid order book(s) for %s sides=%s fail_count=%d backoff=%ss",
+                        event_id,
+                        ",".join(not_found_sides),
+                        fail_count,
+                        backoff_seconds,
+                    )
+                    ecfg["_book_not_found_logged_at"] = now_ts
+                continue
+
+            ecfg["_book_not_found_count"] = 0
+            ecfg["_book_poll_skip_until"] = 0.0
+
+            if pr.get("yes_price") is not None:
                 event_dict["yes_price"] = pr["yes_price"]
+            if pr.get("no_price") is not None:
                 event_dict["no_price"] = pr["no_price"]
-                if pr.get("order_book_yes"):
-                    event_dict["order_book_yes"] = pr["order_book_yes"]
-                if pr.get("order_book_no"):
-                    event_dict["order_book_no"] = pr["order_book_no"]
-                event_dict["last_update"] = datetime.now(tz=timezone.utc).isoformat()
-                await manager.broadcast(
-                    {
-                        "type": "orderbook_update",
-                        "event_id": event_id,
-                        "data": {
-                            "yes_price": event_dict["yes_price"],
-                            "no_price": event_dict["no_price"],
-                            "order_book_yes": event_dict.get("order_book_yes"),
-                            "order_book_no": event_dict.get("order_book_no"),
-                            "last_update": event_dict["last_update"],
-                        },
-                    }
+            if pr.get("order_book_yes"):
+                event_dict["order_book_yes"] = pr["order_book_yes"]
+                self._maybe_append_orderbook_snapshot(
+                    event_id=event_id,
+                    event=event_dict,
+                    side="yes",
+                    order_book=pr["order_book_yes"],
+                    source="polling",
                 )
+            if pr.get("order_book_no"):
+                event_dict["order_book_no"] = pr["order_book_no"]
+                self._maybe_append_orderbook_snapshot(
+                    event_id=event_id,
+                    event=event_dict,
+                    side="no",
+                    order_book=pr["order_book_no"],
+                    source="polling",
+                )
+            event_dict["last_update"] = datetime.now(tz=timezone.utc).isoformat()
+            await manager.broadcast(
+                {
+                    "type": "orderbook_update",
+                    "event_id": event_id,
+                    "data": {
+                        "yes_price": event_dict["yes_price"],
+                        "no_price": event_dict["no_price"],
+                        "order_book_yes": event_dict.get("order_book_yes"),
+                        "order_book_no": event_dict.get("order_book_no"),
+                        "last_update": event_dict["last_update"],
+                    },
+                }
+            )
 
     async def _broadcast_full_snapshot(self):
         """Send complete state to all connected clients."""

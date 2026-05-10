@@ -1,10 +1,13 @@
 """REST endpoints for events data."""
 
 import asyncio
+import bisect
 import csv
 import io
+import json
 import os
 import re
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -291,7 +294,8 @@ async def get_opportunity_stats(days: int = 7, ticker: str | None = None):
 
 def _read_csv_rows(path, ticker: str | None, limit: int) -> list[dict]:
     """Read CSV file in a thread — keeps the event loop free."""
-    rows: list[dict] = []
+    max_rows = max(1, int(limit))
+    rows: deque[dict] = deque(maxlen=max_rows)
     try:
         with open(path, newline="", encoding="utf-8", errors="replace") as f:
             sanitized = (line.replace("\x00", "") for line in f)
@@ -301,7 +305,222 @@ def _read_csv_rows(path, ticker: str | None, limit: int) -> list[dict]:
                 rows.append(row)
     except (FileNotFoundError, csv.Error):
         pass
-    return rows[-max(1, limit) :]
+    return list(rows)
+
+
+def _read_jsonl_rows(path, ticker: str | None, limit: int) -> list[dict]:
+    max_rows = max(1, int(limit))
+    rows: deque[dict] = deque(maxlen=max_rows)
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for raw in f:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    row = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                row_ticker = str(row.get("ticker", "")).upper()
+                row_asset = str(row.get("asset", "")).upper()
+                if ticker and row_ticker != ticker and row_asset != ticker:
+                    continue
+                rows.append(row)
+    except FileNotFoundError:
+        pass
+    return list(rows)
+
+
+def _parse_dt(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_float(value: Any) -> float | None:
+    if value in ("", None):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _load_delay_model_rows(
+    *,
+    ticker: str | None,
+    delay_seconds: float,
+    max_lag_seconds: float,
+) -> list[dict[str, Any]]:
+    paper_path = _output_dir() / "paper_trades.csv"
+    snapshot_path = _output_dir() / "orderbook_snapshots.jsonl"
+    ticker_filter = ticker.upper() if ticker else None
+
+    snapshots_by_key: dict[tuple[str, str], dict[str, list[Any]]] = {}
+    try:
+        with open(snapshot_path, encoding="utf-8", errors="replace") as f:
+            for raw in f:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    row = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                event_id = str(row.get("event_id", "")).strip()
+                book_side = str(row.get("book_side", "")).strip().lower()
+                snap_ts = _parse_dt(row.get("timestamp_utc"))
+                if not event_id or book_side not in ("yes", "no") or snap_ts is None:
+                    continue
+                key = (event_id, book_side)
+                bucket = snapshots_by_key.setdefault(key, {"times": [], "rows": []})
+                bucket["times"].append(snap_ts)
+                bucket["rows"].append(row)
+    except FileNotFoundError:
+        return []
+
+    result_rows: list[dict[str, Any]] = []
+    try:
+        with open(paper_path, newline="") as f:
+            for row in csv.DictReader(f):
+                row_ticker = str(row.get("ticker", "")).upper()
+                if ticker_filter and row_ticker != ticker_filter:
+                    continue
+
+                decision_time = _parse_dt(row.get("decision_time"))
+                if decision_time is None:
+                    continue
+
+                side_taken = str(row.get("side_taken", "")).lower()
+                if side_taken == "up":
+                    book_side = "yes"
+                elif side_taken == "down":
+                    book_side = "no"
+                else:
+                    continue
+
+                event_id = str(row.get("event_id", "")).strip()
+                target_time = decision_time + timedelta(seconds=delay_seconds)
+                original_ask = _parse_float(row.get("best_ask_at_decision"))
+                original_bid = _parse_float(row.get("best_bid_at_decision"))
+                prob_up = _parse_float(row.get("prob_up"))
+                if prob_up is None:
+                    quant_prob_side = None
+                else:
+                    quant_prob_side = prob_up if side_taken == "up" else (1.0 - prob_up)
+                original_edge_pct = (
+                    (quant_prob_side - original_ask) * 100.0
+                    if quant_prob_side is not None and original_ask is not None
+                    else None
+                )
+
+                key = (event_id, book_side)
+                bucket = snapshots_by_key.get(key)
+                matched = False
+                snapshot_row: dict[str, Any] | None = None
+                snapshot_lag_ms: int | None = None
+                delayed_best_bid = None
+                delayed_best_ask = None
+                delayed_spread = None
+                delayed_edge_pct = None
+                edge_decay_pct = None
+                snapshot_reason = "no_snapshot"
+                ask_depth_topn = None
+                topn_depth_sufficient = None
+
+                if bucket:
+                    times: list[datetime] = bucket["times"]
+                    rows_for_key: list[dict[str, Any]] = bucket["rows"]
+                    idx = bisect.bisect_left(times, target_time)
+                    if idx < len(times):
+                        snapshot_row = rows_for_key[idx]
+                        lag_ms = int((times[idx] - target_time).total_seconds() * 1000)
+                        if lag_ms <= int(max_lag_seconds * 1000):
+                            matched = True
+                            snapshot_lag_ms = lag_ms
+                            delayed_best_bid = _parse_float(snapshot_row.get("best_bid"))
+                            delayed_best_ask = _parse_float(snapshot_row.get("best_ask"))
+                            delayed_spread = _parse_float(snapshot_row.get("spread"))
+                            ask_depth_topn = _parse_float(
+                                snapshot_row.get("ask_depth_notional_topn")
+                            )
+                            stake_usd = _parse_float(row.get("stake_usd"))
+                            if ask_depth_topn is not None and stake_usd is not None:
+                                topn_depth_sufficient = stake_usd <= ask_depth_topn
+                            if (
+                                quant_prob_side is not None
+                                and delayed_best_ask is not None
+                            ):
+                                delayed_edge_pct = (
+                                    quant_prob_side - delayed_best_ask
+                                ) * 100.0
+                            if (
+                                original_edge_pct is not None
+                                and delayed_edge_pct is not None
+                            ):
+                                edge_decay_pct = delayed_edge_pct - original_edge_pct
+                            snapshot_reason = "matched"
+                        else:
+                            snapshot_lag_ms = lag_ms
+                            snapshot_reason = "snapshot_too_late"
+
+                result_rows.append(
+                    {
+                        "decision_id": row.get("decision_id", ""),
+                        "decision_time": row.get("decision_time", ""),
+                        "target_time_utc": target_time.isoformat(),
+                        "delay_seconds": delay_seconds,
+                        "matched_snapshot": matched,
+                        "snapshot_reason": snapshot_reason,
+                        "snapshot_time_utc": snapshot_row.get("timestamp_utc", "")
+                        if snapshot_row
+                        else "",
+                        "snapshot_source": snapshot_row.get("source", "")
+                        if snapshot_row
+                        else "",
+                        "snapshot_lag_ms": snapshot_lag_ms,
+                        "event_id": event_id,
+                        "ticker": row.get("ticker", ""),
+                        "timeframe": row.get("timeframe", ""),
+                        "slot": row.get("slot", ""),
+                        "range": row.get("range", ""),
+                        "side_taken": side_taken,
+                        "book_side": book_side,
+                        "stake_usd": _parse_float(row.get("stake_usd")),
+                        "shares_simulated": _parse_float(row.get("shares_simulated")),
+                        "status": row.get("status", ""),
+                        "pnl_simulated": _parse_float(row.get("pnl_simulated")),
+                        "pnl_sim_adjusted": _parse_float(row.get("pnl_sim_adjusted")),
+                        "prob_up": prob_up,
+                        "quant_prob_side": quant_prob_side,
+                        "decision_best_bid": original_bid,
+                        "decision_best_ask": original_ask,
+                        "delayed_best_bid": delayed_best_bid,
+                        "delayed_best_ask": delayed_best_ask,
+                        "delayed_spread": delayed_spread,
+                        "original_edge_pct": original_edge_pct,
+                        "delayed_edge_pct": delayed_edge_pct,
+                        "edge_decay_pct": edge_decay_pct,
+                        "edge_positive_after_delay": (
+                            delayed_edge_pct is not None and delayed_edge_pct > 0
+                        ),
+                        "ask_depth_notional_topn": ask_depth_topn,
+                        "depth_to_buy_5usd": _parse_float(
+                            snapshot_row.get("depth_to_buy_5usd")
+                        )
+                        if snapshot_row
+                        else None,
+                        "topn_depth_sufficient": topn_depth_sufficient,
+                    }
+                )
+    except FileNotFoundError:
+        return []
+
+    result_rows.sort(key=lambda r: r.get("decision_time", ""))
+    return result_rows
 
 
 @router.get("/stats/opportunities/raw")
@@ -342,6 +561,51 @@ async def get_paper_trades_raw(limit: int = 500, ticker: str | None = None):
         _read_csv_rows, _output_dir() / "paper_trades.csv", t, limit
     )
     return {"count": len(rows), "ticker_filter": t, "rows": rows}
+
+
+@router.get("/stats/chop/raw")
+async def get_chop_history_raw(limit: int = 500, ticker: str | None = None):
+    """Return raw chop-history rows."""
+    t = ticker.upper() if ticker else None
+    rows = await asyncio.to_thread(
+        _read_csv_rows, _output_dir() / "chop_history.csv", t, limit
+    )
+    return {"count": len(rows), "ticker_filter": t, "rows": rows}
+
+
+@router.get("/stats/decision-trace/raw")
+async def get_decision_trace_raw(limit: int = 500, ticker: str | None = None):
+    """Return raw append-only decision trace rows."""
+    t = ticker.upper() if ticker else None
+    rows = await asyncio.to_thread(
+        _read_jsonl_rows, _output_dir() / "decision_trace.jsonl", t, limit
+    )
+    return {"count": len(rows), "ticker_filter": t, "rows": rows}
+
+
+@router.get("/stats/delay-model/raw")
+async def get_delay_model_raw(
+    limit: int = 500,
+    ticker: str | None = None,
+    delay_seconds: float = 2.0,
+    max_lag_seconds: float = 5.0,
+):
+    """Return raw paper-trade rows matched to the first order-book snapshot at decision_time+delay."""
+    t = ticker.upper() if ticker else None
+    rows = await asyncio.to_thread(
+        _load_delay_model_rows,
+        ticker=t,
+        delay_seconds=max(0.0, float(delay_seconds)),
+        max_lag_seconds=max(0.0, float(max_lag_seconds)),
+    )
+    rows = rows[-max(1, int(limit)) :]
+    return {
+        "count": len(rows),
+        "ticker_filter": t,
+        "delay_seconds": max(0.0, float(delay_seconds)),
+        "max_lag_seconds": max(0.0, float(max_lag_seconds)),
+        "rows": rows,
+    }
 
 
 @router.get("/stats/bot-orders/raw")

@@ -2,10 +2,11 @@
 """
 Verificar estado completo de la cuenta en Polymarket
 """
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import ApiCreds
 from dotenv import load_dotenv
 import os
+
+from py_clob_client_v2 import ApiCreds, ClobClient
+from py_clob_client_v2.clob_types import AssetType, BalanceAllowanceParams
 
 load_dotenv()
 
@@ -38,11 +39,11 @@ try:
     # 1. Verificar órdenes activas
     print("\n📊 ÓRDENES ACTIVAS:")
     try:
-        orders = client.get_orders()
+        orders = client.get_open_orders()
         print(f"   Total órdenes: {len(orders) if orders else 0}")
         if orders:
             for order in orders[:5]:  # Mostrar primeras 5
-                print(f"   - ID: {order.get('id', 'N/A')[:20]}...")
+                print(f"   - ID: {str(order.get('id', order.get('orderID', 'N/A')))[:20]}...")
                 print(f"     Side: {order.get('side', 'N/A')}")
                 print(f"     Price: ${order.get('price', 'N/A')}")
                 print(f"     Size: ${order.get('size', 'N/A')}")
@@ -53,15 +54,13 @@ try:
     # 2. Verificar balance allowance
     print("\n💰 ALLOWANCE:")
     try:
-        # Intentar diferentes formas de obtener el allowance
+        params = BalanceAllowanceParams(
+            asset_type=AssetType.COLLATERAL,
+            signature_type=0,
+        )
         try:
-            allowance = client.get_balance_allowance()
+            allowance = client.get_balance_allowance(params)
             print(f"   Allowance: {allowance}")
-
-            if allowance and int(allowance) > 0:
-                print("   ✓ ALLOWANCE APROBADO - ¡Listo para tradear!")
-            else:
-                print("   ⚠️  Allowance: 0 - Necesita aprobación")
         except Exception as inner_e:
             print(f"   Info: {inner_e}")
             print("   (Esto es normal en algunas configuraciones)")
