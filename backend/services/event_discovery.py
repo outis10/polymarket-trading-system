@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 GAMMA_API = "https://gamma-api.polymarket.com/events"
 GAMMA_MARKETS_API = "https://gamma-api.polymarket.com/markets"
 
-_GAMMA_TIMEOUT = 20
+_GAMMA_TIMEOUT = 8
 _GAMMA_SESSION: requests.Session | None = None
 
 SYMBOL_HINTS: dict[str, tuple[str, ...]] = {
@@ -51,10 +51,10 @@ def _gamma_session() -> requests.Session:
         return _GAMMA_SESSION
 
     retry = Retry(
-        total=2,
-        connect=2,
-        read=2,
-        backoff_factor=0.5,
+        total=1,
+        connect=1,
+        read=1,
+        backoff_factor=0.3,
         status_forcelist=(429, 500, 502, 503, 504),
         allowed_methods=frozenset({"GET"}),
         raise_on_status=False,

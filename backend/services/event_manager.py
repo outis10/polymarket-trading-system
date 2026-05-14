@@ -5965,12 +5965,14 @@ class EventManager:
             return
         # Cooldown: after a no_fill, wait before retrying the same signal
         _cooldown_until = self._no_fill_cooldown_until.get(key, 0.0)
+        _is_no_fill_retry = False
         if _cooldown_until > 0:
             _now_ts = datetime.now(timezone.utc).timestamp()
             if _now_ts < _cooldown_until:
                 return
-            # Cooldown expired — clear it and allow retry
+            # Cooldown expired — clear it and allow retry with wider price
             del self._no_fill_cooldown_until[key]
+            _is_no_fill_retry = True
 
         self._bot_pending_orders.add(key)
         trace_id = str(uuid.uuid4())
@@ -6608,7 +6610,15 @@ class EventManager:
             # Apply gap tolerance to survive order book movement during network latency.
             # ask_price is used for edge/slippage calculations; order_price is what hits the CLOB.
             _gap_tolerance = float(self.settings.get("bot_fak_gap_tolerance", 0.05))
-            order_price = min(round(ask_price + _gap_tolerance, 4), 0.99)
+            if _is_no_fill_retry:
+                _fill_fraction = float(self.settings.get("bot_fak_fill_fraction", 0.5))
+                _min_residual = float(self.settings.get("bot_fak_retry_min_residual_edge_pct", 8.0)) / 100.0
+                _edge_gap = (quant_prob - ask_price) * _fill_fraction if quant_prob > ask_price else 0.0
+                _widened = ask_price + max(_gap_tolerance, _edge_gap)
+                _price_cap = quant_prob - _min_residual
+                order_price = min(round(_widened, 4), round(_price_cap, 4), 0.99)
+            else:
+                order_price = min(round(ask_price + _gap_tolerance, 4), 0.99)
 
             result = None
             _fak_attempts_used = 1
