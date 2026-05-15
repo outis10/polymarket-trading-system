@@ -328,19 +328,6 @@ class PolymarketClient:
             )
 
             if self.sdk_version == "v2":
-                # Some v2 markets require the current maker fee bps to be embedded
-                # in the signed order payload; otherwise the CLOB rejects the order
-                # with "invalid fee rate (0)".
-                try:
-                    setattr(
-                        order_args,
-                        "fee_rate_bps",
-                        int(self.client.get_fee_rate_bps(token_id)),
-                    )
-                except Exception as e:
-                    self.logger.warning(
-                        f"Could not fetch fee_rate_bps for {token_id[:8]}: {e}"
-                    )
                 options = PartialCreateOrderOptions(tick_size=str(tick_size))
                 result = self.client.create_and_post_order(
                     order_args,
@@ -395,16 +382,6 @@ class PolymarketClient:
                 price=hint_price if hint_price > 0 else 0,
             )
             if self.sdk_version == "v2":
-                try:
-                    setattr(
-                        order_args,
-                        "fee_rate_bps",
-                        int(self.client.get_fee_rate_bps(token_id)),
-                    )
-                except Exception as e:
-                    self.logger.warning(
-                        f"Could not fetch fee_rate_bps for {token_id[:8]}: {e}"
-                    )
                 result = self.client.create_and_post_market_order(
                     order_args=order_args,
                     order_type=OrderType.FAK,
@@ -444,16 +421,6 @@ class PolymarketClient:
                     order_type=OrderType.FOK,
                     price=price if price else 0,
                 )
-                try:
-                    setattr(
-                        order_args,
-                        "fee_rate_bps",
-                        int(self.client.get_fee_rate_bps(token_id)),
-                    )
-                except Exception as e:
-                    self.logger.warning(
-                        f"Could not fetch fee_rate_bps for {token_id[:8]}: {e}"
-                    )
                 return self.client.create_and_post_market_order(
                     order_args=order_args,
                     order_type=OrderType.FOK,
@@ -503,16 +470,6 @@ class PolymarketClient:
                 size=shares,
                 side=side.upper(),
             )
-            try:
-                setattr(
-                    order_args,
-                    "fee_rate_bps",
-                    int(self.client.get_fee_rate_bps(token_id)),
-                )
-            except Exception as e:
-                self.logger.warning(
-                    f"Could not fetch fee_rate_bps for {token_id[:8]}: {e}"
-                )
             return self.client.create_and_post_order(
                 order_args,
                 options=PartialCreateOrderOptions(tick_size=str(tick_size)),

@@ -284,8 +284,8 @@ def _load_markets_fallback_by_slug(
             "archived": "false",
             "limit": limit,
             "offset": offset,
-            "ascending": "true",
-            "order": "endDate",
+            "ascending": "false",
+            "order": "startDate",
         }
         payload = _gamma_get_json(GAMMA_MARKETS_API, params=params)
         if not isinstance(payload, list) or not payload:
@@ -319,6 +319,91 @@ def _load_markets_fallback_by_slug(
     return out
 
 
+_TICKER_TO_SLUG_PREFIX: dict[str, str] = {
+    "BTC": "btc", "ETH": "eth", "SOL": "sol", "XRP": "xrp",
+}
+_TF_TO_LABEL: dict[int, str] = {5: "5m", 15: "15m", 60: "1h"}
+
+
+def _discover_by_slug_generation(
+    *,
+    symbols: set[str],
+    allowed_timeframes: set[int],
+    now: datetime,
+    pre_start_minutes: int,
+    lookahead_minutes: int,
+    seen_conditions: set[str],
+) -> list[dict[str, Any]]:
+    """Fast slug-based discovery: generate expected slugs for active windows and fetch directly."""
+    discovered: list[dict[str, Any]] = []
+
+    for tf_minutes in sorted(allowed_timeframes):
+        if tf_minutes not in _TF_TO_LABEL:
+            continue
+        tf_label = _TF_TO_LABEL[tf_minutes]
+        tf_seconds = tf_minutes * 60
+
+        current_ws = int(now.timestamp() // tf_seconds) * tf_seconds
+        n_ahead = max(0, int(lookahead_minutes / tf_minutes))
+        window_starts = [current_ws - tf_seconds] + [
+            current_ws + i * tf_seconds for i in range(n_ahead + 1)
+        ]
+
+        for ws in window_starts:
+            start_dt = datetime.fromtimestamp(ws, tz=timezone.utc)
+            end_dt = start_dt + timedelta(minutes=tf_minutes)
+            window_open = start_dt - timedelta(minutes=pre_start_minutes)
+            if not (window_open <= now < end_dt):
+                continue
+
+            for symbol in sorted(symbols):
+                prefix = _TICKER_TO_SLUG_PREFIX.get(symbol)
+                if not prefix:
+                    continue
+                slug = f"{prefix}-updown-{tf_label}-{ws}"
+                try:
+                    payload = _gamma_get_json(GAMMA_MARKETS_API, params={"slug": slug})
+                    if not isinstance(payload, list) or not payload:
+                        continue
+                    market = payload[0]
+                    if not _is_truthy(market.get("active"), default=True):
+                        continue
+                    if _is_truthy(market.get("closed"), default=False):
+                        continue
+                    condition_id = str(market.get("conditionId") or "").strip()
+                    if not condition_id or condition_id in seen_conditions:
+                        continue
+                    token_ids = _parse_json_list(market.get("clobTokenIds"))
+                    if len(token_ids) < 2:
+                        continue
+                    question = str(market.get("question") or slug)
+                    axis_price = _parse_float(market.get("xAxisValue"))
+                    resolution_source = str(market.get("resolutionSource") or "")
+                    discovered.append({
+                        "name": question,
+                        "description": question,
+                        "icon": _detect_icon(question),
+                        "condition_id": condition_id,
+                        "slug": slug,
+                        "tokens": {"yes": str(token_ids[0]), "no": str(token_ids[1])},
+                        "resolution_source": resolution_source,
+                        "event_start_time": start_dt.isoformat().replace("+00:00", "Z"),
+                        "event_end_time": end_dt.isoformat().replace("+00:00", "Z"),
+                        "is_15m": tf_minutes == 15,
+                        "timeframe_minutes": tf_minutes,
+                        "timeframe_label": "1h" if tf_minutes == 60 else f"{tf_minutes}m",
+                        "chainlink_symbol": symbol,
+                        "binance_symbol": BINANCE_SYMBOLS.get(symbol, ""),
+                        "settings": {"refresh_interval": 5, "price_to_beat": axis_price},
+                    })
+                    seen_conditions.add(condition_id)
+                    logger.info("Slug discovery: found %s (%s)", question, slug)
+                except Exception as exc:
+                    logger.debug("Slug fetch failed for %s: %s", slug, exc)
+
+    return discovered
+
+
 def discover_live_events(config: dict[str, Any]) -> list[dict[str, Any]]:
     """
     Discover active crypto events from Gamma and convert to events.yaml schema.
@@ -340,12 +425,29 @@ def discover_live_events(config: dict[str, Any]) -> list[dict[str, Any]]:
         int(v) for v in (config.get("allowed_timeframes") or [5, 15, 60])
     }
     only_live_now = _is_truthy(config.get("only_live_now", True), default=True)
+    pre_start_minutes = int(config.get("pre_start_minutes", 5))
 
     now = datetime.now(tz=timezone.utc)
     horizon = now + timedelta(days=lookahead_days)
     discovered: list[dict[str, Any]] = []
     seen_conditions: set[str] = set()
     markets_fallback_by_slug: dict[str, dict[str, Any]] | None = None
+
+    # Fast path: generate slugs for current/upcoming windows and fetch directly.
+    # This bypasses the Gamma pagination which is polluted by historical markets.
+    if only_live_now:
+        slug_events = _discover_by_slug_generation(
+            symbols=symbols,
+            allowed_timeframes=allowed_timeframes,
+            now=now,
+            pre_start_minutes=pre_start_minutes,
+            lookahead_minutes=0,
+            seen_conditions=seen_conditions,
+        )
+        discovered.extend(slug_events)
+        if discovered:
+            logger.info("Slug-based discovery found %d events, skipping Gamma pagination", len(discovered))
+            return discovered
 
     limit = 200
     offset = 0
@@ -359,8 +461,8 @@ def discover_live_events(config: dict[str, Any]) -> list[dict[str, Any]]:
             "archived": "false",
             "limit": limit,
             "offset": offset,
-            "ascending": "true",
-            "order": "endDate",
+            "ascending": "false",
+            "order": "startDate",
         }
 
         payload = _gamma_get_json(GAMMA_API, params=params)
@@ -428,7 +530,7 @@ def discover_live_events(config: dict[str, Any]) -> list[dict[str, Any]]:
                     only_live_now
                     and start_dt
                     and end_dt
-                    and not (start_dt <= now < end_dt)
+                    and not (start_dt - timedelta(minutes=pre_start_minutes) <= now < end_dt)
                 ):
                     continue
 
