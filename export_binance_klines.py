@@ -18,10 +18,11 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime as dt
+import random
 import time
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import requests
 
@@ -68,6 +69,30 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--sleep-ms", type=int, default=150, help="Sleep between requests"
+    )
+    parser.add_argument(
+        "--retries",
+        type=int,
+        default=8,
+        help="Retries per Binance request before failing.",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=30.0,
+        help="HTTP timeout in seconds per Binance request.",
+    )
+    parser.add_argument(
+        "--backoff-base-seconds",
+        type=float,
+        default=1.0,
+        help="Initial retry backoff in seconds.",
+    )
+    parser.add_argument(
+        "--backoff-max-seconds",
+        type=float,
+        default=60.0,
+        help="Maximum retry backoff in seconds.",
     )
     return parser.parse_args()
 
@@ -160,12 +185,22 @@ def resolve_output_path(
 
 
 def fetch_klines_batches(
-    symbol: str, interval: str, start_ms: int, end_ms: int, sleep_ms: int
-):
+    symbol: str,
+    interval: str,
+    start_ms: int,
+    end_ms: int,
+    sleep_ms: int,
+    retries: int,
+    timeout: float,
+    backoff_base_seconds: float,
+    backoff_max_seconds: float,
+) -> Iterable[list[Any]]:
     cursor = start_ms
     step_ms = interval_to_ms(interval)
     if step_ms <= 0:
         raise ValueError(f"Invalid interval step for '{interval}'")
+
+    session = requests.Session()
 
     while cursor < end_ms:
         params = {
@@ -175,9 +210,63 @@ def fetch_klines_batches(
             "endTime": end_ms,
             "limit": MAX_LIMIT,
         }
-        resp = requests.get(BINANCE_KLINES_URL, params=params, timeout=15)
-        resp.raise_for_status()
-        batch = resp.json()
+        batch: list[Any] | None = None
+        last_error: Exception | None = None
+        max_attempts = max(1, retries + 1)
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                resp = session.get(BINANCE_KLINES_URL, params=params, timeout=timeout)
+                if resp.status_code in {418, 429} or 500 <= resp.status_code < 600:
+                    retry_after = resp.headers.get("Retry-After")
+                    if retry_after:
+                        try:
+                            delay = min(float(retry_after), backoff_max_seconds)
+                        except ValueError:
+                            delay = min(backoff_base_seconds, backoff_max_seconds)
+                    else:
+                        delay = min(
+                            backoff_base_seconds * (2 ** (attempt - 1)),
+                            backoff_max_seconds,
+                        )
+                    if attempt >= max_attempts:
+                        resp.raise_for_status()
+                    print(
+                        f"[{symbol}] Binance HTTP {resp.status_code}; "
+                        f"retry {attempt}/{max_attempts - 1} in {delay:.1f}s "
+                        f"(cursor={cursor})"
+                    )
+                    time.sleep(delay + random.uniform(0, 0.25))
+                    continue
+
+                resp.raise_for_status()
+                batch = resp.json()
+                break
+            except (
+                requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout,
+                requests.exceptions.ChunkedEncodingError,
+                requests.exceptions.ContentDecodingError,
+            ) as exc:
+                last_error = exc
+                if attempt >= max_attempts:
+                    break
+                delay = min(
+                    backoff_base_seconds * (2 ** (attempt - 1)),
+                    backoff_max_seconds,
+                )
+                print(
+                    f"[{symbol}] Binance connection error: {exc}; "
+                    f"retry {attempt}/{max_attempts - 1} in {delay:.1f}s "
+                    f"(cursor={cursor})"
+                )
+                time.sleep(delay + random.uniform(0, 0.25))
+
+        if batch is None:
+            raise RuntimeError(
+                f"Binance request failed after {max_attempts} attempts "
+                f"for {symbol} cursor={cursor}"
+            ) from last_error
 
         if not batch:
             break
@@ -257,6 +346,10 @@ def export_symbol(
     start_ms: int,
     end_ms: int,
     sleep_ms: int,
+    retries: int,
+    timeout: float,
+    backoff_base_seconds: float,
+    backoff_max_seconds: float,
     output_path: Path,
 ) -> tuple[int, str | None, str | None]:
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -268,7 +361,17 @@ def export_symbol(
     with output_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         write_header(writer)
-        for batch in fetch_klines_batches(symbol, interval, start_ms, end_ms, sleep_ms):
+        for batch in fetch_klines_batches(
+            symbol=symbol,
+            interval=interval,
+            start_ms=start_ms,
+            end_ms=end_ms,
+            sleep_ms=sleep_ms,
+            retries=retries,
+            timeout=timeout,
+            backoff_base_seconds=backoff_base_seconds,
+            backoff_max_seconds=backoff_max_seconds,
+        ):
             for r in batch:
                 open_time = int(r[0])
                 if open_time >= end_ms:
@@ -315,6 +418,10 @@ def main() -> None:
             start_ms=start_ms,
             end_ms=end_ms,
             sleep_ms=args.sleep_ms,
+            retries=args.retries,
+            timeout=args.timeout,
+            backoff_base_seconds=args.backoff_base_seconds,
+            backoff_max_seconds=args.backoff_max_seconds,
             output_path=output_path,
         )
         total_rows += rows_count

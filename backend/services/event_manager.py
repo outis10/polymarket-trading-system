@@ -32,7 +32,12 @@ from .event_discovery import discover_live_events
 from .execution_engine import estimate_fill_from_event, fill_estimate_to_log
 from .kraken import fetch_kraken_candle_open, fetch_kraken_klines
 from .opportunity_tracker import OpportunityTracker
-from .polymarket import PolymarketStreamer, fetch_real_prices, get_client
+from .polymarket import (
+    PolymarketStreamer,
+    _convert_order_book,
+    fetch_real_prices,
+    get_client,
+)
 from .price_provider import (
     get_price_fetcher,
     get_price_streamer,
@@ -62,6 +67,7 @@ _BOT_ORDERS_FIELDNAMES = [
     "token_id",
     "shares",
     "price",
+    "order_price_sent",
     "notional_usd",
     "order_id",
     "quant_prob",
@@ -74,6 +80,10 @@ _BOT_ORDERS_FIELDNAMES = [
     "diff_vs_ptb_at_send",
     "best_bid_at_send",
     "best_ask_at_send",
+    "post_error_best_bid",
+    "post_error_best_ask",
+    "post_error_spread",
+    "post_error_book_status",
     "mid_at_send",
     "spread_at_send",
     "spread_pct_at_send",
@@ -224,6 +234,44 @@ _no_liq_signals: tuple[str, ...] = (
     "not enough liquidity",
     "insufficient liquidity",
 )
+
+
+def _is_no_liquidity_error(exc: object) -> bool:
+    err_str = str(exc).lower()
+    return any(signal in err_str for signal in _no_liq_signals)
+
+
+def _top_of_book_from_summary(orderbook: Any) -> tuple[float | None, float | None]:
+    if orderbook is None:
+        return None, None
+
+    bids = getattr(orderbook, "bids", None)
+    asks = getattr(orderbook, "asks", None)
+    if isinstance(orderbook, dict):
+        bids = orderbook.get("bids")
+        asks = orderbook.get("asks")
+
+    best_bid: float | None = None
+    best_ask: float | None = None
+    def _level_price(level: Any) -> float | None:
+        raw = (
+            level.get("price")
+            if isinstance(level, dict)
+            else getattr(level, "price", None)
+        )
+        return _as_float(raw)
+
+    if isinstance(bids, list) and bids:
+        bid_prices = [
+            p for p in (_level_price(level) for level in bids) if p is not None
+        ]
+        best_bid = max(bid_prices) if bid_prices else None
+    if isinstance(asks, list) and asks:
+        ask_prices = [
+            p for p in (_level_price(level) for level in asks) if p is not None
+        ]
+        best_ask = min(ask_prices) if ask_prices else None
+    return best_bid, best_ask
 
 
 def _output_dir_path() -> str:
@@ -5516,6 +5564,7 @@ class EventManager:
                 "token_id": token_id,
                 "shares": round(shares, 6),
                 "price": round(ask_price, 6),
+                "order_price_sent": "",
                 "notional_usd": round(notional_usd, 4),
                 "order_id": "",
                 "quant_prob": "",
@@ -6365,6 +6414,7 @@ class EventManager:
                 "token_id": token_id,
                 "shares": round(shares, 6),
                 "price": round(ask_price, 6),
+                "order_price_sent": "",
                 "notional_usd": round(notional_usd, 4),
                 "order_id": "",
                 "quant_prob": round(quant_prob, 6),
@@ -6391,6 +6441,10 @@ class EventManager:
                 "best_ask_at_send": round(best_ask_at_send, 6)
                 if isinstance(best_ask_at_send, float)
                 else "",
+                "post_error_best_bid": "",
+                "post_error_best_ask": "",
+                "post_error_spread": "",
+                "post_error_book_status": "",
                 "mid_at_send": round(mid_at_send, 6)
                 if isinstance(mid_at_send, float)
                 else "",
@@ -6622,17 +6676,137 @@ class EventManager:
 
             result = None
             _fak_attempts_used = 1
-            _send_at_utc = datetime.now(tz=timezone.utc)
-            result = await asyncio.wait_for(
-                asyncio.to_thread(
-                    client.place_fok_order,
-                    token_id,
-                    "BUY",
-                    notional_usd,
-                    order_price,
-                ),
-                timeout=_send_timeout,
+            _post_error_book_info: dict[str, Any] = {}
+            _max_fak_attempts = max(
+                1, int(self.settings.get("bot_fak_no_liq_max_attempts", 2))
             )
+            _last_no_liq_error: Exception | None = None
+
+            for _attempt in range(1, _max_fak_attempts + 1):
+                _fak_attempts_used = _attempt
+                _update_bot_order_log_row(
+                    _prelog_ts,
+                    event_id,
+                    side,
+                    {
+                        "order_price_sent": round(order_price, 6),
+                        "fak_attempts": _fak_attempts_used,
+                    },
+                )
+                _send_at_utc = datetime.now(tz=timezone.utc)
+                try:
+                    result = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            client.place_fok_order,
+                            token_id,
+                            "BUY",
+                            notional_usd,
+                            order_price,
+                        ),
+                        timeout=_send_timeout,
+                    )
+                    break
+                except Exception as send_exc:
+                    if not _is_no_liquidity_error(send_exc):
+                        raise
+
+                    _last_no_liq_error = send_exc
+                    _filled_at_utc = datetime.now(tz=timezone.utc)
+                    _fill_latency_ms = round(
+                        (_filled_at_utc - _send_at_utc).total_seconds() * 1000
+                    )
+                    _book_status = "error"
+                    _fresh_bid: float | None = None
+                    _fresh_ask: float | None = None
+                    try:
+                        _fresh_book, _book_status = await asyncio.to_thread(
+                            client.get_order_book_with_status, token_id
+                        )
+                        _fresh_bid, _fresh_ask = _top_of_book_from_summary(_fresh_book)
+                        _converted_book = _convert_order_book(_fresh_book)
+                        if isinstance(_converted_book, dict):
+                            if side == "up":
+                                event_dict["order_book_yes"] = _converted_book
+                            else:
+                                event_dict["order_book_no"] = _converted_book
+                    except Exception as book_exc:
+                        _book_status = f"error:{str(book_exc)[:80]}"
+
+                    _fresh_spread = (
+                        max(0.0, _fresh_ask - _fresh_bid)
+                        if isinstance(_fresh_bid, float)
+                        and isinstance(_fresh_ask, float)
+                        else None
+                    )
+                    _post_error_book_info = {
+                        "post_error_best_bid": round(_fresh_bid, 6)
+                        if isinstance(_fresh_bid, float)
+                        else "",
+                        "post_error_best_ask": round(_fresh_ask, 6)
+                        if isinstance(_fresh_ask, float)
+                        else "",
+                        "post_error_spread": round(_fresh_spread, 6)
+                        if isinstance(_fresh_spread, float)
+                        else "",
+                        "post_error_book_status": _book_status,
+                    }
+                    _update_bot_order_log_row(
+                        _prelog_ts,
+                        event_id,
+                        side,
+                        {
+                            **_post_error_book_info,
+                            "filled_at_utc": _filled_at_utc.isoformat(),
+                            "fill_latency_ms": _fill_latency_ms,
+                            "fills_detail_json": f"error:{str(send_exc)[:120]}",
+                        },
+                    )
+                    _append_decision_trace(
+                        {
+                            **trace_base,
+                            "phase": "fak_no_liq_retry_probe",
+                            "attempt": _attempt,
+                            "order_price_sent": round(order_price, 6),
+                            "fill_latency_ms": _fill_latency_ms,
+                            **_post_error_book_info,
+                            "error": str(send_exc),
+                        }
+                    )
+
+                    if _attempt >= _max_fak_attempts:
+                        break
+                    if not isinstance(_fresh_ask, float) or _fresh_ask <= 0:
+                        break
+                    _min_residual_edge = (
+                        float(
+                            self.settings.get(
+                                "bot_fak_retry_min_residual_edge_pct", 8.0
+                            )
+                        )
+                        / 100.0
+                    )
+                    if (quant_prob - _fresh_ask) < _min_residual_edge:
+                        logger.info(
+                            "Bot FAK retry skipped for %s %s: fresh edge %.4f < min %.4f",
+                            event_id,
+                            side,
+                            quant_prob - _fresh_ask,
+                            _min_residual_edge,
+                        )
+                        break
+                    order_price = min(round(_fresh_ask + _gap_tolerance, 4), 0.99)
+                    logger.info(
+                        "Bot FAK no-liq retry %d/%d for %s %s: fresh ask=%.4f next limit=%.4f",
+                        _attempt + 1,
+                        _max_fak_attempts,
+                        event_id,
+                        side,
+                        _fresh_ask,
+                        order_price,
+                    )
+
+            if result is None and _last_no_liq_error is not None:
+                raise _last_no_liq_error
 
             _filled_at_utc = datetime.now(tz=timezone.utc)
             _fill_latency_ms = round(
@@ -7004,7 +7178,7 @@ class EventManager:
                 else:
                     err_str = str(e)
                     # Distinguish thin-liquidity no-fill from real errors
-                    if any(s in err_str.lower() for s in _no_liq_signals):
+                    if _is_no_liquidity_error(e):
                         status = "no_fill"
                         # Unlock gate + cooldown: retry after N secs if signal still active
                         self._bot_prev_gate_enabled[key] = False
@@ -7039,9 +7213,18 @@ class EventManager:
                                     r.get("event_id") == event_id
                                     and r.get("outcome") == side
                                     and r.get("at_utc") == now_utc
-                                )
-                            ]
-                    fail_info = {"fills_detail_json": f"error:{err_str[:120]}"}
+                                    )
+                                ]
+                    fail_info = {
+                        **(
+                            locals().get("_post_error_book_info")
+                            if isinstance(
+                                locals().get("_post_error_book_info"), dict
+                            )
+                            else {}
+                        ),
+                        "fills_detail_json": f"error:{err_str[:120]}",
+                    }
                 _update_bot_order_log_row(
                     _prelog_ts,
                     event_id,

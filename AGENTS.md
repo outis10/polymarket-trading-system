@@ -7,6 +7,20 @@ Actualízalo cuando cambien decisiones, scripts o flujos importantes.
 
 ## Pendientes para próxima sesión
 
+### Estado actualizado (2026-05-15, FAK no-liq retry + ask real)
+
+- Cuando `place_fok_order(...)`/FAK falla con thin liquidity (`no orders found to match`, `not enough liquidity`, `insufficient liquidity`):
+  - el bot refresca el order book real del token desde CLOB,
+  - guarda `post_error_best_bid`, `post_error_best_ask`, `post_error_spread`, `post_error_book_status` en `bot_orders_YYYY-MM-DD.csv`,
+  - actualiza el book runtime del evento con ese snapshot fresco,
+  - y reintenta FAK una vez por defecto si el ask fresco existe y el edge residual sigue vivo.
+- Nuevas columnas en `bot_orders_YYYY-MM-DD.csv`:
+  - `order_price_sent` = límite real enviado al CLOB (ask + tolerancia),
+  - `post_error_best_*` = top of book consultado después del rechazo/no-liq.
+- Nuevo setting runtime opcional:
+  - `bot_fak_no_liq_max_attempts` (default `2`).
+- El CSV existente se migra automáticamente al nuevo esquema en el próximo append.
+
 ### Estado actualizado (2026-03-25, posiciones live + sell manual)
 
 - `GET /api/positions/{event_id}` en live ya no usa solo `_position_tracker`:
