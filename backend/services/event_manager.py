@@ -680,6 +680,7 @@ class EventManager:
             # "isotonic" → isotonic regression (forces monotonicity: prob_up↑, prob_down↓)
             "prob_smoothing": "none",
             "prob_smoothing_rolling_window": 3,  # only used when prob_smoothing="rolling"
+            "prob_calibration_enabled": False,
             "chop_gate_enabled": True,
             "chop_gate_observe_only": True,
             "chop_gate_sample_interval_seconds": 5,
@@ -839,6 +840,8 @@ class EventManager:
         # Balance cache: refreshed every 30s or after a fill to avoid per-order HTTP calls
         self._cached_bankroll: float | None = None
         self._cached_bankroll_ts: float = 0.0
+        # Prob calibration: list of (raw_prob, calibrated_prob) sorted by raw_prob
+        self._prob_calibration_points: list[tuple[float, float]] = []
         # Take-profit: positions already triggered to avoid double-firing
         self._take_profit_triggered_positions: set[tuple[str, str]] = set()
         _project_root = os.path.normpath(
@@ -1006,6 +1009,8 @@ class EventManager:
             return
         logger.info("Runtime settings changed on disk — reloading %s", path)
         self._load_runtime_settings()
+        if self.settings.get("prob_calibration_enabled"):
+            self._load_prob_calibration()
         try:
             await manager.broadcast(
                 {
@@ -1496,6 +1501,49 @@ class EventManager:
             logger.exception("Failed to hot-reload quant ranges: %s", exc)
             return {"ok": False, "error": str(exc)}
 
+    def _load_prob_calibration(self) -> None:
+        """Load config/prob_calibration.json into _prob_calibration_points."""
+        _project_root = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
+        path = os.path.join(_project_root, "config", "prob_calibration.json")
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            points = data.get("calibration_points", [])
+            self._prob_calibration_points = [
+                (float(p["raw_prob"]), float(p["calibrated_prob"]))
+                for p in points
+                if "raw_prob" in p and "calibrated_prob" in p
+            ]
+            self._prob_calibration_points.sort(key=lambda t: t[0])
+            logger.info(
+                "Prob calibration loaded: %d points from %s",
+                len(self._prob_calibration_points),
+                path,
+            )
+        except FileNotFoundError:
+            self._prob_calibration_points = []
+            logger.debug("No prob_calibration.json found at %s — calibration disabled", path)
+        except Exception as exc:
+            self._prob_calibration_points = []
+            logger.warning("Failed to load prob_calibration.json: %s", exc)
+
+    def _apply_prob_calibration(self, raw_prob: float) -> float:
+        """Linear interpolation of raw_prob through calibration points. Returns calibrated value."""
+        pts = self._prob_calibration_points
+        if not pts:
+            return raw_prob
+        if raw_prob <= pts[0][0]:
+            return pts[0][1]
+        if raw_prob >= pts[-1][0]:
+            return pts[-1][1]
+        for i in range(len(pts) - 1):
+            x0, y0 = pts[i]
+            x1, y1 = pts[i + 1]
+            if x0 <= raw_prob <= x1:
+                t = (raw_prob - x0) / (x1 - x0)
+                return y0 + t * (y1 - y0)
+        return raw_prob
+
     def _lookup_quant_probs(
         self, ticker: str, minute: int, price_diff: float
     ) -> tuple[float, float, int] | None:
@@ -1778,9 +1826,13 @@ class EventManager:
                 event_dict["quant_source"] = "pm_15m_minute_ranges"
 
             if quant:
-                event_dict["quant_prob_up"] = quant[0]
-                event_dict["quant_prob_down"] = quant[1]
-                event_dict["quant_sample_size"] = quant[2]
+                _prob_up, _prob_down, _sample_size = quant[0], quant[1], quant[2]
+                if self.settings.get("prob_calibration_enabled") and self._prob_calibration_points:
+                    _prob_up = self._apply_prob_calibration(_prob_up)
+                    _prob_down = self._apply_prob_calibration(_prob_down)
+                event_dict["quant_prob_up"] = _prob_up
+                event_dict["quant_prob_down"] = _prob_down
+                event_dict["quant_sample_size"] = _sample_size
             else:
                 event_dict["quant_prob_up"] = None
                 event_dict["quant_prob_down"] = None
@@ -3962,6 +4014,7 @@ class EventManager:
                 self._pm_slot_ranges, _smoothing, _window
             )
         self._time_windows, self._time_windows_tz = self._load_time_windows()
+        self._load_prob_calibration()
         self._running = True
 
         # Initialize with current mode
