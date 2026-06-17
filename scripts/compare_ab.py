@@ -68,8 +68,21 @@ def _load_paper_trades(path: str, cutoff) -> list[dict]:
                     continue
                 try:
                     pu = float(prob_up)
-                    # quant_prob for the side taken
-                    qp = pu if side == "up" else (1.0 - pu)
+                    # quant_prob for the side taken.
+                    # prob_up and prob_down are calibrated independently so
+                    # they don't sum to 1. Use prob_down directly when available
+                    # (new schema), or QuantumEdge+ask as fallback (old data).
+                    prob_down_raw = row.get("prob_down", "").strip()
+                    quantum_edge = row.get("QuantumEdge", "").strip()
+                    ask_at_dec = row.get("best_ask_at_decision", "").strip()
+                    if side == "up":
+                        qp = pu
+                    elif prob_down_raw and prob_down_raw not in ("None", ""):
+                        qp = float(prob_down_raw)
+                    elif quantum_edge and ask_at_dec:
+                        qp = float(quantum_edge) + float(ask_at_dec)
+                    else:
+                        qp = 1.0 - pu  # last resort
                     row["_won"] = (side == outcome)
                     row["_qp"] = qp
                     row["_notional"] = float(row.get("stake_usd") or 0)

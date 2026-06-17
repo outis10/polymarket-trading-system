@@ -157,6 +157,7 @@ _PAPER_TRADES_FIELDNAMES = [
     "slot",
     "range",
     "prob_up",
+    "prob_down",
     "marketProb_at_decision",
     "price_source_at_decision",
     "best_bid_at_decision",
@@ -2917,6 +2918,11 @@ class EventManager:
             if isinstance(event_dict.get("quant_prob_up"), (int, float))
             else None
         )
+        prob_down = (
+            float(event_dict.get("quant_prob_down"))
+            if isinstance(event_dict.get("quant_prob_down"), (int, float))
+            else None
+        )
         q = max(0.0, float(market_prob_at_decision))
         stake = max(0.0, float(stake_usd))
         side_norm = "up" if str(side).lower() == "up" else "down"
@@ -2961,6 +2967,7 @@ class EventManager:
             "slot": slot if slot is not None else "",
             "range": range_label,
             "prob_up": round(prob_up, 6) if prob_up is not None else "",
+            "prob_down": round(prob_down, 6) if prob_down is not None else "",
             "marketProb_at_decision": round(q, 6),
             "price_source_at_decision": str(price_source_at_decision or "unknown"),
             "best_bid_at_decision": round(best_bid, 6)
