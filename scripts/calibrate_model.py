@@ -22,32 +22,88 @@ from sklearn.isotonic import IsotonicRegression
 
 
 def load_resolved_orders(output_dirs: list[str]) -> list[dict]:
+    """Load from bot_orders_*.csv (live) or paper_trades.csv (paper mode, raw probs only)."""
+    import glob
     rows = []
     for d in output_dirs:
-        pattern = os.path.join(d, "bot_orders_*.csv")
-        import glob
-        for path in sorted(glob.glob(pattern)):
-            try:
-                with open(path, newline="") as f:
-                    for row in csv.DictReader(f):
-                        if row.get("status") != "placed":
-                            continue
-                        won = row.get("won", "").strip().lower()
-                        if won not in ("true", "false", "1", "0"):
-                            continue
-                        qp = row.get("quant_prob", "").strip()
-                        if not qp or qp in ("None", ""):
-                            continue
-                        try:
-                            row["_won"] = won in ("true", "1")
-                            row["_quant_prob"] = float(qp)
-                            row["_diff"] = float(row.get("diff_vs_ptb_at_send") or 0)
-                            row["_slot"] = int(float(row.get("slot") or 0))
-                            rows.append(row)
-                        except (ValueError, TypeError):
-                            continue
-            except Exception as e:
-                print(f"  Warning: could not read {path}: {e}", file=sys.stderr)
+        # paper_trades.csv takes priority — use it if present
+        paper_path = os.path.join(d, "paper_trades.csv")
+        if os.path.exists(paper_path):
+            loaded = _load_paper_trades(paper_path, d)
+            rows.extend(loaded)
+            print(f"  {d}/paper_trades.csv → {len(loaded)} rows")
+            continue
+        # Fallback: live mode bot_orders_*.csv
+        for path in sorted(glob.glob(os.path.join(d, "bot_orders_*.csv"))):
+            loaded = _load_bot_orders_csv(path)
+            rows.extend(loaded)
+            print(f"  {path} → {len(loaded)} rows")
+    return rows
+
+
+def _load_paper_trades(path: str, directory: str) -> list[dict]:
+    rows = []
+    try:
+        with open(path, newline="") as f:
+            for row in csv.DictReader(f):
+                if row.get("status") != "resolved":
+                    continue
+                side = row.get("side_taken", "").strip().lower()
+                outcome = row.get("event_outcome_real", "").strip().lower()
+                if not side or not outcome:
+                    continue
+                # For DOWN bets: use prob_down if available, else QuantumEdge+ask.
+                # Never use 1-prob_up: calibration is applied independently per side.
+                prob_up_raw = row.get("prob_up", "").strip()
+                prob_down_raw = row.get("prob_down", "").strip()
+                quantum_edge = row.get("QuantumEdge", "").strip()
+                ask = row.get("best_ask_at_decision", "").strip()
+                if not prob_up_raw or prob_up_raw in ("None", ""):
+                    continue
+                try:
+                    if side == "up":
+                        qp = float(prob_up_raw)
+                    elif prob_down_raw and prob_down_raw not in ("None", ""):
+                        qp = float(prob_down_raw)
+                    elif quantum_edge and ask:
+                        qp = float(quantum_edge) + float(ask)
+                    else:
+                        continue  # can't determine quant_prob for this side
+                    row["_won"] = (side == outcome)
+                    row["_quant_prob"] = qp
+                    row["_diff"] = float(row.get("diff_vs_ptb_at_decision") or 0)
+                    row["_slot"] = int(float(row.get("slot") or 0))
+                    rows.append(row)
+                except (ValueError, TypeError):
+                    continue
+    except Exception as e:
+        print(f"  Warning: could not read {path}: {e}", file=sys.stderr)
+    return rows
+
+
+def _load_bot_orders_csv(path: str) -> list[dict]:
+    rows = []
+    try:
+        with open(path, newline="") as f:
+            for row in csv.DictReader(f):
+                if row.get("status") != "placed":
+                    continue
+                won = row.get("won", "").strip().lower()
+                if won not in ("true", "false", "1", "0"):
+                    continue
+                qp = row.get("quant_prob", "").strip()
+                if not qp or qp in ("None", ""):
+                    continue
+                try:
+                    row["_won"] = won in ("true", "1")
+                    row["_quant_prob"] = float(qp)
+                    row["_diff"] = float(row.get("diff_vs_ptb_at_send") or 0)
+                    row["_slot"] = int(float(row.get("slot") or 0))
+                    rows.append(row)
+                except (ValueError, TypeError):
+                    continue
+    except Exception as e:
+        print(f"  Warning: could not read {path}: {e}", file=sys.stderr)
     return rows
 
 
@@ -109,8 +165,10 @@ def main():
     parser.add_argument(
         "--output-dir",
         nargs="+",
-        default=["backtest_output", "backtest_output_v2", "backtest_output_v6"],
-        help="Directories to scan for bot_orders_*.csv",
+        default=["backtest_output"],
+        help="Directories to scan for bot_orders_*.csv or paper_trades.csv. "
+             "Only pass dirs with RAW (uncalibrated) probs — do not include V2 "
+             "if prob_calibration_enabled=true there.",
     )
     parser.add_argument(
         "--config-dir",
